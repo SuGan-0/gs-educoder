@@ -29,8 +29,8 @@ const ITEM_A = {
   experiment: '第1课时：模型评估',
   level: '第2关 留出法',
   level_id: 'L002',
-  identifier: 'vnf9hpj8sx7i',
-  url: 'https://www.educoder.net/tasks/HCEAP94S/3965742/vnf9hpj8sx7i?coursesId=HCEAP94S',
+  identifier: 'zq75a64d2b22',
+  url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq75a64d2b22?coursesId=HCEAP94S',
   reason: 'no-answer'
 };
 
@@ -86,8 +86,8 @@ test('clearMissing：清空全部并返回清掉的条数', async () => {
     ...ITEM_A,
     level: '第3关 F1值',
     level_id: 'L003',
-    identifier: 'other123',
-    url: 'https://www.educoder.net/tasks/HCEAP94S/3965742/other123'
+    identifier: 'zq4fb34a',
+    url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq4fb34a'
   }]);
   const cleared = await clearMissing(root);
   assert.equal(cleared.cleared, 2);
@@ -97,7 +97,7 @@ test('clearMissing：清空全部并返回清掉的条数', async () => {
 test('addMissing：同一关卡的不同 URL 形态收敛为一条（去重优先用关卡标识）', async () => {
   const root = withTempRoot();
   await addMissing(root, [ITEM_A]);
-  const result = await addMissing(root, [{ ...ITEM_A, url: 'https://www.educoder.net/tasks/HCEAP94S/3965742/vnf9hpj8sx7i' }]);
+  const result = await addMissing(root, [{ ...ITEM_A, url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq75a64d2b22' }]);
   assert.equal(result.added, 0);
   assert.equal(result.items.length, 1);
 });

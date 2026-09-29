@@ -45,7 +45,7 @@ function loadChoiceHooks(inputs) {
   const sandbox = {
     window: { __educoderAutosubmitTestHooks: hooks },
     document: fakeDocument,
-    location: { pathname: '/tasks/j5nxiy2lfu8m', href: 'https://www.educoder.net/tasks/j5nxiy2lfu8m' },
+    location: { pathname: '/tasks/zq3cef619ac5', href: 'https://www.educoder.net/tasks/zq3cef619ac5' },
     navigator: { userAgent: 'test' },
     URL,
     URLSearchParams,
@@ -134,8 +134,8 @@ test('回归：12 个选项 + 3 个「标记本题」杂项，仍按 [4,4,4] 勾
   assert.equal(hooks.visibleChoiceInputs().length, 12, '15 个控件里应只剩 12 个选项');
 
   // 模拟脚本在页面上读到的关卡数据（最权威来源）
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/j5nxiy2lfu8m.json', fakeTaskJson());
-  hooks.state.levelIndex.j5nxiy2lfu8m = 'L001';
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq3cef619ac5.json', fakeTaskJson());
+  hooks.state.levelIndex.zq3cef619ac5 = 'L001';
 
   const picked = Array.from(await hooks.answerChoiceLevel({ 1: ['C'], 2: ['A'], 3: ['A', 'C', 'D'] }));
   assert.deepEqual(picked, ['1:C', '2:A', '3:ACD'], `实际勾选：${JSON.stringify(picked)}`);
@@ -143,20 +143,20 @@ test('回归：12 个选项 + 3 个「标记本题」杂项，仍按 [4,4,4] 勾
 
 test('观察关卡数据：从 chooses 里读出的选项数必须是 [4,4,4]', () => {
   const hooks = loadChoiceHooks([]);
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/j5nxiy2lfu8m.json', fakeTaskJson());
-  assert.equal(hooks.state.taskContext.id, 'j5nxiy2lfu8m');
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq3cef619ac5.json', fakeTaskJson());
+  assert.equal(hooks.state.taskContext.id, 'zq3cef619ac5');
   assert.deepEqual(Array.from(hooks.state.taskContext.sizes), [4, 4, 4], '按 position 排序取 challenge_question.length');
 });
 
 test('回归：答案题数与选项个数对不上时，宁可放弃也不硬勾', async () => {
   const hooks = loadChoiceHooks(fakeInputs());
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/j5nxiy2lfu8m.json', {
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq3cef619ac5.json', {
     chooses: [
       { position: 1, challenge_question: [1, 2, 3, 4] },
       { position: 2, challenge_question: [1, 2, 3, 4] }
     ]
   });
-  hooks.state.levelIndex.j5nxiy2lfu8m = 'L001';
+  hooks.state.levelIndex.zq3cef619ac5 = 'L001';
   // 答案 2 题，但页面有 3 题 × 4 选项 → 切分会因总数对不上而失败
   const picked = Array.from(await hooks.answerChoiceLevel({ 1: ['C'], 2: ['A'] }));
   assert.deepEqual(picked, [], '分不清就必须放弃勾选');
@@ -174,14 +174,14 @@ test('诊断：描述分组时带出「每组的选项个数」，便于定位�
 // 此时按标识映射必然落空，必须退回按内容（实验名+关卡名）匹配。
 test('关卡键：平台换了标识时，按「实验名__关卡名」兜底匹配', () => {
   const hooks = loadChoiceHooks([]);
-  hooks.state.titleIndex['CNN__stride'] = '机器学习_2026年下半年__CNN__L003';
+  hooks.state.titleIndex['CNN__stride'] = '示例课程B__CNN__L003';
   hooks.state.levelHint = { experimentName: 'CNN', levelName: 'stride' };
-  assert.equal(hooks.answerKeyForCurrentLevel(), '机器学习_2026年下半年__CNN__L003');
+  assert.equal(hooks.answerKeyForCurrentLevel(), '示例课程B__CNN__L003');
 });
 
 test('关卡键：有精确映射时优先用映射，不走标题兜底', () => {
   const hooks = loadChoiceHooks([]);
-  hooks.state.levelIndex.j5nxiy2lfu8m = '课程__实验__L001';
+  hooks.state.levelIndex.zq3cef619ac5 = '课程__实验__L001';
   hooks.state.titleIndex['CNN__stride'] = '别的__实验__L003';
   hooks.state.levelHint = { experimentName: 'CNN', levelName: 'stride' };
   assert.equal(hooks.answerKeyForCurrentLevel(), '课程__实验__L001', '精确映射优先，标题兜底只做后备');
@@ -190,7 +190,7 @@ test('关卡键：有精确映射时优先用映射，不走标题兜底', () =>
 test('关卡键：都查不到时退回平台标识（绝不乱匹配到别的关卡）', () => {
   const hooks = loadChoiceHooks([]);
   hooks.state.levelHint = { experimentName: 'CNN', levelName: '不存在的关卡名' };
-  assert.equal(hooks.answerKeyForCurrentLevel(), 'j5nxiy2lfu8m', '查不到就原样返回标识，让上层报缺答案');
+  assert.equal(hooks.answerKeyForCurrentLevel(), 'zq3cef619ac5', '查不到就原样返回标识，让上层报缺答案');
 });
 
 test('关卡键：实验名对不上（带分类前缀）时，靠「关卡名」兜底', () => {
@@ -205,7 +205,7 @@ test('关卡键：实验名对不上（带分类前缀）时，靠「关卡名�
 
 test('关卡键：有精确映射时优先级最高（兜底表不抢）', () => {
   const hooks = loadChoiceHooks([]);
-  hooks.state.levelIndex.j5nxiy2lfu8m = '课程__实验__L009';
+  hooks.state.levelIndex.zq3cef619ac5 = '课程__实验__L009';
   hooks.state.titleOnlyIndex['任意关卡'] = '课程__别的__L001';
   hooks.state.levelHint = { experimentName: 'X', levelName: '任意关卡' };
   assert.equal(hooks.answerKeyForCurrentLevel(), '课程__实验__L009');

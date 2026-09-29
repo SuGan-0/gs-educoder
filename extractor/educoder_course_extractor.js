@@ -5,7 +5,7 @@
 //    const runner = new EducoderExtractor();
 //    await runner.init();
 // 3. 脚本会列出课程列表，随后你可调用：
-//    await runner.exportSelectedCourse('机器学习_2026年下半年');
+//    await runner.exportSelectedCourse('示例课程B');
 // 4. 仅提取并导出资料，不自动答题、不自动提交、不自动评测
 
 (() => {
@@ -212,5 +212,5 @@
   console.log('EducoderExtractor 已加载。请在课程列表页执行：');
   console.log('const runner = new EducoderExtractor();');
   console.log('await runner.init();');
-  console.log('await runner.exportSelectedCourse("机器学习_2026年下半年");');
+  console.log('await runner.exportSelectedCourse("示例课程B");');
 })();

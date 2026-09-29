@@ -64,7 +64,7 @@ function loadHooks(buttons) {
   const sandbox = {
     window: { __educoderAutosubmitTestHooks: hooks },
     document: fakeDocument,
-    location: { pathname: '/tasks/j5nxiy2lfu8m', href: 'https://www.educoder.net/tasks/j5nxiy2lfu8m' },
+    location: { pathname: '/tasks/zq3cef619ac5', href: 'https://www.educoder.net/tasks/zq3cef619ac5' },
     navigator: { userAgent: 'test' },
     URL,
     URLSearchParams,

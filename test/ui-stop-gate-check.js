@@ -199,10 +199,10 @@ function check(name, ok, extra = '') {
       for (const client of clients) client.write(frame);
     };
     // 先让快照里带上课程名（与真实流程一致：选课程后才有 courseName）
-    snapshot.selectedCourse = { name: '软件工程导论2026年下半年', classroomCode: '2i6ng7vp' };
-    pushEvent({ type: 'progress', experimentName: '单元测试', courseName: '软件工程导论2026年下半年', saved: 0, current: 0, total: 2 });
-    pushEvent({ type: 'saved', title: '使用Junit进行单元测试', level: '第1关_使用Junit进行单元测试', taskType: 'choice', images: 1, path: 'x/题目.md', directory: 'x', course: '软件工程导论2026年下半年', experiment: '单元测试' });
-    pushEvent({ type: 'reused', title: '单元测试覆盖率', level: '第2关_单元测试覆盖率', taskType: 'choice', path: 'y/题目.md', directory: 'y', course: '软件工程导论2026年下半年', experiment: '单元测试' });
+    snapshot.selectedCourse = { name: '示例课程A', classroomCode: 'zqf25f66' };
+    pushEvent({ type: 'progress', experimentName: '单元测试', courseName: '示例课程A', saved: 0, current: 0, total: 2 });
+    pushEvent({ type: 'saved', title: '使用Junit进行单元测试', level: '第1关_使用Junit进行单元测试', taskType: 'choice', images: 1, path: 'x/题目.md', directory: 'x', course: '示例课程A', experiment: '单元测试' });
+    pushEvent({ type: 'reused', title: '单元测试覆盖率', level: '第2关_单元测试覆盖率', taskType: 'choice', path: 'y/题目.md', directory: 'y', course: '示例课程A', experiment: '单元测试' });
     await page.waitForTimeout(400);
 
     const panelExtracted = page.locator('#panel-extracted');
@@ -211,7 +211,7 @@ function check(name, ok, extra = '') {
     const summary = await page.locator('#extracted-summary').textContent();
     check('汇总含「新保存 1」「复用已存在 1」', /新保存 1/.test(summary) && /复用已存在 1/.test(summary), summary);
     const listText = await page.locator('#extracted-list').textContent();
-    check('列表含课程与实验归组', /软件工程导论2026年下半年/.test(listText) && /单元测试/.test(listText), listText.slice(0, 120));
+    check('列表含课程与实验归组', /示例课程A/.test(listText) && /单元测试/.test(listText), listText.slice(0, 120));
     check('列表含两个关卡', /使用Junit进行单元测试/.test(listText) && /单元测试覆盖率/.test(listText));
 
     const restart = page.locator('#btn-restart');

@@ -11,7 +11,7 @@
     "writer": "node extractor/writer-server.js",
     "crawler": "node extractor/traditional-crawler.js"
   },
-  "dependencies": {
+  "zqbe278a6656": {
     "playwright": "^1.55.0"
   }
 }

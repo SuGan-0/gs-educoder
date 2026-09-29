@@ -138,14 +138,14 @@ cookie、登录接口原文、页面 DOM 与时间偏差，无需关窗口；真
 
 | 形态 | 例子 | 标识 |
 |---|---|---|
-| 旧 | `/tasks/vrtbzlmexi3f?homework_common_id=3965745` | `vrtbzlmexi3f` |
-| 三段式（实测 igoyjkcv） | `/tasks/2i6ng7vp/4157470/fru3ys8acf6n` | `fru3ys8acf6n` |
+| 旧 | `/tasks/zq2a7dad921e?homework_common_id=88000002` | `zq2a7dad921e` |
+| 三段式（实测 zqa079e5） | `/tasks/zqf25f66/88000005/fru3ys8acf6n` | `fru3ys8acf6n` |
 
 三段式里第一段是**课程码**、第二段是**作业 ID**，只有最后一段才是关卡标识。
-早期用 `/tasks/([^/?#]+)` 只取第一段，会得到课程码 `2i6ng7vp`，导致后续所有
+早期用 `/tasks/([^/?#]+)` 只取第一段，会得到课程码 `zqf25f66`，导致后续所有
 `/api/tasks/{id}.json` 请求 404。所有解析点都必须走 `identifierFromTaskUrl`。
 
-**实训关卡页没有关卡链接时，入口靠「查看实战」**：实测 `igoyjkcv`
+**实训关卡页没有关卡链接时，入口靠「查看实战」**：实测 `zqa079e5`
 （集成测试和确认测试，2 关）的 `/shixuns/{id}/challenges` 页面上
 **没有任何 `/tasks/` 链接**，`challenge_list` 也只有 `name`/`position`/`challenge_id`、
 没有标识，`shixun_exec` 也不一定被触发。此时唯一途径是：

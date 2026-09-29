@@ -372,10 +372,10 @@ test('listExperiments：只保留 is_shixun，字段映射严格按契约', asyn
     homeworks: [
       {
         is_shixun: true,
-        homework_id: 3965745,
+        homework_id: 88000002,
         name: 'CNN',
-        shixun_identifier: 'j2negfl5',
-        myshixun_identifier: '9gu4khxlts',
+        shixun_identifier: 'zq655f1e',
+        myshixun_identifier: 'zqad65672b',
         challenge_count: 5
       },
       { is_shixun: false, homework_id: 1, name: '普通作业', challenge_count: 3 },
@@ -391,7 +391,7 @@ test('listExperiments：只保留 is_shixun，字段映射严格按契约', asyn
     '必须带完整查询参数：裸 URL 会被服务端按默认 limit 截断实验列表'
   );
   assert.deepEqual(experiments, [
-    { name: 'CNN', homeworkId: 3965745, shixunIdentifier: 'j2negfl5', myshixunIdentifier: '9gu4khxlts', taskCount: 5 },
+    { name: 'CNN', homeworkId: 88000002, shixunIdentifier: 'zq655f1e', myshixunIdentifier: 'zqad65672b', taskCount: 5 },
     { name: '无 challenge_count', homeworkId: 2, shixunIdentifier: 's2', myshixunIdentifier: 'm2', taskCount: 0 }
   ]);
 });
@@ -407,7 +407,7 @@ test('listExperiments：homeworks 为空数组时返回空列表而不是抛错�
   const page = stubPage(() =>
     ok('{"course_identity":5,"homework_type":4,"homeworks":[],"all_count":0,"task_count":0}')
   );
-  const experiments = await api.listExperiments(page, { classroomCode: 'vx58gtjp' });
+  const experiments = await api.listExperiments(page, { classroomCode: 'zq22d977' });
   assert.deepEqual(experiments, [], '没有课堂实验是正常情况，必须返回空数组');
 });
 
@@ -433,9 +433,9 @@ test('listExperiments：status 为 0 视为成功；缺 classroomCode 抛错', a
 
 // -------------------------------------------------------- listChallenges
 
-const CHALLENGES_URL = 'https://data.educoder.net/api/myshixuns/9gu4khxlts/challenges.json'
-  + '?homework_common_id=3965745&zzud=p8sxailt2';
-const experiment = { homeworkId: 3965745, myshixunIdentifier: '9gu4khxlts' };
+const CHALLENGES_URL = 'https://data.educoder.net/api/myshixuns/zqad65672b/challenges.json'
+  + '?homework_common_id=88000002&zzud=p8sxailt2';
+const experiment = { homeworkId: 88000002, myshixunIdentifier: 'zqad65672b' };
 
 test('listChallenges：兼容数组 / {data:[]} / {challenges:[]} 三种形状', async () => {
   const items = [{

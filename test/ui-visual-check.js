@@ -18,7 +18,7 @@ const IMAGE_BASE64 =
 
 const COURSE = {
   id: 120386,
-  name: '机器学习_2026年下半年',
+  name: '示例课程B',
   school: '河南农业大学',
   members_count: 649,
   homework_commons_count: 41,
@@ -31,13 +31,13 @@ const COURSE2 = {
   school: '河南农业大学',
   members_count: 60,
   is_end: false,
-  first_category_url: '/classrooms/vx58gtjp/announcement'
+  first_category_url: '/classrooms/zq22d977/announcement'
 };
 const EXPERIMENTS = {
   status: 0,
   homeworks: [
-    { name: 'CNN', homework_id: 3965745, shixun_identifier: 'k2mqxzlf', myshixun_identifier: 'sb5zfhoq8g', challenge_count: 3, is_shixun: true },
-    { name: '模型评估与选择', homework_id: 3965742, shixun_identifier: 'j2negfl5', myshixun_identifier: '9gu4khxlts', challenge_count: 3, is_shixun: true },
+    { name: 'CNN', homework_id: 88000002, shixun_identifier: 'zq6177bf', myshixun_identifier: 'zq3a1b66ee', challenge_count: 3, is_shixun: true },
+    { name: '模型评估与选择', homework_id: 88000001, shixun_identifier: 'zq655f1e', myshixun_identifier: 'zqad65672b', challenge_count: 3, is_shixun: true },
     { name: '普通作业（应被过滤）', homework_id: 9, is_shixun: false }
   ]
 };
@@ -47,7 +47,7 @@ const CHALLENGES = [
   { identifier: 'quiz', subject: '欠拟合与过拟合', position: 3, challenge_id: 13, homework_challenge_index: 3, with_code_file: true, chooses: [{ subject: 'q', challenge_question: [{ option_name: 'A' }] }] }
 ];
 const TASKS = {
-  conv: { challenge: { subject: 'conv', homework_challenge_index: 1, with_code_file: true, path: 'conv.py', task_pass: '### 任务描述\n\n实现卷积。\n\n### 编程要求\n\n补充代码。\n\n<p><img src="/api/attachments/1536226" /></p>' }, next_game: 'pool', chooses: [] },
+  conv: { challenge: { subject: 'conv', homework_challenge_index: 1, with_code_file: true, path: 'conv.py', task_pass: '### 任务描述\n\n实现卷积。\n\n### 编程要求\n\n补充代码。\n\n<p><img src="/api/attachments/88000006" /></p>' }, next_game: 'pool', chooses: [] },
   pool: { challenge: { subject: 'pool', homework_challenge_index: 2, with_code_file: true, path: 'pool.py', task_pass: '### 任务描述\n\n实现池化。\n\n### 编程要求\n\n补充池化代码。' }, next_game: 'quiz', chooses: [] },
   quiz: { challenge: { subject: '欠拟合与过拟合', homework_challenge_index: 3, with_code_file: true, path: 'quiz.py', task_pass: '### 任务描述\n\n不应出现。' }, next_game: null, chooses: [{ subject: '该模型处于什么状态？', challenge_question: [{ option_name: '欠拟合' }, { option_name: '过拟合' }] }] }
 };
@@ -79,9 +79,9 @@ const replay = async () => {
     // 假页面不回放就会白等——曾因此让「课程选择后进入实验阶段」等 3 条检查全部超时失败。
     // 这里给一个「课堂实验」模块但没有任何章标签，等价于「不用按章补齐」。
     ['api/courses/HCEAP94S/left_banner.json', JSON.stringify({ course_modules: [{ name: '课堂实验', second_category: [] }] })],
-    ['api/myshixuns/sb5zfhoq8g/challenges.json', JSON.stringify(CHALLENGES)],
+    ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
     // 引擎先导航到实训关卡页，请求的是 shixun_identifier 端点（真实形态带查询串）。
-    ['api/shixuns/k2mqxzlf/challenges.json?id=k2mqxzlf', JSON.stringify(CHALLENGES)],
+    ['api/shixuns/zq6177bf/challenges.json?id=zq6177bf', JSON.stringify(CHALLENGES)],
     ...Object.entries(TASKS).map(([id, payload]) => [`api/tasks/${id}.json`, JSON.stringify(payload)])
   ];
   for (const [fragment, body] of entries) {
@@ -129,7 +129,7 @@ const page = {
     return fn(arg);
   },
   async waitForResponse(predicate) {
-    const candidates = ['https://data.educoder.net/api/shixuns/k2mqxzlf/shixun_exec.json'];
+    const candidates = ['https://data.educoder.net/api/shixuns/zq6177bf/shixun_exec.json'];
     const url = candidates.find((u) => predicate({ url: () => u }));
     if (!url) return null;
     return { ok: () => true, url: () => url, async json() { return { game_identifier: 'conv' }; } };
@@ -164,7 +164,7 @@ const api = require('../extractor/lib/educoder-api');
 api.checkLogin = async () => ({ loggedIn: true, user: 'p8sxailt2', status: 200 });
 process.env.EDUCODER_EXPORT_ROOT = exportRoot;
 // 种一份关卡存档：让「AI 作答」面板的候选列表（课程/实验/关卡）有东西可渲染。
-const seedDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+const seedDir = path.join(exportRoot, '示例课程B', 'CNN');
 fs.mkdirSync(seedDir, { recursive: true });
 fs.writeFileSync(
   path.join(seedDir, 'levels.jsonl'),
@@ -175,7 +175,7 @@ fs.writeFileSync(
   ]
     .map((record) =>
       JSON.stringify({
-        course: '机器学习_2026年下半年',
+        course: '示例课程B',
         experiment: 'CNN',
         source: 'https://www.educoder.net/tasks/x',
         choiceQuestions: [],
@@ -308,7 +308,7 @@ function check(name, ok, extra = '') {
   check('引擎进入课程选择阶段', Boolean(pending.course));
   await sleep(400);
   const courseText = await page2.innerText('body');
-  check('课程列表渲染出两门课', courseText.includes('机器学习_2026年下半年') && courseText.includes('网络编程技术'));
+  check('课程列表渲染出两门课', courseText.includes('示例课程B') && courseText.includes('网络编程技术'));
   check('课程显示学校信息', courseText.includes('河南农业大学'));
   await page2.screenshot({ path: shoot, fullPage: true });
 
@@ -375,7 +375,7 @@ function check(name, ok, extra = '') {
   const answerText = await page2.innerText('#panel-answer');
   check('AI 作答面板存在', /AI 作答/.test(answerText));
   check('面板有模型设置字段', Boolean(await page2.locator('#answer-key').count()));
-  check('面板列出可作答课程', /机器学习_2026年下半年/.test(await page2.innerText('#list-answer-courses')));
+  check('面板列出可作答课程', /示例课程B/.test(await page2.innerText('#list-answer-courses')));
   // 默认只有一门课 → 自动选中，实验列表随之出现
   await sleep(300);
   check('实验列表列出 CNN', /CNN/.test(await page2.innerText('#list-answer-experiments')));

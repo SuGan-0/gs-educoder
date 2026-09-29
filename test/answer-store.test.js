@@ -17,7 +17,7 @@ const path = require('node:path');
 
 const { levelPassed, choiceAnswerText, mergeAnswer, answerPathFor } = require('../extractor/lib/answer-store');
 
-const COURSE = '软件工程导论2026年下半年';
+const COURSE = '示例课程A';
 const EXPERIMENT = '[6、软件实现] 编程风格';
 
 function tempRoot() {

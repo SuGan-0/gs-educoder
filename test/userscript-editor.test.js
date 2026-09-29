@@ -69,7 +69,7 @@ function loadEditorHooks({
     window: { __educoderAutosubmitTestHooks: hooks },
     unsafeWindow: pageHost,
     document: fakeDocument,
-    location: { pathname: '/tasks/apyx7ui9womq', href: 'https://www.educoder.net/tasks/apyx7ui9womq' },
+    location: { pathname: '/tasks/zq044df30560', href: 'https://www.educoder.net/tasks/zq044df30560' },
     navigator: { userAgent: 'test' },
     URL,
     URLSearchParams,

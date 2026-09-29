@@ -688,7 +688,7 @@ class ExtractEngine {
    *
    * 实测：课堂实验页会请求 `left_banner.json`，其中 `course_modules[]` 里 name 为
    * 「课堂实验」的那一项，`second_category[]` 就是页面顶部那排章标签，
-   * 每项的 `category_id` 正是 URL 里的那一段（如 `/shixun_homework/1586166`）。
+   * 每项的 `category_id` 正是 URL 里的那一段（如 `/shixun_homework/88000004`）。
    */
   shixunCategoriesFromBanner(body) {
     try {
@@ -1206,7 +1206,7 @@ class ExtractEngine {
    *
    * 这是入口解析的关键一步：实训页（`/shixuns/{id}/challenges`）**没有 /tasks/ 链接**，
    * 唯一拿到关卡标识的办法就是点这个按钮——它会开一个新标签页
-   * （如 `/tasks/2i6ng7vp/4000335/8fwqp6i5g3bm`，最后一段才是关卡标识），
+   * （如 `/tasks/zqf25f66/88000009/8fwqp6i5g3bm`，最后一段才是关卡标识），
    * 同时页面会发 `shixun_exec.json`（响应里的 `game_identifier` 就是标识）。
    *
    * 早期只找「开始学习」这一个文案，而这些实训页用的是「继续挑战」，
@@ -1622,7 +1622,7 @@ class ExtractEngine {
     const links = await this.page.locator('a[href*="/tasks/"]').count();
     if (links) return this.page;
 
-    // 实训关卡页上没有 /tasks/ 链接（实测 igoyjkcv、软件工程导论都是这种），
+    // 实训关卡页上没有 /tasks/ 链接（实测 zqa079e5、软件工程导论都是这种），
     // 靠点「进入关卡」按钮拿标识；再不行才交给 enterFirstLevel。
     const entered = await this.enterFirstLevel(experiment);
     if (entered.identifier) {
@@ -1678,7 +1678,7 @@ class ExtractEngine {
    *
    * 头歌真实存在两种形态：
    * - `/tasks/{identifier}`                          （旧形态）
-   * - `/tasks/{courseCode}/{homeworkId}/{identifier}` （三段式，实测 igoyjkcv 用这种）
+   * - `/tasks/{courseCode}/{homeworkId}/{identifier}` （三段式，实测 zqa079e5 用这种）
    * **三段式里第一段是课程码、第二段是作业 ID，只有最后一段才是关卡标识**。
    * 早期只取 `/tasks/([^/?#]+)` 会得到课程码，导致后续接口全部 404。
    */
@@ -1744,7 +1744,7 @@ class ExtractEngine {
    * 实训关卡页没有 /tasks/ 链接时的完整入口流程：
    * 点「查看实战」拿到任意一关的标识 → 沿 `prev_game` 回溯到链首（第 1 关）。
    *
-   * 「查看实战」进入的**不是第 1 关**（实测 igoyjkcv 进的是第 2 关），
+   * 「查看实战」进入的**不是第 1 关**（实测 zqa079e5 进的是第 2 关），
    * 因此必须再回溯一次，否则会丢掉前面的关卡。
    */
   async enterFirstLevel(experiment, course) {
@@ -2467,7 +2467,7 @@ class ExtractEngine {
     const startIdentifier = ExtractEngine.identifierFromTaskUrl(startUrl) || experiment.gameIdentifier;
     // 选择范围同时支持两种身份：
     // - 有 identifier 的列表 → 按关卡标识过滤；
-    // - 只有名称的列表（实测 ic9p4rfo 等）→ 按序号（position）过滤。
+    // - 只有名称的列表（实测 zqf495e6 等）→ 按序号（position）过滤。
     // 早期只按 identifier 过滤，无标识时会把链上关卡全部跳过；后来改成「空标识即全抓」，
     // 又导致无法选择性跳过。现在两种身份都在，选择性抓取在任何列表形态下都成立。
     // 多实验统一选择时，这两份依据已由 selectLevelsForAll 预先算好。

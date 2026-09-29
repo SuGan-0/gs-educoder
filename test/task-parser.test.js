@@ -133,10 +133,10 @@ test('detectImageExtension：规则顺序优先 png 签名，再 jpeg/gif/webp',
 // -------------------------------------------------- normalizeImageSource
 
 test('normalizeImageSource：剥掉 markdown 图片的标题，只留 URL', () => {
-  // 真实形态：平台正文是 `![ 酒店页面 ]( /api/attachments/1560519 "酒店页面" )`
+  // 真实形态：平台正文是 `![ 酒店页面 ]( /api/attachments/88000003 "酒店页面" )`
   assert.equal(
-    normalizeImageSource(' /api/attachments/1560519 "酒店页面" '),
-    '/api/attachments/1560519',
+    normalizeImageSource(' /api/attachments/88000003 "酒店页面" '),
+    '/api/attachments/88000003',
     '带标题的写法必须只取 URL，否则请求会带上标题导致「文件不存在」'
   );
   assert.equal(normalizeImageSource("/a/b.png '标题'"), '/a/b.png');
@@ -149,21 +149,21 @@ test('normalizeImageSource：剥掉 markdown 图片的标题，只留 URL', () =
 });
 
 test('normalizeImageSource：URL 内嵌了引号段时截断到引号前', () => {
-  // 有些正文把标题粘进了 URL：/api/attachments/1560519"酒店页面"
-  assert.equal(normalizeImageSource('/api/attachments/1560519"酒店页面"'), '/api/attachments/1560519');
+  // 有些正文把标题粘进了 URL：/api/attachments/88000003"酒店页面"
+  assert.equal(normalizeImageSource('/api/attachments/88000003"酒店页面"'), '/api/attachments/88000003');
 });
 
 test('makeLevelSection：正文图片带标题时也要替换成本地路径（BUG-034 回归）', () => {
-  // 真实 payload：`![ 酒店页面 ]( /api/attachments/1560519 "酒店页面" )`
+  // 真实 payload：`![ 酒店页面 ]( /api/attachments/88000003 "酒店页面" )`
   const task = {
     taskIndex: 1,
     title: '人机交互',
     type: 'choice',
-    taskDescription: '看图作答：\n![ 酒店页面 ]( /api/attachments/1560519 "酒店页面" )',
+    taskDescription: '看图作答：\n![ 酒店页面 ]( /api/attachments/88000003 "酒店页面" )',
     choiceQuestions: [{ subject: '缺失的部分是什么？', options: ['A 地址'] }],
     imageMap: {
       // 键是规范化后的 URL（与 attachImages 落盘的键一致）
-      '/api/attachments/1560519': 'assets/L001-image-1.png'
+      '/api/attachments/88000003': 'assets/L001-image-1.png'
     }
   };
   const section = makeLevelSection(task);
@@ -790,7 +790,7 @@ test('classifyTask：图形化/虚拟机题必须被抛弃（学画用例图、�
 
 test('classifyTask：真编程题不受影响；缺 code_editor 字段不等于空环境', () => {
   const code = taskFromApi({
-    code_editor: { shixun_environment_id: 1700583, name: 'Python3-torch1.4.0' },
+    code_editor: { shixun_environment_id: 88000018, name: 'Python3-torch1.4.0' },
     challenge: {
       subject: '卷积', with_code_file: true, path: 'padding/padding.py；',
       homework_challenge_index: 1, task_pass: '### 任务描述\nx'
@@ -901,7 +901,7 @@ test('makeExperimentDocument：允许传入已渲染的小节文本（增量合�
 });
 
 test('answerFileName：课程与实验都写进文件名，非法字符被替换', () => {
-  assert.equal(answerFileName('机器学习_2026年下半年', 'CNN'), '机器学习_2026年下半年__CNN');
+  assert.equal(answerFileName('示例课程B', 'CNN'), '示例课程B__CNN');
   assert.equal(answerFileName('软件开发/导论', '单元:测试'), '软件开发～导论__单元～测试');
   assert.equal(answerFileName('', ''), 'untitled__untitled');
 });

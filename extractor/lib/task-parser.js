@@ -39,9 +39,9 @@ function languageFromPath(filePath) {
  * 把 markdown 图片括号里的内容解析成纯 URL。
  *
  * 平台正文里的图片常常带标题，形如：
- *   `![ 酒店页面 ]( /api/attachments/1560519 "酒店页面" )`
+ *   `![ 酒店页面 ]( /api/attachments/88000003 "酒店页面" )`
  * 早期直接把括号里的整串当成 URL，于是请求变成
- * `/api/attachments/1560519 "酒店页面"` → 服务端返回 `{"status":-1,"message":"文件不存在"}`，
+ * `/api/attachments/88000003 "酒店页面"` → 服务端返回 `{"status":-1,"message":"文件不存在"}`，
  * 那个错误 JSON 又被当成图片存成 `.bin`（BUG-034）。
  *
  * 需要处理的形式：`<url>` 尖括号包裹、`url "title"`、`url 'title'`、`url (title)`、首尾空白。
@@ -54,7 +54,7 @@ function normalizeImageSource(raw) {
   if (angle) return angle[1].trim();
   // `url "title"` / `url 'title'` / `url (title)`：标题前一定有空白分隔
   text = text.replace(/\s+["'(][\s\S]*$/, '').trim();
-  // 有些正文会把引号写在 URL 里（如 /api/attachments/1560519"酒店页面"），去掉 URL 后的引号段
+  // 有些正文会把引号写在 URL 里（如 /api/attachments/88000003"酒店页面"），去掉 URL 后的引号段
   text = text.replace(/["'][^"']*["'].*$/, '').trim();
   return text;
 }
@@ -218,7 +218,7 @@ function normalizeSpacing(text) {
 /**
  * 生成「正文渲染器」：把正文里的图片标记换成本地相对路径。
  *
- * 关键：markdown 图片括号里可能是 ` /api/attachments/1560519 "酒店页面" `（带标题），
+ * 关键：markdown 图片括号里可能是 ` /api/attachments/88000003 "酒店页面" `（带标题），
  * 直接拿整串查 `imageMap` 会查不到（键是规范化后的 URL），于是产物里留着远程地址、
  * 明明本地已经有图却引用不到。所以这里一律先 `normalizeImageSource` 再查表，
  * 并用规范化后的 URL 作为兜底（保留远程地址时也不会带上标题）。

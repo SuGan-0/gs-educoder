@@ -12,10 +12,10 @@
 ```text
 exports/
 ├── answers/                                  ★ 所有答案集中在这里
-│   ├── 机器学习_2026年下半年__CNN.answers.json
-│   ├── 机器学习_2026年下半年__CNN.answers.md
-│   └── 软件工程导论2026年下半年__单元测试.answers.json
-└── 机器学习_2026年下半年/                     # 题目：一门课一个文件夹
+│   ├── 示例课程B__CNN.answers.json
+│   ├── 示例课程B__CNN.answers.md
+│   └── 示例课程A__单元测试.answers.json
+└── 示例课程B/                     # 题目：一门课一个文件夹
     └── CNN/                                   # 一个课堂实验一个文件夹
         ├── levels.jsonl                       # 关卡存档（唯一事实来源，每关一行）
         ├── CNN.md                             ★ 题目正文，读它来作答
@@ -28,11 +28,11 @@ exports/
 
 ```yaml
 ---
-course: 机器学习_2026年下半年
+course: 示例课程B
 experiment: CNN
 levels: 5
 generated_at: 2026-09-25T03:00:00.000Z
-answer_file: answers/机器学习_2026年下半年__CNN.answers.json
+answer_file: answers/示例课程B__CNN.answers.json
 ---
 ```
 
@@ -41,11 +41,11 @@ answer_file: answers/机器学习_2026年下半年__CNN.answers.json
 ````markdown
 # CNN
 
-> 作答：把这一份文件的答案写成 `answers/机器学习_2026年下半年__CNN.answers.json`（格式见每关的「作答格式」）。
+> 作答：把这一份文件的答案写成 `answers/示例课程B__CNN.answers.json`（格式见每关的「作答格式」）。
 ## 第1关：conv
 - 关卡 id：L001
 - 题型：编程题（code）
-- 来源：https://www.educoder.net/tasks/vrtbzlmexi3f
+- 来源：https://www.educoder.net/tasks/zq2a7dad921e
 
 ### 任务描述 …
 ### 编程要求 …
@@ -129,7 +129,7 @@ def corr2d(X, K):
 
 ```json
 {
-  "course": "机器学习_2026年下半年",
+  "course": "示例课程B",
   "experiment": "CNN",
   "generated_at": "2026-09-25T04:00:00.000Z",
   "model": "MODEL_ID",
@@ -159,7 +159,7 @@ def corr2d(X, K):
 
 ````markdown
 ---
-course: 机器学习_2026年下半年
+course: 示例课程B
 experiment: CNN
 answered: 3
 generated_at: 2026-09-25T04:00:00.000Z
@@ -181,7 +181,7 @@ def corr2d(X, K):
 
 ```powershell
 node tools/validate-answers.js               # 校验全部实验
-node tools/validate-answers.js 机器学习_2026年下半年 CNN
+node tools/validate-answers.js 示例课程B CNN
 ```
 
 检查：① 每关都有答案；② 题型与存档一致；③ 选择题字母不越界、小问不缺；

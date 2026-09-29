@@ -20,8 +20,8 @@ const ITEM = {
   experiment: '第1课时：模型评估',
   level: '第2关 留出法',
   level_id: 'L002',
-  identifier: 'vnf9hpj8sx7i',
-  url: 'https://www.educoder.net/tasks/HCEAP94S/3965742/vnf9hpj8sx7i',
+  identifier: 'zq75a64d2b22',
+  url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq75a64d2b22',
   reason: 'no-answer'
 };
 

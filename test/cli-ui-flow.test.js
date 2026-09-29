@@ -41,7 +41,7 @@ const IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
 
 const COURSE = {
   id: 120386,
-  name: '机器学习_2026年下半年',
+  name: '示例课程B',
   school: '河南农业大学',
   members_count: 649,
   homework_commons_count: 41,
@@ -54,9 +54,9 @@ const EXPERIMENTS = {
   homeworks: [
     {
       name: 'CNN',
-      homework_id: 3965745,
-      shixun_identifier: 'k2mqxzlf',
-      myshixun_identifier: 'sb5zfhoq8g',
+      homework_id: 88000002,
+      shixun_identifier: 'zq6177bf',
+      myshixun_identifier: 'zq3a1b66ee',
       challenge_count: 2,
       is_shixun: true
     },
@@ -71,7 +71,7 @@ const TASKS = {
       homework_challenge_index: 1,
       with_code_file: true,
       path: 'conv.py',
-      task_pass: '### 任务描述\n\n实现卷积。\n\n### 编程要求\n\n补充代码。\n\n<img src="/api/attachments/1536226" />'
+      task_pass: '### 任务描述\n\n实现卷积。\n\n### 编程要求\n\n补充代码。\n\n<img src="/api/attachments/88000006" />'
     },
     next_game: 'pool',
     chooses: []
@@ -97,9 +97,9 @@ const CHALLENGES = [
 // ---- 第二个实验（多实验回归用）：关卡无标识（靠序号过滤），且与第一个实验的关卡号重号 ----
 const EXPERIMENT_B = {
   name: '模型评估与选择',
-  homework_id: 3965742,
-  shixun_identifier: 'j2negfl5',
-  myshixun_identifier: '9gu4khxlts',
+  homework_id: 88000001,
+  shixun_identifier: 'zq655f1e',
+  myshixun_identifier: 'zqad65672b',
   challenge_count: 2,
   is_shixun: true
 };
@@ -159,21 +159,21 @@ function createFakePlaywright(options = {}) {
       JSON.stringify(experiments)
     ]);
     entries.push([
-      'api/myshixuns/sb5zfhoq8g/challenges.json',
+      'api/myshixuns/zq3a1b66ee/challenges.json',
       JSON.stringify(CHALLENGES)
     ]);
     // 引擎会先导航到实训关卡页，请求的是 shixun_identifier 端点（带查询串的真实形态）。
     entries.push([
-      'api/shixuns/k2mqxzlf/challenges.json?id=k2mqxzlf',
+      'api/shixuns/zq6177bf/challenges.json?id=zq6177bf',
       JSON.stringify(CHALLENGES)
     ]);
     if (withSecondExperiment) {
       entries.push([
-        'api/shixuns/j2negfl5/challenges.json?id=j2negfl5',
+        'api/shixuns/zq655f1e/challenges.json?id=zq655f1e',
         JSON.stringify(CHALLENGES_B)
       ]);
       entries.push([
-        'api/myshixuns/9gu4khxlts/challenges.json?homework_common_id=3965742',
+        'api/myshixuns/zqad65672b/challenges.json?homework_common_id=88000001',
         JSON.stringify(CHALLENGES_B)
       ]);
       for (const [taskId, payload] of Object.entries(TASKS_B)) {
@@ -257,7 +257,7 @@ function createFakePlaywright(options = {}) {
         else if (parsed.pathname.endsWith('/courses.json')) body = JSON.stringify({ count: 1, courses: [COURSE] });
         else if (parsed.pathname.endsWith('challenges.json')) {
           body = JSON.stringify(
-            withSecondExperiment && parsed.pathname.includes('j2negfl5') ? CHALLENGES_B : CHALLENGES
+            withSecondExperiment && parsed.pathname.includes('zq655f1e') ? CHALLENGES_B : CHALLENGES
           );
         } else if (parsed.pathname.endsWith('homework_commons.json')) body = JSON.stringify(experiments);
         else if (parsed.pathname.endsWith('rep_content.json')) body = JSON.stringify({ content: { content: BASE64('print("starter")\n') } });
@@ -274,7 +274,7 @@ function createFakePlaywright(options = {}) {
     async waitForResponse(predicate) {
       const candidates = [
         'https://data.educoder.net/api/courses/HCEAP94S/homework_commons.json',
-        'https://data.educoder.net/api/shixuns/k2mqxzlf/shixun_exec.json'
+        'https://data.educoder.net/api/shixuns/zq6177bf/shixun_exec.json'
       ];
       const url = candidates.find((item) => predicate({ url: () => item }));
       if (!url) return null;
@@ -682,7 +682,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
       JSON.stringify({
         taskIndex: 2,
         title: 'tri',
-        source: 'https://www.educoder.net/tasks/2i6ng7vp/4157470/tri9x8y7z',
+        source: 'https://www.educoder.net/tasks/zqf25f66/88000005/zq94fa325',
         choiceQuestions: [{ options: ['甲', '乙', '丙', '丁'] }, { options: ['一', '二'] }]
       })
     ].join('\n') + '\n',
@@ -722,7 +722,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   assert.equal(payload.blueprints.length, 1, '提交蓝图要一并返回');
   assert.equal(payload.blueprints[0].method, 'POST');
   assert.equal(payload.levelIds.conv, keyL001, '平台关卡标识必须折算成全局唯一键');
-  assert.equal(payload.levelIds.tri9x8y7z, keyL002, '三段式 URL 只取最后一段作标识');
+  assert.equal(payload.levelIds.zq94fa325, keyL002, '三段式 URL 只取最后一段作标识');
   assert.deepEqual(payload.optionCounts[keyL002], [4, 2], '选择题每道题的选项个数要传给脚本，供它切分题目');
   // 平台重新发布实验会换掉一整组关卡标识（本地 kbfiscelzp9a / 页面 v4nyrg6lex7q），
   // 这时只能按内容兜底匹配，所以要给脚本一张「实验名__关卡名」表。
@@ -782,7 +782,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   const postedAnswer = await fetch(`${base}/api/answer/save?token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: 'tri9x8y7z', kind: 'choice', answer: '1:A;2:B' })
+    body: JSON.stringify({ identifier: 'zq94fa325', kind: 'choice', answer: '1:A;2:B' })
   });
   assert.equal(postedAnswer.status, 200);
   const answerResult = await postedAnswer.json();

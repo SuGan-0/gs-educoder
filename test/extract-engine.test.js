@@ -17,7 +17,7 @@ const BASE64 = (value) => Buffer.from(value, 'utf8').toString('base64');
 
 const COURSE_A = {
   id: 120386,
-  name: '机器学习_2026年下半年',
+  name: '示例课程B',
   school: '河南农业大学',
   members_count: 649,
   homework_commons_count: 41,
@@ -31,7 +31,7 @@ const COURSE_B = {
   members_count: 60,
   homework_commons_count: 5,
   is_end: false,
-  first_category_url: '/classrooms/vx58gtjp/announcement'
+  first_category_url: '/classrooms/zq22d977/announcement'
 };
 
 const EXPERIMENTS = {
@@ -39,17 +39,17 @@ const EXPERIMENTS = {
   homeworks: [
     {
       name: 'CNN',
-      homework_id: 3965745,
-      shixun_identifier: 'k2mqxzlf',
-      myshixun_identifier: 'sb5zfhoq8g',
+      homework_id: 88000002,
+      shixun_identifier: 'zq6177bf',
+      myshixun_identifier: 'zq3a1b66ee',
       challenge_count: 2,
       is_shixun: true
     },
     {
       name: '模型评估与选择',
-      homework_id: 3965742,
-      shixun_identifier: 'j2negfl5',
-      myshixun_identifier: '9gu4khxlts',
+      homework_id: 88000001,
+      shixun_identifier: 'zq655f1e',
+      myshixun_identifier: 'zqad65672b',
       challenge_count: 1,
       is_shixun: true
     },
@@ -65,7 +65,7 @@ const TASKS = {
       homework_challenge_index: 1,
       with_code_file: true,
       path: 'conv.py',
-      task_pass: '本关任务：实现卷积。\n\n### 任务描述\n\n编写一个实现卷积操作的函数。\n\n### 编程要求\n\n根据提示补充代码。\n\n<p align="center"><img src="/api/attachments/1536226" /></p>'
+      task_pass: '本关任务：实现卷积。\n\n### 任务描述\n\n编写一个实现卷积操作的函数。\n\n### 编程要求\n\n根据提示补充代码。\n\n<p align="center"><img src="/api/attachments/88000006" /></p>'
     },
     next_game: 'pool',
     chooses: []
@@ -92,7 +92,7 @@ const TASKS = {
     next_game: null,
     chooses: [
       {
-        subject: '![,](/api/attachments/1550120)\n请问图中处于什么状态？',
+        subject: '![,](/api/attachments/88000013)\n请问图中处于什么状态？',
         challenge_question: [
           { option_name: '欠拟合，欠拟合' },
           { option_name: '欠拟合，过拟合' },
@@ -121,8 +121,8 @@ const CHALLENGES = [
 const EXPERIMENTS_B = {
   status: 0,
   homeworks: [
-    { name: 'CNN', homework_id: 3965745, shixun_identifier: 'k2mqxzlf', myshixun_identifier: 'sb5zfhoq8g', challenge_count: 2, is_shixun: true },
-    { name: '白盒测试', homework_id: 4157467, shixun_identifier: 'z9uitj5y', myshixun_identifier: 'cccccccccc', challenge_count: 2, is_shixun: true }
+    { name: 'CNN', homework_id: 88000002, shixun_identifier: 'zq6177bf', myshixun_identifier: 'zq3a1b66ee', challenge_count: 2, is_shixun: true },
+    { name: '白盒测试', homework_id: 88000010, shixun_identifier: 'zqab7e3c', myshixun_identifier: 'cccccccccc', challenge_count: 2, is_shixun: true }
   ]
 };
 
@@ -386,7 +386,7 @@ function installFakePlaywright() {
         'https://data.educoder.net/api/courses/HCEAP94S/homework_commons.json',
         // 只回放 CNN 的实训上下文：第二个实验拿不到自己的 shixun_exec，
         // 正好用来验证「不得复用上一个实验的入口」。
-        'https://data.educoder.net/api/shixuns/k2mqxzlf/shixun_exec.json'
+        'https://data.educoder.net/api/shixuns/zq6177bf/shixun_exec.json'
       ];
       return candidates.find((url) => predicate({ url: () => url })) || null;
     },
@@ -493,7 +493,7 @@ function withTempExportRoot() {
 function defaultOwnResponses(experiments = EXPERIMENTS, tasks = TASKS) {
   const entries = [
     ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(experiments)],
-    ['api/myshixuns/sb5zfhoq8g/challenges.json', JSON.stringify(CHALLENGES)]
+    ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)]
   ];
   for (const [id, payload] of Object.entries(tasks)) {
     entries.push([`api/tasks/${id}.json`, JSON.stringify(payload)]);
@@ -532,7 +532,7 @@ test('引擎：图片接口返回错误 JSON 时不得写出假图片文件（BU
 
   await engine.run();
 
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const assetsDir = path.join(experimentDir, 'assets');
   const files = fs.existsSync(assetsDir) ? fs.readdirSync(assetsDir) : [];
   assert.deepEqual(files, [], `错误 JSON 绝不能落盘成图片文件，实际写了：${files.join(', ')}`);
@@ -586,7 +586,7 @@ test('引擎：完整流水线（选课 → 选实验 → 选关卡）产生正�
     control: {
       async waitForCourse(courses) {
         calls.courses += 1;        assert.equal(courses.length, 2, '应读到两门课程');
-        assert.equal(courses[0].name, '机器学习_2026年下半年');
+        assert.equal(courses[0].name, '示例课程B');
         assert.equal(courses[0].classroomCode, 'HCEAP94S');
         return courses[0];
       },
@@ -617,7 +617,7 @@ test('引擎：完整流水线（选课 → 选实验 → 选关卡）产生正�
   assert.deepEqual(calls, { courses: 1, experiments: 1, levels: 1 });
   assert.deepEqual(engine.stats, { saved: 3, skipped: 0, failed: 0, existing: 0, dropped: 0 }, '三关都应保存');
 
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const experimentMd = path.join(experimentDir, 'CNN.md');
   const experimentMeta = path.join(experimentDir, 'CNN.metadata.json');
 
@@ -627,7 +627,7 @@ test('引擎：完整流水线（选课 → 选实验 → 选关卡）产生正�
   assert.ok(!fs.existsSync(path.join(experimentDir, '第1关_conv')), '不应再按关卡建目录');
 
   const document = fs.readFileSync(experimentMd, 'utf8');
-  assert.match(document, /^---\ncourse: 机器学习_2026年下半年\nexperiment: CNN\nlevels: 3\n/m, 'frontmatter 应带课程/实验/关卡数');
+  assert.match(document, /^---\ncourse: 示例课程B\nexperiment: CNN\nlevels: 3\n/m, 'frontmatter 应带课程/实验/关卡数');
   assert.equal(document.match(/^## 第\d+关：/gm).length, 3, '三关各一节');
   assert.match(document, /## 第1关：conv/);
   assert.match(document, /## 第2关：pool/);
@@ -699,8 +699,8 @@ test('引擎：多实验连抓时每个实验都走自己的关卡链（不得�
   const fake = installFakePlaywright();
   fake.state.ownResponses = [
     ...defaultOwnResponses(EXPERIMENTS_B, TASKS),
-    ['api/shixuns/z9uitj5y/challenges.json?id=z9uitj5y', JSON.stringify(CHALLENGES_B)],
-    ['api/myshixuns/cccccccccc/challenges.json?homework_common_id=4157467', JSON.stringify(CHALLENGES_B)],
+    ['api/shixuns/zqab7e3c/challenges.json?id=zqab7e3c', JSON.stringify(CHALLENGES_B)],
+    ['api/myshixuns/cccccccccc/challenges.json?homework_common_id=88000010', JSON.stringify(CHALLENGES_B)],
     ...Object.entries(TASKS_B).map(([id, payload]) => [`api/tasks/${id}.json`, JSON.stringify(payload)])
   ];
   const restoreApi = patchApiForFakes();
@@ -766,16 +766,16 @@ test('引擎：多实验连抓时每个实验都走自己的关卡链（不得�
     on: () => {},
     off: () => {}
   };
-  const others = { name: '白盒测试', shixunIdentifier: 'z9uitj5y' };
+  const others = { name: '白盒测试', shixunIdentifier: 'zqab7e3c' };
   const course = { classroomUrl: 'https://www.educoder.net/classrooms/HCEAP94S/announcement' };
 
-  fake.state.currentUrl = 'https://www.educoder.net/shixuns/k2mqxzlf/challenges'; // 别的实验的页面
+  fake.state.currentUrl = 'https://www.educoder.net/shixuns/zq6177bf/challenges'; // 别的实验的页面
   await engine.prepareExperimentEntry(others, course);
   assert.equal(navigations.length, 1, '停在别的实验关卡页时必须回课堂列表页');
   assert.match(navigations[0], /shixun_homework$/, '应导航到课堂实验列表页');
   assert.equal(others.gameIdentifier, undefined, '残留的入口标识必须被清掉');
 
-  fake.state.currentUrl = 'https://www.educoder.net/shixuns/z9uitj5y/challenges'; // 自己实验的页面
+  fake.state.currentUrl = 'https://www.educoder.net/shixuns/zqab7e3c/challenges'; // 自己实验的页面
   await engine.prepareExperimentEntry(others, course);
   assert.equal(navigations.length, 1, '已经在自己的实训页时不要重复导航（会冲掉入口状态）');
 });
@@ -792,7 +792,7 @@ test('引擎：关卡列表不得取到「别的实验」的同名端点响应�
   const engine = new ExtractEngine({ onEvent: () => {} });
   // 缓存里同时有「单元测试」（2 关）与「白盒测试」（7 关）的响应，顺序把别人的放前面。
   engine.responseCache.set(
-    'https://data.educoder.net/api/shixuns/z9uitj5y/challenges.json?id=z9uitj5y',
+    'https://data.educoder.net/api/shixuns/zqab7e3c/challenges.json?id=zqab7e3c',
     JSON.stringify({
       challenge_list: Array.from({ length: 7 }, (_value, index) => ({
         name: `白盒第${index + 1}关`,
@@ -802,7 +802,7 @@ test('引擎：关卡列表不得取到「别的实验」的同名端点响应�
     })
   );
   engine.responseCache.set(
-    'https://data.educoder.net/api/shixuns/k2mqxzlf/challenges.json?id=k2mqxzlf',
+    'https://data.educoder.net/api/shixuns/zq6177bf/challenges.json?id=zq6177bf',
     JSON.stringify({
       challenge_list: [
         { name: '使用Junit进行单元测试', position: 1, challenge_id: 601 },
@@ -813,8 +813,8 @@ test('引擎：关卡列表不得取到「别的实验」的同名端点响应�
 
   const unitTest = {
     name: '单元测试',
-    shixunIdentifier: 'k2mqxzlf',
-    myshixunIdentifier: 'sb5zfhoq8g'
+    shixunIdentifier: 'zq6177bf',
+    myshixunIdentifier: 'zq3a1b66ee'
   };
   const levels = engine.levelsFromCache(
     [`api/shixuns/${unitTest.shixunIdentifier}/challenges.json`, `api/myshixuns/${unitTest.myshixunIdentifier}/challenges.json`],
@@ -844,16 +844,16 @@ test('引擎：课堂实验下的「子标签实验」也要列出来（软件�
     homeworks: [
       {
         name: '单元测试',
-        homework_id: 1586165,
-        homework_commons_id: 1586165,
-        shixun_identifier: 'z9uitj5y',
+        homework_id: 88000011,
+        homework_commons_id: 88000011,
+        shixun_identifier: 'zqab7e3c',
         myshixun_identifier: 'cccccccccc',
         challenge_count: 2,
         is_shixun: true,
         children: [
           {
             name: '软件工程初体验',
-            homework_id: 1586166,
+            homework_id: 88000004,
             is_shixun: false,
             challenge_count: 1
           }
@@ -872,10 +872,10 @@ test('引擎：课堂实验下的「子标签实验」也要列出来（软件�
   const parent = experiments[0];
   const child = experiments[1];
   assert.equal(parent.nested, false);
-  assert.equal(parent.shixunIdentifier, 'z9uitj5y');
+  assert.equal(parent.shixunIdentifier, 'zqab7e3c');
   assert.equal(child.nested, true, '子标签要标出来');
   assert.equal(child.parentName, '单元测试', '子标签要记住挂在哪个实验下');
-  assert.equal(child.homeworkId, 1586166, '子标签靠 homework_id 定位');
+  assert.equal(child.homeworkId, 88000004, '子标签靠 homework_id 定位');
   assert.equal(child.shixunIdentifier, '', '子标签可能没有 shixun 标识');
 });
 
@@ -891,7 +891,7 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
   const engine = new ExtractEngine({ onEvent: () => {} });
   const navigated = [];
   engine.page = {
-    url: () => 'https://www.educoder.net/classrooms/2i6ng7vp/shixun_homework',
+    url: () => 'https://www.educoder.net/classrooms/zqf25f66/shixun_homework',
     goto: async (url) => {
       navigated.push(url);
     },
@@ -900,15 +900,15 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
     on: () => {},
     off: () => {}
   };
-  engine.currentCourse = { name: '软件工程导论2026年下半年', classroomCode: '2i6ng7vp' };
+  engine.currentCourse = { name: '示例课程A', classroomCode: 'zqf25f66' };
   engine.levelsFromCache = () => []; // 没有缓存 → 会按「等不到列表」收尾，但导航已经发生
 
-  await engine.loadLevels({ name: '软件工程初体验', homeworkId: 1586166, shixunIdentifier: '', myshixunIdentifier: '' }, { emit: false });
+  await engine.loadLevels({ name: '软件工程初体验', homeworkId: 88000004, shixunIdentifier: '', myshixunIdentifier: '' }, { emit: false });
 
   assert.ok(navigated.length, '必须发生导航');
   assert.match(
     navigated[0],
-    /\/classrooms\/2i6ng7vp\/shixun_homework\/1586166\?tabs=0$/,
+    /\/classrooms\/zqf25f66\/shixun_homework\/88000004\?tabs=0$/,
     `子标签实验应打开它的作业页，实际：${navigated[0]}`
   );
 });
@@ -927,31 +927,31 @@ test('引擎：课堂实验按「章标签」分视图，必须逐个读取并�
   // 侧栏响应给出 7 个章分类（与真实 left_banner.json 同形）
   const banner = JSON.stringify({
     course_modules: [
-      { id: 2032062, name: '课堂实验', type: 'shixun', second_category: [
-        { name: '课堂实验', category_id: 1586166, second_category_url: '/classrooms/2i6ng7vp/shixun_homework/1586166' },
-        { name: '课堂实验', category_id: 1588241, second_category_url: '/classrooms/2i6ng7vp/shixun_homework/1588241' },
-        { name: '课堂实验', category_id: 1588242, second_category_url: '/classrooms/2i6ng7vp/shixun_homework/1588242' }
+      { id: 88000014, name: '课堂实验', type: 'shixun', second_category: [
+        { name: '课堂实验', category_id: 88000004, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000004' },
+        { name: '课堂实验', category_id: 88000007, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000007' },
+        { name: '课堂实验', category_id: 88000008, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000008' }
       ] }
     ]
   });
   const categories = engine.shixunCategoriesFromBanner(banner);
-  assert.deepEqual(categories.map((item) => item.id), ['1586166', '1588241', '1588242'], '要取出每个章的 category_id');
-  assert.equal(categories[0].url, '/classrooms/2i6ng7vp/shixun_homework/1586166');
+  assert.deepEqual(categories.map((item) => item.id), ['88000004', '88000007', '88000008'], '要取出每个章的 category_id');
+  assert.equal(categories[0].url, '/classrooms/zqf25f66/shixun_homework/88000004');
   assert.deepEqual(engine.shixunCategoriesFromBanner('不是 JSON'), [], '坏响应不能抛错');
   assert.deepEqual(engine.shixunCategoriesFromBanner(JSON.stringify({ course_modules: [] })), []);
 
   // 合并：各章为主；默认视图带来新实验时追加；重复项按「作业主键+实训标识」去重
   const initial = [
-    { name: '集成测试和确认测试', homeworkId: 4157470, shixunIdentifier: 'igoyjkcv' },
-    { name: '单元测试', homeworkId: 4157469, shixunIdentifier: 'x' },
+    { name: '集成测试和确认测试', homeworkId: 88000005, shixunIdentifier: 'zqa079e5' },
+    { name: '单元测试', homeworkId: 88000012, shixunIdentifier: 'x' },
     { name: '只在默认视图里的实验', homeworkId: 999, shixunIdentifier: 'only-default' }
   ];
   const chapterLists = [
-    [[{ name: '找出代码中的bug', homeworkId: 4000335, shixunIdentifier: 'a' },
-      { name: '制定进度计划', homeworkId: 4000334, shixunIdentifier: 'b' }], '1、软件工程初体验'],
-    [[{ name: '软件过程模型', homeworkId: 4000338, shixunIdentifier: 'c' }], '2、软件工程概述'],
+    [[{ name: '找出代码中的bug', homeworkId: 88000009, shixunIdentifier: 'a' },
+      { name: '制定进度计划', homeworkId: 88000015, shixunIdentifier: 'b' }], '1、软件工程初体验'],
+    [[{ name: '软件过程模型', homeworkId: 88000016, shixunIdentifier: 'c' }], '2、软件工程概述'],
     // 第 3 章与默认视图有重复（同一个 homework_id），不能重复计入
-    [[{ name: '集成测试和确认测试', homeworkId: 4157470, shixunIdentifier: 'igoyjkcv' }], '3、可行性研究']
+    [[{ name: '集成测试和确认测试', homeworkId: 88000005, shixunIdentifier: 'zqa079e5' }], '3、可行性研究']
   ];
 
   const merged = engine.mergeExperimentLists(initial, chapterLists);
@@ -1204,7 +1204,7 @@ test('引擎：重复提取时默认跳过本地已存在的关卡，不覆盖�
   assert.equal(first.stats.saved, 3, '第一轮应写入三关');
   assert.equal(first.stats.existing, 0);
 
-  const experimentMd = path.join(exportRoot, '机器学习_2026年下半年', 'CNN', 'CNN.md');
+  const experimentMd = path.join(exportRoot, '示例课程B', 'CNN', 'CNN.md');
   const before = fs.readFileSync(experimentMd, 'utf8');
 
   // 第二轮：同样的三关，应全部识别为已存在并跳过
@@ -1311,9 +1311,9 @@ test('引擎：重跑同一门课不再"重新抓一遍"——不重下图片、
     pageSettleMs: 0,
     control
   });
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const archivePath = path.join(experimentDir, 'levels.jsonl');
-  const answerFile = path.join(exportRoot, 'answers', '机器学习_2026年下半年__CNN.answers.json');
+  const answerFile = path.join(exportRoot, 'answers', '示例课程B__CNN.answers.json');
   const lineCount = (file) => fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).length;
 
   // 第一轮：真抓真写
@@ -1407,8 +1407,8 @@ test('引擎：多实验里一关都没被勾选的实验必须跳过（不再�
   // 真机场景：合并列表里只勾了 CNN 的 5 关，另一个实验一关没勾——
   // 它必须被跳过（界面上写着「开始抓取选中的 5 个关卡」，不能偷偷把别的实验也抓了）。
   await engine.runExperiment(
-    { name: '模型评估与选择', homeworkId: 3965742 },
-    { name: '机器学习_2026年下半年' },
+    { name: '模型评估与选择', homeworkId: 88000001 },
+    { name: '示例课程B' },
     { levels: [{ position: 1 }, { position: 2 }, { position: 3 }], selection: [], onlySelected: true }
   );
   assert.equal(opened, 0, '没勾选任何关卡的实验不允许进入');
@@ -1434,17 +1434,17 @@ test('引擎：三段式关卡 URL 必须取最后一段作标识（取第一段
   const { ExtractEngine } = freshEngineModule();
   const from = ExtractEngine.identifierFromTaskUrl;
 
-  // 真实形态（软件工程导论实训 igoyjkcv）：/tasks/{课程码}/{作业ID}/{关卡标识}
+  // 真实形态（软件工程导论实训 zqa079e5）：/tasks/{课程码}/{作业ID}/{关卡标识}
   assert.equal(
-    from('https://www.educoder.net/tasks/2i6ng7vp/4157470/fru3ys8acf6n'),
+    from('https://www.educoder.net/tasks/zqf25f66/88000005/fru3ys8acf6n'),
     'fru3ys8acf6n',
-    '三段式必须取最后一段，第一段 2i6ng7vp 是课程码'
+    '三段式必须取最后一段，第一段 zqf25f66 是课程码'
   );
   // 旧形态：/tasks/{关卡标识}
-  assert.equal(from('https://www.educoder.net/tasks/vrtbzlmexi3f?homework_common_id=3965745'), 'vrtbzlmexi3f');
+  assert.equal(from('https://www.educoder.net/tasks/zq2a7dad921e?homework_common_id=88000002'), 'zq2a7dad921e');
   assert.equal(from('https://www.educoder.net/tasks/abc123'), 'abc123');
   // 非关卡 URL
-  assert.equal(from('https://www.educoder.net/shixuns/igoyjkcv/challenges'), '');
+  assert.equal(from('https://www.educoder.net/shixuns/zqa079e5/challenges'), '');
   assert.equal(from(''), '');
   assert.equal(from(null), '');
 });
@@ -1477,36 +1477,36 @@ test('引擎：入口必须是链首（第 1 关），列表最小序号为 1 �
   // 真实场景（Java 面向对象分析与设计）：实训页没有链接，
   // game_identifier 指向「上次停留的第 10 关」，必须定位到第 1 关。
   engine.discoveredLevels = [
-    { identifier: 'a9trjhw67fzq', name: '设计模式', index: 10, type: 'choice' },
-    { identifier: 'tbm7vw5ghuso', name: '面向对象技术的基本概念', index: 1, type: 'choice' },
-    { identifier: '7yl9mvp8rg6x', name: '顺序图和通信图', index: 5, type: 'choice' },
-    { identifier: 'wka96q3tjz7i', name: 'UML综合案例', index: 11, type: 'choice' }
+    { identifier: 'zq7e9a5b03b7', name: '设计模式', index: 10, type: 'choice' },
+    { identifier: 'zqeef6c4822d', name: '面向对象技术的基本概念', index: 1, type: 'choice' },
+    { identifier: 'zqafeb5a51c0', name: '顺序图和通信图', index: 5, type: 'choice' },
+    { identifier: 'zq6773b20549', name: 'UML综合案例', index: 11, type: 'choice' }
   ];
 
   // 列表里已有序号 1 → 直接采用，不必回溯（省一次导航）
-  const entry = await engine.resolveEntry({ gameIdentifier: 'a9trjhw67fzq' }, []);
-  assert.equal(entry.identifier, 'tbm7vw5ghuso', '必须取序号为 1 的那一关');
+  const entry = await engine.resolveEntry({ gameIdentifier: 'zq7e9a5b03b7' }, []);
+  assert.equal(entry.identifier, 'zqeef6c4822d', '必须取序号为 1 的那一关');
   assert.equal(entry.index, 1);
   assert.equal(entry.source, 'level-list');
 
   // 页面链接指向列表中的关卡时也要取序号最小者
-  const fromLinks = await engine.resolveEntry({ gameIdentifier: 'a9trjhw67fzq' }, [
-    'https://www.educoder.net/tasks/wka96q3tjz7i?homework_common_id=1',
-    'https://www.educoder.net/tasks/7yl9mvp8rg6x?homework_common_id=1'
+  const fromLinks = await engine.resolveEntry({ gameIdentifier: 'zq7e9a5b03b7' }, [
+    'https://www.educoder.net/tasks/zq6773b20549?homework_common_id=1',
+    'https://www.educoder.net/tasks/zqafeb5a51c0?homework_common_id=1'
   ]);
-  assert.equal(fromLinks.identifier, '7yl9mvp8rg6x', '链接里的关卡要取序号最小者，而不是第一个链接');
+  assert.equal(fromLinks.identifier, 'zqafeb5a51c0', '链接里的关卡要取序号最小者，而不是第一个链接');
 
   // 列表里没有序号 1（不完整）→ 必须用 prev_game 回溯纠正，不能直接把候选当第 1 关
   fake.state.ownResponses = [
-    ['api/tasks/7yl9mvp8rg6x.json', JSON.stringify({ challenge: { subject: '顺序图和通信图', homework_challenge_index: 5 }, prev_game: 'tbm7vw5ghuso', next_game: null })],
-    ['api/tasks/tbm7vw5ghuso.json', JSON.stringify({ challenge: { subject: '面向对象技术的基本概念', homework_challenge_index: 1 }, prev_game: null, next_game: '7yl9mvp8rg6x' })]
+    ['api/tasks/zqafeb5a51c0.json', JSON.stringify({ challenge: { subject: '顺序图和通信图', homework_challenge_index: 5 }, prev_game: 'zqeef6c4822d', next_game: null })],
+    ['api/tasks/zqeef6c4822d.json', JSON.stringify({ challenge: { subject: '面向对象技术的基本概念', homework_challenge_index: 1 }, prev_game: null, next_game: 'zqafeb5a51c0' })]
   ];
   engine.discoveredLevels = [
-    { identifier: '7yl9mvp8rg6x', name: '顺序图和通信图', index: 5, type: 'choice' },
-    { identifier: 'a9trjhw67fzq', name: '设计模式', index: 10, type: 'choice' }
+    { identifier: 'zqafeb5a51c0', name: '顺序图和通信图', index: 5, type: 'choice' },
+    { identifier: 'zq7e9a5b03b7', name: '设计模式', index: 10, type: 'choice' }
   ];
-  const corrected = await engine.resolveEntry({ gameIdentifier: 'a9trjhw67fzq' }, []);
-  assert.equal(corrected.identifier, 'tbm7vw5ghuso', '列表不含第 1 关时必须回溯到链首');
+  const corrected = await engine.resolveEntry({ gameIdentifier: 'zq7e9a5b03b7' }, []);
+  assert.equal(corrected.identifier, 'zqeef6c4822d', '列表不含第 1 关时必须回溯到链首');
   assert.equal(corrected.index, 1);
   assert.ok(String(corrected.source).startsWith('backtrack'), '来源应标记为回溯');
 });
@@ -1588,7 +1588,7 @@ test('引擎：关卡列表只有名称（无标识）时，用 findChainStart �
     JSON.stringify({ challenge_list: nameOnly })
   );
   const levels = engine.levelsFromCache(
-    ['api/shixuns/zzzunique1/challenges.json', 'api/myshixuns/zzzunique2/challenges.json'],
+    ['api/shixuns/zzzunique1/challenges.json', 'api/myshixuns/zq4b6968ab/challenges.json'],
     { name: '面向对象分析与设计' }
   );
   assert.equal(levels.length, 2, '必须能解析 challenge_list 形态');
@@ -1609,7 +1609,7 @@ test('引擎：关卡列表只有名称（无标识）时，用 findChainStart �
   assert.equal(resolved.exact, true);
 
   // 3) 回溯：沿 prev_game 一直走到 prev_game 为 null 的那一关
-  const start = await engine.findChainStart('quiz', { homeworkId: 3965745 });
+  const start = await engine.findChainStart('quiz', { homeworkId: 88000002 });
   assert.equal(start.identifier, 'conv', '必须回溯到 prev_game 为 null 的第一关');
   assert.equal(start.exact, true);
 });
@@ -1652,7 +1652,7 @@ test('引擎：关卡多选时只抓选中的关卡，并能沿 next_game 链跳
   await engine.run();
 
   assert.deepEqual(engine.stats, { saved: 2, skipped: 0, failed: 0, existing: 0, dropped: 0 }, '只应保存选中的两关');
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const document = fs.readFileSync(path.join(experimentDir, 'CNN.md'), 'utf8');
   assert.ok(document.includes('## 第1关：conv'), '第1关应保存');
   assert.ok(!document.includes('## 第2关：pool'), '未选中的第2关不应保存');
@@ -1700,7 +1700,7 @@ test('引擎：关卡列表无标识时「全选」不得把链上关卡全部�
 
   assert.equal(engine.stats.saved, 3, '无标识的全选必须抓到全部关卡，不能被跳过');
   assert.equal(engine.stats.failed, 0);
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const document = fs.readFileSync(path.join(experimentDir, 'CNN.md'), 'utf8');
   for (const heading of ['## 第1关：conv', '## 第2关：pool', '## 第3关：欠拟合与过拟合']) {
     assert.ok(document.includes(heading), `${heading} 应被保存`);
@@ -1736,8 +1736,8 @@ test('引擎：非编程题/选择题的关卡（虚拟机等）计入 dropped �
   TASKS.conv = vmConv;
   fake.state.ownResponses = [
     ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(EXPERIMENTS)],
-    ['api/myshixun/sb5zfhoq8g/challenges.json', JSON.stringify(CHALLENGES)],
-    ['api/myshixuns/sb5zfhoq8g/challenges.json', JSON.stringify(CHALLENGES)],
+    ['api/myshixun/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
+    ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
     ['api/tasks/conv.json', JSON.stringify(vmConv)]
   ];
 
@@ -1781,7 +1781,7 @@ test('引擎：非编程题/选择题的关卡（虚拟机等）计入 dropped �
   assert.ok(dropped, '应发出 dropped 事件');
   assert.match(dropped.reason, /没有代码文件路径/, '必须说明为什么抛弃');
   // 被抛弃的关卡不得进入产物
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   assert.ok(!fs.existsSync(path.join(experimentDir, 'CNN.md')), '全是被抛弃关卡时不应产生实验文件');
 });
 
@@ -1969,7 +1969,7 @@ test('引擎：初始代码必须走带签名接口（无签名请求 + 页面�
   });
   await engine.run();
 
-  const document = fs.readFileSync(path.join(exportRoot, '机器学习_2026年下半年', 'CNN', 'CNN.md'), 'utf8');
+  const document = fs.readFileSync(path.join(exportRoot, '示例课程B', 'CNN', 'CNN.md'), 'utf8');
   assert.match(document, /print\("starter"\)/, '初始代码必须来自带签名的 apiGet');
   assert.equal(fake.state.requestGetCalls, 0, '不得再发无签名请求（真实环境里必被 -102 拒绝）');
 });
@@ -1982,12 +1982,12 @@ test('引擎：已通过测评的关卡自动导出答案（代码取文件内�
   t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
 
   const engine = new ExtractEngine({ exportRoot, onEvent: (event) => events.push(event) });
-  const course = '软件工程导论2026年下半年';
+  const course = '示例课程A';
   const experiment = '[6、软件实现] 编程风格';
   // captureLevel 传给 captureAnswer 的是 Course / Experiment 对象（不是名字）：
   // 用真实形状调用，锁定「别写出 [object Object]__… 这种答案文件」。
   const courseObj = { name: course, classroomCode: 'HCEAP94S' };
-  const experimentObj = { name: experiment, homeworkId: 4157465 };
+  const experimentObj = { name: experiment, homeworkId: 88000017 };
 
   // 编程题：满分通过 → rep_content 的内容（就是用户提交的代码）作为答案
   const codePayload = {
@@ -2002,7 +2002,7 @@ test('引擎：已通过测评的关卡自动导出答案（代码取文件内�
     game: { final_score: 100 },
     chooses: []
   };
-  const codeTask = taskFromApi(codePayload, courseObj, experimentObj, 'https://www.educoder.net/tasks/apyx7ui9womq');
+  const codeTask = taskFromApi(codePayload, courseObj, experimentObj, 'https://www.educoder.net/tasks/zq044df30560');
   codeTask.starterCode = '//请修改类名使其符合命名规范\npublic class MailService {\n}\n';
   const codeSaved = await engine.captureAnswer(codeTask, codePayload, courseObj, experimentObj);
   assert.equal(codeSaved.ok, true, JSON.stringify(codeSaved));
@@ -2022,7 +2022,7 @@ test('引擎：已通过测评的关卡自动导出答案（代码取文件内�
       ]
     }
   };
-  const choiceTask = taskFromApi(choicePayload, courseObj, experimentObj, 'https://www.educoder.net/tasks/6a42oymgfkjt');
+  const choiceTask = taskFromApi(choicePayload, courseObj, experimentObj, 'https://www.educoder.net/tasks/zqcac4482b1b');
   const choiceSaved = await engine.captureAnswer(choiceTask, choicePayload, courseObj, experimentObj);
   assert.equal(choiceSaved.ok, true, JSON.stringify(choiceSaved));
 
@@ -2114,7 +2114,7 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
   };
   fake.state.ownResponses = [
     ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(EXPERIMENTS)],
-    ['api/myshixuns/sb5zfhoq8g/challenges.json', JSON.stringify([
+    ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify([
       { identifier: 'conv', subject: 'conv', homework_challenge_index: 1, with_code_file: true, chooses: [] },
       { identifier: 'pool', subject: 'pool', homework_challenge_index: 2, with_code_file: true, chooses: [] }
     ])],
@@ -2146,14 +2146,14 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
   await engine.run();
 
   // ① 答案文件照写：只有已通过的 conv（代码内容来自 rep_content，与「已提交的代码」同口径）
-  const answerPath = path.join(exportRoot, 'answers', '机器学习_2026年下半年__CNN.answers.json');
+  const answerPath = path.join(exportRoot, 'answers', '示例课程B__CNN.answers.json');
   const document = JSON.parse(fs.readFileSync(answerPath, 'utf8'));
   assert.deepEqual(document.answers.map((item) => item.level_id), ['L001']);
   assert.equal(document.answers[0].kind, 'code');
   assert.match(String(document.answers[0].answer), /print\("starter"\)/);
 
   // ② 题目存档一律不写：连实验目录都不该出现（levels.jsonl / 实验.md / assets 都在它下面）
-  const experimentDir = path.join(exportRoot, '机器学习_2026年下半年', 'CNN');
+  const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   assert.equal(
     fs.existsSync(experimentDir),
     false,

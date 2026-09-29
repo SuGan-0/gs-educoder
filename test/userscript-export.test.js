@@ -33,7 +33,7 @@ function loadExportHooks() {
   const sandbox = {
     window: { __educoderAutosubmitTestHooks: hooks },
     document: fakeDocument,
-    location: { pathname: '/tasks/pvz5hnmlxs2k', href: 'https://www.educoder.net/tasks/pvz5hnmlxs2k' },
+    location: { pathname: '/tasks/zq612447ad63', href: 'https://www.educoder.net/tasks/zq612447ad63' },
     navigator: { userAgent: 'test' },
     URL,
     URLSearchParams,
@@ -77,7 +77,7 @@ function submittedTaskJson() {
 
 test('导出：已提交关卡读 standard_answer，格式化成 1:B;2:B;...', () => {
   const hooks = loadExportHooks();
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/pvz5hnmlxs2k.json', submittedTaskJson());
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq612447ad63.json', submittedTaskJson());
   const ctx = hooks.state.taskContext;
   assert.equal(ctx.submitted, true);
   assert.equal(ctx.levelId, 'L001', 'challenge.position=1 → L001');
@@ -94,7 +94,7 @@ test('导出：未提交时退回 actual_output（用户答的，不保证对）
     { result: false, actual_output: 'C', position: 1 },
     { result: false, actual_output: 'A', position: 2 }
   ];
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/pvz5hnmlxs2k.json', payload);
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq612447ad63.json', payload);
   const ctx = hooks.state.taskContext;
   assert.equal(ctx.submitted, false);
   assert.equal(hooks.standardAnswerText(ctx.standardAnswer), '1:C;2:A', '未提交时只能取用户实际选的');
@@ -107,14 +107,14 @@ test('导出：standard_answer 优先于 actual_output（答错时也导出正�
     { result: false, actual_output: 'ABCD', standard_answer: 'ACD', position: 3 }
   ];
   payload.chooses = [{ position: 3, challenge_question: [1, 2, 3, 4] }];
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/j5nxiy2lfu8m.json', payload);
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq3cef619ac5.json', payload);
   assert.equal(hooks.standardAnswerText(hooks.state.taskContext.standardAnswer), '3:ACD', '答错也要导出标准答案而非用户答的');
 });
 
 test('导出：提交响应（POST choose_build）也要抓标准答案（否则拿到空）', () => {
   const hooks = loadExportHooks();
   // 页面加载时先观察到「未提交」的关卡：此时没有标准答案
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/wafjr3xgmk5b.json', {
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq0c82548dbc.json', {
     chooses: [{ position: 1, challenge_question: [1, 2, 3, 4] }],
     challenge: { position: 1 },
     choose_test_cases: { had_submmit: false, test_sets: [] }
@@ -122,7 +122,7 @@ test('导出：提交响应（POST choose_build）也要抓标准答案（否则
   assert.equal(hooks.state.taskContext.standardAnswer.length, 0, '未提交时没有标准答案');
 
   // 提交后，POST /choose_build 响应里才带 standard_answer
-  hooks.observeSubmitResult('https://data.educoder.net/api/tasks/wafjr3xgmk5b/choose_build.json', {
+  hooks.observeSubmitResult('https://data.educoder.net/api/tasks/zq0c82548dbc/choose_build.json', {
     test_sets: [
       { position: 1, actual_output: 'D', standard_answer: 'D' },
       { position: 2, actual_output: 'C', standard_answer: 'C' },
@@ -135,11 +135,11 @@ test('导出：提交响应（POST choose_build）也要抓标准答案（否则
 
 test('回传：选择题优先平台标准答案，勾选的选项兜底', () => {
   const hooks = loadExportHooks();
-  hooks.observeTaskJson('https://data.educoder.net/api/tasks/pvz5hnmlxs2k.json', submittedTaskJson());
+  hooks.observeTaskJson('https://data.educoder.net/api/tasks/zq612447ad63.json', submittedTaskJson());
   const payload = hooks.passedAnswerPayload({ choiceMap: { 1: ['B'], 2: ['B'] } });
   assert.equal(payload.kind, 'choice');
   assert.equal(payload.answer, '1:B;2:B;3:C;4:C;5:D', '提交后优先 standard_answer');
-  assert.equal(payload.identifier, 'pvz5hnmlxs2k');
+  assert.equal(payload.identifier, 'zq612447ad63');
 
   // 没抓到标准答案（比如只走了页面提交、还没等到 choose_build 响应）：用答题时勾选的选项
   const hooks2 = loadExportHooks();
@@ -159,7 +159,7 @@ test('回传：编程题用提交的代码；什么都没有时不回传', () =>
   const payload = hooks.passedAnswerPayload({ codeText: 'print("提交的代码")\n' });
   assert.equal(payload.kind, 'code');
   assert.equal(payload.answer, 'print("提交的代码")\n');
-  assert.equal(payload.identifier, 'pvz5hnmlxs2k', '脚本只回传关卡页 URL 里的标识，课程/实验由控制台映射');
+  assert.equal(payload.identifier, 'zq612447ad63', '脚本只回传关卡页 URL 里的标识，课程/实验由控制台映射');
   assert.equal(payload.language, '', '语言从答案库里带（没有就留空）');
 
   // 既没标准答案、也没勾选、也没代码：返回 null，宁可不回传也不写空答案
@@ -205,7 +205,7 @@ test('课堂实验解析：挂在嵌套子项里的实训也要读出来（顶�
           // 子项带实训标识 → 要读到
           { name: '软件危机', shixun_identifier: 'ccc333' },
           // 子项只有 homework_id → 面板暂时读不了（会计数并告警），但不能整片丢
-          { name: '软件过程模型', homework_id: 4000332 }
+          { name: '软件过程模型', homework_id: 88000019 }
         ]
       }
     ]
