@@ -20,8 +20,10 @@
 
 - [快速上手](#快速上手)
 - [签名常量（AK/SK）](#签名常量aks是什么怎么配)
+- [本地控制台界面说明](#本地控制台界面说明)
 - [答案从哪来：两条路](#答案从哪来两条路)
 - [AI 答题：开发进度](#ai-答题开发进度)
+- [数据格式：不是规范，可按需改](#数据格式不是规范可按需改)
 - [篡改猴脚本](#篡改猴脚本)
 - [命令速查](#命令速查)
 - [输出结构](#输出结构)
@@ -103,9 +105,44 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 **获取方式**：浏览器打开任意头歌页面 → 开发者工具 → Sources/Network 找
 `www-cdn.educoder.net/umi.<hash>.js` → 搜 `setHeader` / `getKey` → 两个双 base64 串。
 
+**你的值现在放在哪**（源码里没有，别去 grep 源码）：
+
+- Node 侧：仓库根的 `.educoder-keys.json`（每个工作区一份），内容就 `ak` / `sk` 两个字段；
+- 浏览器侧：篡改猴的脚本存储（键 `educoder-sign-ak` / `educoder-sign-sk`），粘贴一次就在那。
+
 **失效怎么办**：网站改版会换掉这对常量，届时所有请求重新报 `-102`。重新抓一遍
 `umi.<hash>.js`，更新 `.educoder-keys.json`（或重新粘贴到菜单）即可。常量变更日期见
 `extractor/lib/educoder-sign.js` 里的 `SIGNING_VERSION`。
+
+---
+
+## 本地控制台界面说明
+
+`npm run ui` 打开的页面（只监听 `127.0.0.1`）分四块，按钮逐个说明：
+
+**① 抓取区（页面主区）**
+
+| 控件 | 作用 |
+| --- | --- |
+| 课程 / 实验 / 关卡 三级选择 | 课程单选；实验、关卡多选，每级都有 **全选 / 反选 / 清空** |
+| 「重新下载已存在的关卡」勾选 | 默认关：内容指纹一致就跳过；勾上则强制重抓已存在的关卡 |
+| **开始提取** | 启动独立 Chromium（首次在里面登录头歌）→ 按当前选择抓题 |
+| **停止** | 引擎存活期间（等待登录、读课程/实验/关卡、抓取中）随时可停，已抓部分保留 |
+
+**② AI 作答面板（页面右下方）**
+
+| 控件 | 作用 |
+| --- | --- |
+| **刷新产物** | 重扫 `exports/`，列出可作答的课程/实验/关卡，并显示每个实验「已有答案几关」 |
+| 模型接口 / 模型 / API Key | 任何 OpenAI 兼容的 `/chat/completions`；默认 `https://api.deepseek.com/v1` + `deepseek-chat` |
+| **开始 AI 作答** | 逐实验把 `实验.md` 交给模型，答案写进 `exports/answers/`，并在面板里显示覆盖度与待修问题 |
+| 停止 | 停掉正在跑的 AI 作答任务 |
+
+**③ 状态与日志区**：进度条、已保存/跳过/失败计数、最近保存列表、实时日志流。
+
+**④ 页面顶部**：**复制控制台地址**（带 token 的完整 URL，粘给篡改猴的「设置本地地址」用，
+最省事）；**诊断**：在已打开的抓取浏览器里检查登录 cookie、接口原文响应、页面 DOM 与
+时间偏差——抓不到数据时先点它，通常一眼能定位。
 
 ---
 
@@ -160,6 +197,38 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 
 **一句话**：抓题、出答案、自动提交这条链是通的；瓶颈在**答案质量**——
 最省力的实际用法是「AI 先答 → 通过的关卡自动回传标准答案 → 没过的关卡用标准答案重跑」。
+
+---
+
+## 数据格式：不是规范，可按需改
+
+先说清楚：下面这些格式都是**作者的个人习惯**——为「喂给 AI、给篡改猴用」设计的，
+不是什么规范，也不该被锁死。想改就改，每一条都给了**改的位置**。
+
+### 抓取格式（题目存档）
+
+| 产物 | 格式由谁决定 | 想改格式就改这里 |
+| --- | --- | --- |
+| `levels.jsonl`（每关一行） | 一行 JSON 的字段在 `toArchiveRecord()` | `extractor/lib/level-store.js` |
+| `实验.md` 的小节模板（`### 任务描述` / `### 编程要求` / `### 初始代码` / `### 选择题` / `### 作答格式`） | 小节文案与拼装在 `task-parser.js` | `extractor/lib/task-parser.js` |
+| `实验.md` 的分节与增量合并（`## 第N关：标题`） | 分节正则与合并逻辑 | `extractor/lib/extract-engine.js`（约 1957 行）；手动重建在 `tools/build-exports.js` 的 `buildOne()` |
+| `实验.metadata.json` 的字段 | 同 `toArchiveRecord()` | `extractor/lib/level-store.js` |
+
+改完记得 `node tools/build-exports.js` 重建视图；`实验.md` 是喂给模型的输入，
+它的结构同时写死在 AI 提示词里（见下），两边要一起动。
+
+### 答案格式
+
+| 项 | 现在的样子 | 改这里 |
+| --- | --- | --- |
+| 答案文件名 | `{课程}__{实验}.answers.json` | `extractor/lib/task-parser.js` 的 `answerFileName()`；目录在 `extractor/lib/answer-store.js` 的 `answerPathFor()` |
+| 条目结构 | `{ "level_id": "L001", "kind": "code" \| "choice", "answer": "…", "language": "python" }` | `task-parser.js` 的 `KINDS` / `normalizeAnswer()` / `stringifyAnswer()` |
+| 选择题答案串 | `"A"` / `"A,C"` / `"1:A;2:B,D"`（题号:字母，多题分号，多选逗号） | **写**：篡改猴脚本的 `standardAnswerText()`；**读**：篡改猴脚本的 `readAnswer()`（约 1481 行） |
+| AI 提示词（要求模型输出的 JSON 形状） | `{ "answers": […], "unanswered": […] }` | `extractor/lib/answerer.js` 的 `SYSTEM_PROMPT` |
+| 校验规则 | 覆盖度 / 题型 / 选项字母越界 / 占位代码 | `extractor/lib/answer-validator.js` |
+
+注意：答案格式是**三处契约**——答案文件 ↔ AI 提示词 ↔ 篡改猴解析，改一处要三处一起改
+（`npm test` 里都有对应的用例，改漏了会红）。控制台「AI 作答」面板显示的覆盖度也按这套算。
 
 ---
 
