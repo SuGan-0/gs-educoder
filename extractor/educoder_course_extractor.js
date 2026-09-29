@@ -83,7 +83,7 @@
         const name = this.normalizeCourseName(this.getText(a));
         const href = a.href || '';
         if (!name || name.length < 4 || seen.has(name)) continue;
-        const isLikelyCourse = /课程|实验|机器学习|编程|设计|程序|系统|算法|导论|面向对象|网络|软件|CNN|卷积/i.test(name)
+        const isLikelyCourse = /课程|实验|示例课程B|编程|设计|程序|系统|算法|导论|面向对象|网络|软件|CNN|卷积/i.test(name)
           || /\/users\//.test(href) === false;
         if (!isLikelyCourse) continue;
         if (/首页|个人主页|我的|正在进行|已结束|教学课堂|全部|我学习的|我管理的|加入教学课堂|查看全部任务/.test(name)) continue;

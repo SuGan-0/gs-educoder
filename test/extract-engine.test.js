@@ -16,18 +16,18 @@ const BASE64 = (value) => Buffer.from(value, 'utf8').toString('base64');
 // ---------------------------------------------------------------- 假数据
 
 const COURSE_A = {
-  id: 120386,
+  id: 120001,
   name: '示例课程B',
-  school: '河南农业大学',
-  members_count: 649,
+  school: '示例大学',
+  members_count: 60,
   homework_commons_count: 41,
   is_end: false,
-  first_category_url: '/classrooms/HCEAP94S/announcement'
+  first_category_url: '/classrooms/DEMO0001/announcement'
 };
 const COURSE_B = {
-  id: 120586,
+  id: 120002,
   name: '网络编程技术-26-27第一学期',
-  school: '河南农业大学',
+  school: '示例大学',
   members_count: 60,
   homework_commons_count: 5,
   is_end: false,
@@ -383,7 +383,7 @@ function installFakePlaywright() {
     },
     async nextResponseUrl(predicate) {
       const candidates = [
-        'https://data.educoder.net/api/courses/HCEAP94S/homework_commons.json',
+        'https://data.educoder.net/api/courses/DEMO0001/homework_commons.json',
         // 只回放 CNN 的实训上下文：第二个实验拿不到自己的 shixun_exec，
         // 正好用来验证「不得复用上一个实验的入口」。
         'https://data.educoder.net/api/shixuns/zq6177bf/shixun_exec.json'
@@ -492,7 +492,7 @@ function withTempExportRoot() {
 /** 各用例共用的「页面自身请求」回放数据（引擎优先走这条路径）。 */
 function defaultOwnResponses(experiments = EXPERIMENTS, tasks = TASKS) {
   const entries = [
-    ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(experiments)],
+    ['api/courses/DEMO0001/homework_commons.json', JSON.stringify(experiments)],
     ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)]
   ];
   for (const [id, payload] of Object.entries(tasks)) {
@@ -587,7 +587,7 @@ test('引擎：完整流水线（选课 → 选实验 → 选关卡）产生正�
       async waitForCourse(courses) {
         calls.courses += 1;        assert.equal(courses.length, 2, '应读到两门课程');
         assert.equal(courses[0].name, '示例课程B');
-        assert.equal(courses[0].classroomCode, 'HCEAP94S');
+        assert.equal(courses[0].classroomCode, 'DEMO0001');
         return courses[0];
       },
       async waitForExperiments(experiments) {
@@ -767,7 +767,7 @@ test('引擎：多实验连抓时每个实验都走自己的关卡链（不得�
     off: () => {}
   };
   const others = { name: '白盒测试', shixunIdentifier: 'zqab7e3c' };
-  const course = { classroomUrl: 'https://www.educoder.net/classrooms/HCEAP94S/announcement' };
+  const course = { classroomUrl: 'https://www.educoder.net/classrooms/DEMO0001/announcement' };
 
   fake.state.currentUrl = 'https://www.educoder.net/shixuns/zq6177bf/challenges'; // 别的实验的页面
   await engine.prepareExperimentEntry(others, course);
@@ -828,7 +828,7 @@ test('引擎：关卡列表不得取到「别的实验」的同名端点响应�
   );
 });
 
-test('引擎：课堂实验下的「子标签实验」也要列出来（软件工程导论实测形态）', async (t) => {
+test('引擎：课堂实验下的「子标签实验」也要列出来（示例课程A实测形态）', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
@@ -913,7 +913,7 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
   );
 });
 
-test('引擎：课堂实验按「章标签」分视图，必须逐个读取并合并（软件工程导论实测）', (t) => {
+test('引擎：课堂实验按「章标签」分视图，必须逐个读取并合并（示例课程A实测）', (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
@@ -1434,7 +1434,7 @@ test('引擎：三段式关卡 URL 必须取最后一段作标识（取第一段
   const { ExtractEngine } = freshEngineModule();
   const from = ExtractEngine.identifierFromTaskUrl;
 
-  // 真实形态（软件工程导论实训 zqa079e5）：/tasks/{课程码}/{作业ID}/{关卡标识}
+  // 真实形态（示例课程A实训 zqa079e5）：/tasks/{课程码}/{作业ID}/{关卡标识}
   assert.equal(
     from('https://www.educoder.net/tasks/zqf25f66/88000005/fru3ys8acf6n'),
     'fru3ys8acf6n',
@@ -1686,7 +1686,7 @@ test('引擎：关卡列表无标识时「全选」不得把链上关卡全部�
         return [experiments[0]];
       },
       async waitForLevels(levels) {
-        // 真实场景（软件工程导论 / 单元测试）：关卡列表只有名称，identifier 全是空串。
+        // 真实场景（示例课程A / 单元测试）：关卡列表只有名称，identifier 全是空串。
         // 前端「全选」时传回来的就是这样一份列表，按空串过滤会把所有关卡判成未选中。
         return levels.map((level) => ({ ...level, identifier: '' }));
       },
@@ -1735,7 +1735,7 @@ test('引擎：非编程题/选择题的关卡（虚拟机等）计入 dropped �
   };
   TASKS.conv = vmConv;
   fake.state.ownResponses = [
-    ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(EXPERIMENTS)],
+    ['api/courses/DEMO0001/homework_commons.json', JSON.stringify(EXPERIMENTS)],
     ['api/myshixun/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
     ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
     ['api/tasks/conv.json', JSON.stringify(vmConv)]
@@ -1986,7 +1986,7 @@ test('引擎：已通过测评的关卡自动导出答案（代码取文件内�
   const experiment = '[6、软件实现] 编程风格';
   // captureLevel 传给 captureAnswer 的是 Course / Experiment 对象（不是名字）：
   // 用真实形状调用，锁定「别写出 [object Object]__… 这种答案文件」。
-  const courseObj = { name: course, classroomCode: 'HCEAP94S' };
+  const courseObj = { name: course, classroomCode: 'DEMO0001' };
   const experimentObj = { name: experiment, homeworkId: 88000017 };
 
   // 编程题：满分通过 → rep_content 的内容（就是用户提交的代码）作为答案
@@ -2113,7 +2113,7 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
     }
   };
   fake.state.ownResponses = [
-    ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(EXPERIMENTS)],
+    ['api/courses/DEMO0001/homework_commons.json', JSON.stringify(EXPERIMENTS)],
     ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify([
       { identifier: 'conv', subject: 'conv', homework_challenge_index: 1, with_code_file: true, chooses: [] },
       { identifier: 'pool', subject: 'pool', homework_challenge_index: 2, with_code_file: true, chooses: [] }

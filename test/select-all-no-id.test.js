@@ -60,7 +60,7 @@ if (loop.unref) loop.unref();
 
 function apiBody(url) {
   const parsed = new URL(url);
-  if (parsed.pathname.endsWith('/courses.json')) return jsonBody(JSON.stringify({ count: 1, courses: [{ id: 120378, name: '示例课程A', first_category_url: '/classrooms/zqf25f66/announcement' }] }));
+  if (parsed.pathname.endsWith('/courses.json')) return jsonBody(JSON.stringify({ count: 1, courses: [{ id: 120003, name: '示例课程A', first_category_url: '/classrooms/zqf25f66/announcement' }] }));
   if (parsed.pathname.endsWith('homework_commons.json')) return jsonBody(JSON.stringify(EXPERIMENTS));
   if (parsed.pathname.endsWith('challenges.json')) return jsonBody(NAME_ONLY_CHALLENGES);
   if (parsed.pathname.endsWith('rep_content.json')) return jsonBody(JSON.stringify({ content: { content: BASE64('x') } }));

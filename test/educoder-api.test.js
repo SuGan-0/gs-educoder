@@ -316,14 +316,14 @@ test('listCourses：opts.user 覆盖账号（不再写死一个人）', async ()
 
 test('listCourses：字段映射、name 归一化、丢弃缺 name/first_category_url 的条目', async () => {
   const real = {
-    id: 120386,
-    name: '  机器学习_2026年\n下半年  ',
-    school: '河南农业大学',
-    visits: 14333,
-    members_count: 649,
+    id: 120001,
+    name: '  示例课程B_2026年\n下半年  ',
+    school: '示例大学',
+    visits: 1200,
+    members_count: 60,
     homework_commons_count: 41,
     is_end: false,
-    first_category_url: '/classrooms/HCEAP94S/announcement'
+    first_category_url: '/classrooms/DEMO0001/announcement'
   };
   const page = stubPage(() => ok(JSON.stringify({
     count: 5,
@@ -338,14 +338,14 @@ test('listCourses：字段映射、name 归一化、丢弃缺 name/first_categor
   const courses = await api.listCourses(page);
   assert.equal(courses.length, 1);
   assert.deepEqual(courses[0], {
-    id: 120386,
-    name: '机器学习_2026年 下半年',
-    school: '河南农业大学',
-    visits: 14333,
-    membersCount: 649,
+    id: 120001,
+    name: '示例课程B_2026年 下半年',
+    school: '示例大学',
+    visits: 1200,
+    membersCount: 60,
     homeworkCommonsCount: 41,
-    classroomCode: 'HCEAP94S',
-    classroomUrl: 'https://www.educoder.net/classrooms/HCEAP94S/announcement',
+    classroomCode: 'DEMO0001',
+    classroomUrl: 'https://www.educoder.net/classrooms/DEMO0001/announcement',
     isEnd: false
   });
 });
@@ -383,11 +383,11 @@ test('listExperiments：只保留 is_shixun，字段映射严格按契约', asyn
     ]
   };
   const page = stubPage(() => ok(JSON.stringify(payload)));
-  const experiments = await api.listExperiments(page, { classroomCode: 'HCEAP94S' });
+  const experiments = await api.listExperiments(page, { classroomCode: 'DEMO0001' });
   assert.equal(
     page.calls[0].url,
-    'https://data.educoder.net/api/courses/HCEAP94S/homework_commons.json'
-      + '?limit=100&status=0&id=HCEAP94S&type=4&order=0&zzud=p8sxailt2',
+    'https://data.educoder.net/api/courses/DEMO0001/homework_commons.json'
+      + '?limit=100&status=0&id=DEMO0001&type=4&order=0&zzud=p8sxailt2',
     '必须带完整查询参数：裸 URL 会被服务端按默认 limit 截断实验列表'
   );
   assert.deepEqual(experiments, [
@@ -398,7 +398,7 @@ test('listExperiments：只保留 is_shixun，字段映射严格按契约', asyn
 
 test('listExperiments：真实健康响应无顶层 status，不得抛错', async () => {
   const page = stubPage(() => ok('{"course_identity":5,"homeworks":[{"is_shixun":true,"homework_id":1,"name":"CNN","challenge_count":5}]}'));
-  const experiments = await api.listExperiments(page, { classroomCode: 'HCEAP94S' });
+  const experiments = await api.listExperiments(page, { classroomCode: 'DEMO0001' });
   assert.equal(experiments.length, 1);
 });
 
@@ -414,7 +414,7 @@ test('listExperiments：homeworks 为空数组时返回空列表而不是抛错�
 test('listExperiments：-102 归类为签名问题，而不是课程或账号出错', async () => {
   const page = stubPage(() => ok('{"status":-102,"message":"服务器时间与您的设备时间不匹配，请检查您的设备时间设置并重新加载页面。"}'));
   await assert.rejects(
-    () => api.listExperiments(page, { classroomCode: 'HCEAP94S' }),
+    () => api.listExperiments(page, { classroomCode: 'DEMO0001' }),
     /签名被拒/,
     '必须指向签名，不要复述接口误导性的「时间不匹配」'
   );

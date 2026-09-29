@@ -16,12 +16,12 @@ const os = require('node:os');
 
 const ROOT = path.join(__dirname, '..');
 const ITEM = {
-  course: '机器学习',
+  course: '示例课程B',
   experiment: '第1课时：模型评估',
   level: '第2关 留出法',
   level_id: 'L002',
   identifier: 'zq75a64d2b22',
-  url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq75a64d2b22',
+  url: 'https://www.educoder.net/tasks/DEMO0001/88000001/zq75a64d2b22',
   reason: 'no-answer'
 };
 

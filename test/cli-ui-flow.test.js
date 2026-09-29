@@ -40,13 +40,13 @@ test.after(() => {
 const IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 const COURSE = {
-  id: 120386,
+  id: 120001,
   name: '示例课程B',
-  school: '河南农业大学',
-  members_count: 649,
+  school: '示例大学',
+  members_count: 60,
   homework_commons_count: 41,
   is_end: false,
-  first_category_url: '/classrooms/HCEAP94S/announcement'
+  first_category_url: '/classrooms/DEMO0001/announcement'
 };
 
 const EXPERIMENTS = {
@@ -155,7 +155,7 @@ function createFakePlaywright(options = {}) {
   const replay = async () => {
     const entries = [];
     entries.push([
-      'api/courses/HCEAP94S/homework_commons.json',
+      'api/courses/DEMO0001/homework_commons.json',
       JSON.stringify(experiments)
     ]);
     entries.push([
@@ -273,7 +273,7 @@ function createFakePlaywright(options = {}) {
     },
     async waitForResponse(predicate) {
       const candidates = [
-        'https://data.educoder.net/api/courses/HCEAP94S/homework_commons.json',
+        'https://data.educoder.net/api/courses/DEMO0001/homework_commons.json',
         'https://data.educoder.net/api/shixuns/zq6177bf/shixun_exec.json'
       ];
       const url = candidates.find((item) => predicate({ url: () => item }));

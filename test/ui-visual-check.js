@@ -17,18 +17,18 @@ const IMAGE_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 const COURSE = {
-  id: 120386,
+  id: 120001,
   name: '示例课程B',
-  school: '河南农业大学',
-  members_count: 649,
+  school: '示例大学',
+  members_count: 60,
   homework_commons_count: 41,
   is_end: false,
-  first_category_url: '/classrooms/HCEAP94S/announcement'
+  first_category_url: '/classrooms/DEMO0001/announcement'
 };
 const COURSE2 = {
-  id: 120586,
+  id: 120002,
   name: '网络编程技术-26-27第一学期',
-  school: '河南农业大学',
+  school: '示例大学',
   members_count: 60,
   is_end: false,
   first_category_url: '/classrooms/zq22d977/announcement'
@@ -74,11 +74,11 @@ const responseListeners = new Set();
 // 引擎优先用「页面自身请求」拿数据（data API 直连会被 -102 拒绝），导航时回放这些响应。
 const replay = async () => {
   const entries = [
-    ['api/courses/HCEAP94S/homework_commons.json', JSON.stringify(EXPERIMENTS)],
+    ['api/courses/DEMO0001/homework_commons.json', JSON.stringify(EXPERIMENTS)],
     // 课堂实验页还会请求 left_banner.json（章标签分类）：引擎为拿分类会等它最多 8 秒，
     // 假页面不回放就会白等——曾因此让「课程选择后进入实验阶段」等 3 条检查全部超时失败。
     // 这里给一个「课堂实验」模块但没有任何章标签，等价于「不用按章补齐」。
-    ['api/courses/HCEAP94S/left_banner.json', JSON.stringify({ course_modules: [{ name: '课堂实验', second_category: [] }] })],
+    ['api/courses/DEMO0001/left_banner.json', JSON.stringify({ course_modules: [{ name: '课堂实验', second_category: [] }] })],
     ['api/myshixuns/zq3a1b66ee/challenges.json', JSON.stringify(CHALLENGES)],
     // 引擎先导航到实训关卡页，请求的是 shixun_identifier 端点（真实形态带查询串）。
     ['api/shixuns/zq6177bf/challenges.json?id=zq6177bf', JSON.stringify(CHALLENGES)],
@@ -309,7 +309,7 @@ function check(name, ok, extra = '') {
   await sleep(400);
   const courseText = await page2.innerText('body');
   check('课程列表渲染出两门课', courseText.includes('示例课程B') && courseText.includes('网络编程技术'));
-  check('课程显示学校信息', courseText.includes('河南农业大学'));
+  check('课程显示学校信息', courseText.includes('示例大学'));
   await page2.screenshot({ path: shoot, fullPage: true });
 
   // 3) 在 #list-courses 里选第一门课程，再点「确认课程并继续」

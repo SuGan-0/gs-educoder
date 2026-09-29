@@ -576,7 +576,7 @@ class ExtractEngine {
       experiments = this.parseExperiments(pageBody, 'page');
       // 课堂实验页把实验按「章标签」分成多个 category 视图，页面自身请求带
       // `&category={id}`；不带 category 的响应只是其中一个分类，直接用它就会漏掉其余各章
-      // （实测软件工程导论：默认视图 20 项，而第 1 章还有 9 项完全不同的实验）。
+      // （实测示例课程A：默认视图 20 项，而第 1 章还有 9 项完全不同的实验）。
       // 因此这里按章标签逐个补齐。
       experiments = await this.loadCategoryExperiments(experiments, course, shixunUrl);
     } else {
@@ -1210,7 +1210,7 @@ class ExtractEngine {
    * 同时页面会发 `shixun_exec.json`（响应里的 `game_identifier` 就是标识）。
    *
    * 早期只找「开始学习」这一个文案，而这些实训页用的是「继续挑战」，
-   * 结果按钮从没被点到，入口恒为空、整门课被跳过（实测软件工程导论第 1 章）。
+   * 结果按钮从没被点到，入口恒为空、整门课被跳过（实测示例课程A第 1 章）。
    *
    * @returns {{identifier: string, page: import('playwright').Page|null, label: string}}
    */
@@ -1442,7 +1442,7 @@ class ExtractEngine {
   }
 
   async openExperiment(experiment, course) {
-    // 「分章视图」里的实验不在首页列表上（实测：软件工程导论首页只有「7、软件测试」那 20 个，
+    // 「分章视图」里的实验不在首页列表上（实测：示例课程A首页只有「7、软件测试」那 20 个，
     // 「1、软件工程初体验」的 9 个不在其中）。所以先打开它所属的章页，再在那一页里找卡片；
     // 否则卡片找不到时只能回落到「页面上第一个开始学习」，会**点到别的实验**。
     const classroomCode = course?.classroomCode || this.currentCourse?.classroomCode || '';
@@ -1622,7 +1622,7 @@ class ExtractEngine {
     const links = await this.page.locator('a[href*="/tasks/"]').count();
     if (links) return this.page;
 
-    // 实训关卡页上没有 /tasks/ 链接（实测 zqa079e5、软件工程导论都是这种），
+    // 实训关卡页上没有 /tasks/ 链接（实测 zqa079e5、示例课程A都是这种），
     // 靠点「进入关卡」按钮拿标识；再不行才交给 enterFirstLevel。
     const entered = await this.enterFirstLevel(experiment);
     if (entered.identifier) {

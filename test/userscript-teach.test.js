@@ -14,7 +14,7 @@ const vm = require('node:vm');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'userscript', 'educoder-autosubmit.user.js'), 'utf8');
 
-function loadHooks({ pathname = '/tasks/HCEAP94S/88000001/zq75a64d2b22', search = '' } = {}) {
+function loadHooks({ pathname = '/tasks/DEMO0001/88000001/zq75a64d2b22', search = '' } = {}) {
   const hooks = {};
   const fakeDocument = {
     querySelectorAll: () => [],
@@ -119,12 +119,12 @@ test('发现层：我的课堂（courses.json）解析出课程与课堂码', ()
   const rows = hooks.parseClassrooms({
     count: 2,
     courses: [
-      { id: 120386, name: '示例课程B', first_category_url: '/classrooms/HCEAP94S/announcement' },
+      { id: 120001, name: '示例课程B', first_category_url: '/classrooms/DEMO0001/announcement' },
       { id: 0, name: '坏数据' }
     ]
   });
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].classroomCode, 'HCEAP94S');
+  assert.equal(rows[0].classroomCode, 'DEMO0001');
   assert.equal(rows[0].kind, 'classroom');
   assert.equal(rows[0].name, '示例课程B');
 });
@@ -189,12 +189,12 @@ test('每关动作判定：未选中 → 虚拟机 → 已通过 → 无答案 �
 test('缺答案上报载荷：字段齐全、编号是 L00N', () => {
   const hooks = loadHooks();
   const item = hooks.buildMissingItem({
-    course: '机器学习',
+    course: '示例课程B',
     experiment: '第1课时',
     levelName: '第2关 留出法',
     position: 2,
     identifier: 'zq75a64d2b22',
-    url: 'https://www.educoder.net/tasks/HCEAP94S/88000001/zq75a64d2b22'
+    url: 'https://www.educoder.net/tasks/DEMO0001/88000001/zq75a64d2b22'
   });
   assert.equal(item.level_id, 'L002');
   assert.equal(item.reason, 'no-answer');
@@ -237,12 +237,12 @@ test('队首匹配：未选中的关卡也算队首（走过场），不会把�
 
 test('URL 回退：把最后一段换成上一关标识，查询串保留', () => {
   const hooks = loadHooks({
-    pathname: '/tasks/HCEAP94S/88000001/zq75a64d2b22',
-    search: '?coursesId=HCEAP94S'
+    pathname: '/tasks/DEMO0001/88000001/zq75a64d2b22',
+    search: '?coursesId=DEMO0001'
   });
   assert.equal(
     hooks.urlForLevelIdentifier('abc123'),
-    'https://www.educoder.net/tasks/HCEAP94S/88000001/abc123?coursesId=HCEAP94S'
+    'https://www.educoder.net/tasks/DEMO0001/88000001/abc123?coursesId=DEMO0001'
   );
 });
 

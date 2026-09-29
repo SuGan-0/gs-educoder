@@ -25,7 +25,7 @@ function answerPathFor(exportRoot, course, experiment) {
 /**
  * 「已通过测评」判定：得分达到满分。
  *
- * 实测（2026-09-28，软件工程导论）：
+ * 实测（2026-09-28，示例课程A）：
  * - `challenge.score` 是**满分**（编程题 100；选择题每题 10 分，5 题就是 50）；
  * - `game.final_score` 是**得分**：未提交是 0，满分通过才等于满分（60 分的 6 题全对就是 60）。
  *
