@@ -9,3 +9,7 @@ exports/
 .educoder-keys.json
 # 一次性逆向探针（调试记录，只留在本地）
 tools/probe-*.js
+# 本地开发文档（不随仓库发布）
+docs/README-traditional.md
+docs/BUG.md
+docs/HANDOVER.md
