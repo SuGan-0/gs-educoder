@@ -1,0 +1,11 @@
+node_modules/
+exports/
+.educoder-browser/
+.educoder-cookie.json
+.educoder-browser-data.json
+.educoder-network.jsonl
+.shots/
+# 本地私有：签名常量（从头歌前端 umi JS 提取的公开客户端常量，不进公开仓库）
+.educoder-keys.json
+# 一次性逆向探针（调试记录，只留在本地）
+tools/probe-*.js

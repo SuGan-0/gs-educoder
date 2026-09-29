@@ -1,0 +1,2631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="data:,">
+<title>头歌资料提取控制台</title>
+<style>
+  :root {
+    /* 蓝图工程台：纸蓝画布 + 墨蓝字 + 单一群青强调色。
+       纯离线：只用系统自带字体（Windows / macOS 都有回退），不引任何外部资源。 */
+    --bg: #eef1f7;
+    --grid-line: rgba(36, 71, 224, .05);
+    --panel: #ffffff;
+    --panel-2: #f7f9fd;
+    --line: #dce3ef;
+    --line-2: #c2cee2;
+    --fg: #131f36;
+    --fg-2: #46587a;
+    --fg-3: #6b7c99;
+    --primary: #2447e0;
+    --primary-strong: #1b37bf;
+    --primary-soft: #eef1ff;
+    --primary-line: #c2cdf8;
+    --ok: #0e7a4a;
+    --warn: #a96106;
+    --err: #c4323a;
+    --info: #2447e0;
+    --ring: #2447e0;
+    --shadow: 0 1px 0 rgba(19, 31, 54, .04);
+    --ink: #0d1729;
+    --ink-line: #24334f;
+    --ink-fg: #a9bad3;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    --r: 5px;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    color: var(--fg);
+    font: 13px/1.6 var(--sans);
+    /* 纸面方格：24px 网格，透明度压到只剩"触感" */
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 24px 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 顶部一层极淡的群青晕：压住网格的机械感，不和内容抢注意力 */
+  body::before {
+    content: '';
+    position: fixed;
+    z-index: -1;
+    inset: 0 0 auto;
+    height: 240px;
+    background: linear-gradient(180deg, rgba(36, 71, 224, .07), transparent);
+    pointer-events: none;
+  }
+  body[data-busy] { cursor: progress; }
+
+  ::selection { background: #d3dcff; }
+  * { scrollbar-width: thin; scrollbar-color: #bcc9de transparent; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb {
+    background: #bcc9de;
+    border-radius: 2px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #9fb0c9; background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
+
+  .app {
+    max-width: 1560px;
+    margin: 0 auto;
+    padding: 22px 26px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 100%;
+  }
+
+  /* ---------- header ---------- */
+  .top {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line-2);
+    flex-wrap: wrap;
+  }
+  /* 底线上的刻度：24px 一格，工程图纸的"尺" */
+  .top::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 5px;
+    background-image: repeating-linear-gradient(90deg, var(--line-2) 0 1px, transparent 1px 24px);
+    pointer-events: none;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand-mark {
+    font: 700 10.5px/1 var(--mono);
+    letter-spacing: .18em;
+    color: #fff;
+    background: var(--primary);
+    border-radius: 3px;
+    padding: 8px 10px 7px;
+    box-shadow: 2px 2px 0 var(--primary-line);
+  }
+  .brand h1 { margin: 0; font-size: 17.5px; font-weight: 700; letter-spacing: .06em; color: #101d33; }
+  .brand-sub { margin: 0; color: var(--fg-3); font-size: 11px; font-family: var(--mono); letter-spacing: .04em; }
+
+  .chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font: 10.5px/1 var(--mono);
+    letter-spacing: .08em;
+    color: var(--fg-2);
+    background: #fff;
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    padding: 7px 10px 6px;
+    white-space: nowrap;
+  }
+  /* 方点而非圆点：和整体的"仪器刻度"语汇一致 */
+  .chip .dot { width: 6px; height: 6px; border-radius: 1px; background: #a9b6cc; flex: none; }
+  .chip[data-tone="ok"] { color: #0c6a41; background: #effaf4; border-color: #b9e2cd; }
+  .chip[data-tone="ok"] .dot { background: var(--ok); }
+  .chip[data-tone="warn"] { color: #8a5205; background: #fff8ec; border-color: #eed3a8; }
+  .chip[data-tone="warn"] .dot { background: var(--warn); }
+  .chip[data-tone="err"] { color: #a92a31; background: #fdf3f3; border-color: #eec2c4; }
+  .chip[data-tone="err"] .dot { background: var(--err); }
+  .chip[data-tone="run"] { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
+  .chip[data-tone="run"] .dot { background: var(--primary); animation: pulse 1.2s ease-in-out infinite; }
+  .chip[data-tone="active"] { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
+  .chip[data-tone="active"] .dot { background: var(--primary); }
+  .chip[data-tone="busy"] .dot { animation: pulse 1.4s ease-in-out infinite; }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .chip .dot { animation: none !important; }
+    .panel { animation: none !important; }
+    .bar-fill { transition: none !important; }
+  }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    font: 12.5px/1 var(--sans);
+    font-weight: 500;
+    color: #31435f;
+    background: #fff;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    padding: 8px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    letter-spacing: .01em;
+    box-shadow: 0 1px 0 rgba(19, 31, 54, .05);
+    transition: background-color .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease, transform .08s ease;
+  }
+  .btn:hover:not(:disabled) { background: #f2f6fd; border-color: #9fb2cf; }
+  .btn:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+  .btn:focus-visible, .row:focus-within, .list:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  .btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+  /* 主按钮 = 实体按键：底部 2px 深色，按下时收回 */
+  .btn-primary {
+    background: var(--primary);
+    border-color: var(--primary-strong);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 2px 0 var(--primary-strong);
+  }
+  .btn-primary:hover:not(:disabled) { background: #1f3fd0; border-color: var(--primary-strong); }
+  .btn-primary:active:not(:disabled) { box-shadow: 0 1px 0 var(--primary-strong); }
+  .btn-danger { color: #b3272f; border-color: #ecc3c5; background: #fff; }
+  .btn-danger:hover:not(:disabled) { background: #fdf3f3; border-color: #dda1a4; }
+  .btn-mini { font: 10.5px/1 var(--mono); letter-spacing: .05em; padding: 6px 8px; color: var(--fg-2); border-radius: 3px; }
+  .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--fg-2); }
+  .btn-ghost:hover:not(:disabled) { background: #e8eefb; border-color: transparent; }
+
+  /* ---------- status strip ---------- */
+  .strip { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr) minmax(300px, 2fr); gap: 12px; }
+  .tile {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+    padding: 11px 13px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+  /* 左上角一小段群青刻度：仪表面板的"零位线" */
+  .tile::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    width: 18px;
+    height: 3px;
+    background: var(--primary);
+    border-radius: var(--r) 0 3px 0;
+  }
+  .tile-k { font: 600 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--fg-3); }
+  .tile-v { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .tile-v .dot { width: 8px; height: 8px; border-radius: 1px; background: #b6c2d6; flex: none; }
+  .tile-s { font-size: 11px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tile-v[data-state="ok"] { color: #0c6a41; }
+  .tile-v[data-state="ok"] .dot { background: var(--ok); }
+  .tile-v[data-state="warn"] { color: #8a5205; }
+  .tile-v[data-state="warn"] .dot { background: var(--warn); }
+  .tile-v[data-state="err"] { color: #a92a31; }
+  .tile-v[data-state="err"] .dot { background: var(--err); }
+
+  .banners { display: flex; flex-direction: column; gap: 8px; }
+  .banner {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    border: 1px solid;
+    border-left-width: 3px;
+    border-radius: var(--r);
+    padding: 11px 14px;
+    font-size: 12.5px;
+    box-shadow: var(--shadow);
+  }
+  .banner strong { font-size: 13px; }
+  .banner span { color: var(--fg-2); }
+  .banner-warn { border-color: #eed3a8; border-left-color: var(--warn); background: #fffcf6; }
+  .banner-warn strong { color: #8a5205; }
+  .banner-err { border-color: #eec2c4; border-left-color: var(--err); background: #fef9f9; }
+  .banner-err strong { color: #a92a31; }
+
+  /* ---------- layout ---------- */
+  .main { display: grid; grid-template-columns: minmax(430px, 1.1fr) minmax(360px, 1fr); gap: 14px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+    animation: rise .3s cubic-bezier(.22, .7, .24, 1) both;
+  }
+  .panel-hd {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 13px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #fbfcff, #f4f7fc);
+    flex-wrap: wrap;
+  }
+  .panel-hd h2 { margin: 0; font: 600 13px/1.3 var(--sans); letter-spacing: .05em; color: #101d33; }
+  /* 序号 = 图纸上的索引标签：方角 + 1px 偏移描边 */
+  .panel-hd .step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 19px;
+    padding: 0 5px;
+    font: 700 10px/1 var(--mono);
+    letter-spacing: .08em;
+    color: var(--primary-strong);
+    background: #fff;
+    border: 1px solid var(--primary-line);
+    border-radius: 3px;
+    box-shadow: 1px 1px 0 var(--primary-line);
+  }
+  .panel-hd .spacer { flex: 1 1 auto; }
+  .badge {
+    font: 10.5px/1 var(--mono);
+    letter-spacing: .04em;
+    color: var(--fg-2);
+    background: #f3f6fc;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 5px 8px;
+    white-space: nowrap;
+  }
+  .badge[data-state="active"] { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
+  .badge[data-state="ok"] { color: #0c6a41; background: #effaf4; border-color: #b9e2cd; }
+  .mini-group { display: flex; gap: 5px; }
+
+  .panel-ft {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: space-between;
+    padding: 10px 13px;
+    border-top: 1px solid var(--line);
+    background: #fcfdff;
+    flex-wrap: wrap;
+  }
+  .hint { margin: 0; font-size: 11.5px; color: var(--fg-3); min-width: 0; }
+  .panel-ft .hint { flex: 1 1 140px; }
+  .hint[data-state="warn"] { color: var(--warn); }
+  .hint b { color: var(--fg); font-weight: 600; }
+  .hint code {
+    font: 11px/1.4 var(--mono);
+    color: var(--primary-strong);
+    background: var(--primary-soft);
+    border: 1px solid #dfe5fb;
+    border-radius: 3px;
+    padding: 0 4px;
+  }
+  /* 多实验合并时的分组说明可能很长：限高滚动，不能撑爆面板 */
+  #hint-level-groups { margin: 2px 13px 0; max-height: 84px; overflow: auto; }
+
+  /* ---------- lists ---------- */
+  .list { overflow-y: auto; max-height: 252px; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+  /* 关键：滚动容器里的条目禁止被 flex 压缩，否则会出现整块叠在一起「压扁」的版式 */
+  .list > * { flex: none; }
+  .list.locked { opacity: .5; }
+  .list[data-empty="true"]::after {
+    content: attr(data-empty-text);
+    display: block;
+    padding: 20px 12px;
+    color: var(--fg-3);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  /* 选中/悬停都用「左侧 3px 标线」表示，而不是整块染色：一排里谁被选中一眼可辨 */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border: 1px solid transparent;
+    border-left: 3px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    min-width: 0;
+    transition: background-color .1s ease, border-color .1s ease;
+  }
+  .row:hover { background: #f2f6fd; border-left-color: var(--line-2); }
+  .row input { flex: none; width: 15px; height: 15px; margin: 0; cursor: pointer; }
+  .row input:disabled, .list.locked .row { cursor: not-allowed; }
+  .row:has(input:checked), .row.is-active { background: var(--primary-soft); border-color: var(--primary-line); border-left-color: var(--primary); }
+  .row:has(input:checked) .row-title, .row.is-active .row-title { color: var(--primary-strong); font-weight: 600; }
+  .row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  .row-title { font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta { font-size: 11px; color: var(--fg-3); display: flex; gap: 8px; flex-wrap: wrap; }
+  .row-side { font-size: 11px; color: var(--fg-3); flex: none; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .tag {
+    font: 600 10px/1 var(--mono);
+    letter-spacing: .05em;
+    border: 1px solid;
+    border-radius: 3px;
+    padding: 3px 6px;
+    flex: none;
+  }
+  .tag-code { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
+  .tag-choice { color: #6a34c8; background: #f7f3ff; border-color: #ded0f8; }
+  .tag-unknown { color: var(--fg-2); background: #f2f5fa; border-color: var(--line-2); }
+  .tag-end { color: var(--fg-3); background: #f6f8fb; border-color: var(--line); }
+
+  /* 多实验合并时的关卡列表：每条标出所属实验 */
+  .row-exp {
+    display: none;
+    font: 600 10px/1 var(--mono);
+    letter-spacing: .04em;
+    padding: 3px 6px;
+    border-radius: 3px;
+    flex: none;
+    color: var(--primary-strong);
+    background: var(--primary-soft);
+    border: 1px solid var(--primary-line);
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row.has-exp .row-exp { display: inline-block; }
+
+  /* ---------- progress ---------- */
+  /* 进度条画成「尺」：底纹是刻度线，填充是群青实色 */
+  .bar {
+    position: relative;
+    height: 8px;
+    background: #e6ecf7;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 12px 13px 0;
+  }
+  .bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, .75) 0 1px, transparent 1px 12px);
+    pointer-events: none;
+  }
+  /* 面板内部用的进度条：去掉为「通栏」设计的左右外边距 */
+  .bar-flush { margin: 0; }
+  .bar-fill { height: 100%; width: 0; background: var(--primary); transition: width .25s ease; }
+
+  /* 三个计数格：共用外框、内部用 1px 竖线分隔，像仪表读数 */
+  .counts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    margin: 12px 13px 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+  }
+  .count {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .counts .count { border: 0; border-left: 1px solid var(--line); border-radius: 0; background: var(--panel-2); }
+  .counts .count:first-child { border-left: 0; }
+  .count-num { font-size: 21px; font-weight: 700; line-height: 1.05; letter-spacing: -.01em; color: var(--fg); }
+  .count[data-kind="saved"] .count-num { color: var(--ok); }
+  .count[data-kind="skipped"] .count-num { color: var(--fg-2); }
+  .count[data-kind="failed"] .count-num { color: var(--err); }
+  .count-lbl { font-size: 10px; letter-spacing: .12em; color: var(--fg-3); font-family: var(--mono); }
+  .prog-ft { padding: 11px 13px 13px; display: flex; flex-direction: column; gap: 5px; }
+
+  /* ---------- recent / logs ---------- */
+  .saved-list { display: flex; flex-direction: column; max-height: 150px; overflow-y: auto; }
+  .saved-list > * { flex: none; }
+  .saved-line { display: flex; align-items: center; gap: 9px; padding: 7px 13px; border-bottom: 1px solid #eef2f9; font-size: 11.5px; min-width: 0; }
+  .saved-line:last-child { border-bottom: 0; }
+  .saved-line .row-title { flex: 1 1 auto; }
+  .saved-line .saved-path { color: var(--fg-3); font-size: 10.5px; max-width: 44%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .saved-empty { padding: 14px 13px; color: var(--fg-3); font-size: 11.5px; }
+
+  /* 日志区是整页唯一的深色锚点：长时间盯日志时反色更省眼，也给页面一个视觉落点 */
+  .log-box {
+    max-height: 520px;
+    min-height: 280px;
+    overflow-y: auto;
+    padding: 11px 0 12px;
+    font: 11.5px/1.65 var(--mono);
+    background: var(--ink);
+    border-top: 1px solid var(--ink-line);
+    color: var(--ink-fg);
+  }
+  .log-line { display: flex; gap: 10px; padding: 2px 14px; white-space: pre-wrap; word-break: break-word; }
+  .log-time { color: #5f7396; flex: none; }
+  .log-msg { color: var(--ink-fg); }
+  .log-line[data-level="warn"] .log-msg { color: #f0b45e; }
+  .log-line[data-level="error"] .log-msg { color: #ff9b9b; }
+  /* 空日志时给深色区一个去处，否则就是一大块突兀的黑 */
+  .log-box:empty::after {
+    content: '暂无日志。抓取开始后，这里会实时滚动输出。';
+    display: block;
+    padding: 0 14px;
+    color: #5f7396;
+  }
+
+  /* ---------- done ---------- */
+  .done-body { padding: 12px 13px; display: flex; flex-direction: column; gap: 10px; }
+  .done-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .done-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .done-row .k { font: 600 10px/1 var(--mono); letter-spacing: .12em; color: var(--fg-3); text-transform: uppercase; flex: none; }
+  .done-row code {
+    font: 11.5px/1.4 var(--mono);
+    color: var(--primary-strong);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 6px 9px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* ---------- 已提取内容 ---------- */
+  .extracted-body { padding: 12px 13px; display: flex; flex-direction: column; gap: 10px; }
+  .extracted-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .extracted-actions .btn { flex: 1 1 200px; }
+  .extracted-list { display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow: auto; padding: 1px; }
+  .extracted-list > * { flex: none; }
+  .extracted-group { border: 1px solid var(--line); border-radius: 4px; background: #fcfdff; }
+  .extracted-group-hd {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 11px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+    border-radius: 4px 4px 0 0;
+    font-size: 12px;
+    min-width: 0;
+  }
+  .extracted-group-hd strong { color: #1c2c48; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .extracted-group-hd .extracted-sep { color: #b7c3d6; }
+  .extracted-group-hd .spacer { flex: 1 1 auto; }
+  .extracted-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 11px;
+    font-size: 11.5px;
+    border-top: 1px solid #eef2f9;
+  }
+  .extracted-group-hd + .extracted-item { border-top: none; }
+  .extracted-item > .mono { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+  .extracted-item.is-reused > .mono { color: var(--fg-3); }
+  .extracted-tag {
+    flex: none;
+    font: 600 10px/1 var(--mono);
+    letter-spacing: .05em;
+    padding: 3px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--line-2);
+    color: var(--fg-2);
+    background: #f4f7fb;
+  }
+
+  /* ---------- toast ---------- */
+  .toast-wrap { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 9px; z-index: 20; max-width: min(440px, 92vw); }
+  .toast {
+    border: 1px solid var(--line-2);
+    border-left-width: 3px;
+    border-radius: 4px;
+    background: #fff;
+    padding: 11px 13px;
+    font-size: 12.5px;
+    box-shadow: 0 12px 28px rgba(19, 31, 54, .14);
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    color: var(--fg);
+  }
+  .toast[data-kind="error"] { border-left-color: var(--err); }
+  .toast[data-kind="error"] .toast-msg { color: #a92a31; }
+  .toast[data-kind="ok"] { border-left-color: var(--ok); }
+  .toast[data-kind="ok"] .toast-msg { color: #0c6a41; }
+  .toast[data-kind="info"] { border-left-color: var(--info); }
+  .toast[data-kind="warn"] { border-left-color: var(--warn); }
+  .toast[data-kind="warn"] .toast-msg { color: #8a5205; }
+  .toast-msg { flex: 1 1 auto; word-break: break-word; }
+  .toast-close { background: none; border: 0; color: var(--fg-3); cursor: pointer; font: 13px/1 var(--mono); padding: 0; }
+  .toast-close:hover { color: var(--fg-2); }
+
+  footer.foot {
+    color: var(--fg-3);
+    font-size: 11px;
+    font-family: var(--mono);
+    letter-spacing: .03em;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--line-2);
+    padding-top: 12px;
+    margin-top: auto;
+  }
+
+  @media (max-width: 980px) {
+    .main { grid-template-columns: 1fr; }
+    .strip { grid-template-columns: 1fr 1fr; }
+    .tile-wide { grid-column: 1 / -1; }
+    .list { max-height: 210px; }
+  }
+  @media (max-width: 560px) {
+    .app { padding: 14px 14px 20px; }
+    .strip { grid-template-columns: 1fr; }
+    .panel-ft { justify-content: stretch; }
+    .panel-ft .btn { flex: 1 1 auto; }
+    .brand h1 { font-size: 16px; }
+  }
+
+  /* ---------- AI 作答面板 ---------- */
+  /* 折叠态：只留标题行，进度仍可从标题栏徽章（badge-answer）读出 */
+  .panel.folded .answer-body { display: none; }
+  .answer-body { padding: 12px 13px; display: flex; flex-direction: column; gap: 11px; }
+  .answer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .answer-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .answer-field-wide { grid-column: 1 / -1; }
+  .answer-input {
+    font: 12px/1.4 var(--mono);
+    color: var(--fg);
+    background: #fff;
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    padding: 8px 10px;
+    min-width: 0;
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .answer-input:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(36, 71, 224, .14);
+  }
+  .answer-pickers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .answer-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    background: #fbfcff;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 9px;
+  }
+  .answer-col-hd { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-height: 26px; }
+  .answer-col .list { max-height: 212px; background: #fff; border: 1px solid var(--line); border-radius: 3px; }
+  .answer-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .answer-results { display: flex; flex-direction: column; gap: 6px; }
+  .answer-result {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-wrap: wrap;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: 3px;
+    padding: 8px 11px;
+    font: 11.5px/1.55 var(--mono);
+    color: var(--fg-2);
+    background: #fff;
+  }
+  .answer-result[data-state="ok"] { border-color: #b9e2cd; border-left-color: var(--ok); background: #f7fdf9; }
+  .answer-result[data-state="warn"] { border-color: #eed3a8; border-left-color: var(--warn); background: #fffcf6; }
+  .answer-result[data-state="err"] { border-color: #eec2c4; border-left-color: var(--err); background: #fef9f9; }
+  .answer-result b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 1100px) {
+    .answer-pickers { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark">EDUCODER</span>
+      <h1>资料提取控制台</h1>
+      <p class="brand-sub">只读抓取 · 不答题 · 不填入 · 不提交</p>
+    </div>
+    <div class="chips">
+      <span class="chip" id="chip-conn" data-tone="busy"><i class="dot"></i><span id="chip-conn-text">连接中</span></span>
+      <span class="chip" id="chip-phase" data-tone="busy"><i class="dot"></i><span id="chip-phase-text">阶段未知</span></span>
+      <button class="btn btn-ghost" id="btn-diagnose" type="button" title="在已打开的浏览器里检查 cookie、登录接口响应与时间偏差">诊断</button>
+      <button class="btn btn-ghost" id="btn-refresh" type="button" title="重新拉取 /api/state">刷新状态</button>
+    </div>
+  </header>
+
+  <section class="strip" aria-label="运行状态">
+    <div class="tile">
+      <span class="tile-k">登录状态</span>
+      <span class="tile-v" id="st-login" data-state="warn"><i class="dot"></i><span id="st-login-text">检查中</span></span>
+      <span class="tile-s mono" id="st-user">—</span>
+    </div>
+    <div class="tile">
+      <span class="tile-k">当前阶段</span>
+      <span class="tile-v" id="st-phase"><span id="st-phase-text">等待连接</span></span>
+      <span class="tile-s mono" id="st-phase-raw">—</span>
+    </div>
+    <div class="tile tile-wide">
+      <span class="tile-k">状态说明</span>
+      <span class="tile-v" id="st-message" aria-live="polite">正在读取后端状态…</span>
+      <span class="tile-s mono" id="st-logs-count">日志 0 条</span>
+    </div>
+  </section>
+
+  <div class="banners">
+    <div class="banner banner-warn" id="banner-login" hidden>
+      <strong>请在弹出的浏览器窗口完成登录</strong>
+      <span>登录完成后引擎会自动继续，无需在此点击；若界面长时间无变化，点击右上角「刷新状态」重新同步。</span>
+    </div>
+    <div class="banner banner-err" id="banner-error" hidden>
+      <strong id="banner-error-title">运行出错</strong>
+      <span id="banner-error-text"></span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="col">
+      <section class="panel" id="panel-courses">
+        <div class="panel-hd">
+          <span class="step">01</span>
+          <h2>课程</h2>
+          <span class="spacer"></span>
+          <span class="badge mono" id="badge-courses">已选 0 / 0</span>
+        </div>
+        <div class="list locked" id="list-courses" role="radiogroup" aria-label="课程列表" data-empty="true" data-empty-text="等待课程列表…"></div>
+        <div class="panel-ft">
+          <p class="hint" id="hint-courses">等待进入选择课程阶段。</p>
+          <button class="btn btn-primary" id="btn-course" type="button" disabled>确认课程并继续</button>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-experiments">
+        <div class="panel-hd">
+          <span class="step">02</span>
+          <h2>实验</h2>
+          <span class="spacer"></span>
+          <div class="mini-group">
+            <button class="btn btn-mini" type="button" data-bulk="all" data-target="experiments" disabled>全选</button>
+            <button class="btn btn-mini" type="button" data-bulk="invert" data-target="experiments" disabled>反选</button>
+            <button class="btn btn-mini" type="button" data-bulk="none" data-target="experiments" disabled>清空</button>
+          </div>
+          <span class="badge mono" id="badge-experiments">已选 0 / 0</span>
+        </div>
+        <div class="list locked" id="list-experiments" role="group" aria-label="实验列表" data-empty="true" data-empty-text="等待实验列表…"></div>
+        <div class="panel-ft">
+          <p class="hint" id="hint-experiments">等待进入选择实验阶段。</p>
+          <button class="btn btn-primary" id="btn-experiments" type="button" disabled>提取选中的实验</button>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-levels">
+        <div class="panel-hd">
+          <span class="step">03</span>
+          <h2>关卡</h2>
+          <span class="spacer"></span>
+          <div class="mini-group">
+            <button class="btn btn-mini" type="button" data-bulk="all" data-target="levels" disabled>全选</button>
+            <button class="btn btn-mini" type="button" data-bulk="invert" data-target="levels" disabled>反选</button>
+            <button class="btn btn-mini" type="button" data-bulk="none" data-target="levels" disabled>清空</button>
+          </div>
+          <span class="badge mono" id="badge-levels">已选 0 / 0</span>
+        </div>
+        <div class="list locked" id="list-levels" role="group" aria-label="关卡列表" data-empty="true" data-empty-text="等待关卡列表…"></div>
+        <p class="hint mono" id="hint-level-groups" hidden></p>
+        <div class="panel-ft">
+          <p class="hint" id="hint-levels">等待进入选择关卡阶段。</p>
+          <button class="btn btn-primary" id="btn-levels" type="button" disabled>开始抓取选中的关卡</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" id="panel-progress">
+        <div class="panel-hd">
+          <span class="step">04</span>
+          <h2>抓取进度</h2>
+          <span class="spacer"></span>
+          <span class="badge mono" id="badge-progress">0 / 0</span>
+        </div>
+        <div class="bar" id="prog-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="抓取进度">
+          <div class="bar-fill" id="prog-fill"></div>
+        </div>
+        <div class="counts">
+          <div class="count" data-kind="saved"><span class="count-num mono" id="count-saved">0</span><span class="count-lbl">已保存</span></div>
+          <div class="count" data-kind="skipped"><span class="count-num mono" id="count-skipped">0</span><span class="count-lbl">跳过</span></div>
+          <div class="count" data-kind="failed"><span class="count-num mono" id="count-failed">0</span><span class="count-lbl">失败</span></div>
+        </div>
+        <p class="hint mono" id="hint-reused" hidden></p>
+        <div class="prog-ft">
+          <span class="hint mono" id="prog-current">尚未开始</span>
+          <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="opt-redownload">
+            <span>重新下载已存在的关卡（默认跳过，不覆盖本地已有内容）</span>
+          </label>
+          <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="opt-answers-only">
+            <span>只提取答案（不写题目存档）</span>
+          </label>
+          <div class="mini-group" style="margin-top:4px">
+            <button class="btn" id="btn-start" type="button" disabled>开始提取</button>
+            <button class="btn btn-danger" id="btn-stop" type="button" disabled>停止</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-extracted" hidden>
+        <div class="panel-hd">
+          <span class="step">▣</span>
+          <h2>已提取内容</h2>
+          <span class="spacer"></span>
+          <span class="badge mono" id="extracted-badge">0</span>
+        </div>
+        <div class="extracted-body">
+          <p class="hint" id="extracted-summary">本次会话还没有提取任何内容。</p>
+          <div class="extracted-actions">
+            <button class="btn btn-primary" id="btn-restart" type="button">开始提取（清空重来）</button>
+            <button class="btn" id="btn-continue" type="button">继续提取（保留上面内容）</button>
+          </div>
+          <p class="hint" id="extracted-hint"></p>
+          <div class="extracted-list" id="extracted-list"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-done" hidden>
+        <div class="panel-hd">
+          <span class="step">✓</span>
+          <h2>提取结果</h2>
+          <span class="spacer"></span>
+          <span class="badge mono" id="done-badge">done</span>
+        </div>
+        <div class="done-body">
+          <div class="done-grid">
+            <div class="count" data-kind="saved"><span class="count-num mono" id="done-saved">0</span><span class="count-lbl">已保存</span></div>
+            <div class="count" data-kind="skipped"><span class="count-num mono" id="done-skipped">0</span><span class="count-lbl">跳过</span></div>
+            <div class="count" data-kind="failed"><span class="count-num mono" id="done-failed">0</span><span class="count-lbl">失败</span></div>
+          </div>
+          <div class="done-row">
+            <span class="k">导出目录</span>
+            <code id="done-root" title="">—</code>
+            <button class="btn btn-mini" id="btn-copy-root" type="button">复制</button>
+          </div>
+          <p class="hint" id="done-note"></p>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-answer">
+        <div class="panel-hd">
+          <span class="step">AI</span>
+          <h2>AI 作答（出答案）</h2>
+          <span class="spacer"></span>
+          <button class="btn btn-mini" id="btn-answer-refresh" type="button">刷新产物</button>
+          <span class="badge mono" id="badge-answer">0 / 0</span>
+          <button class="btn btn-mini" id="btn-answer-fold" type="button" aria-expanded="true" aria-controls="answer-body">收起 ▾</button>
+        </div>
+        <div class="answer-body" id="answer-body">
+          <p class="hint" id="answer-hint">
+            <b>这一步只出答案，不会替你提交。</b>选课程 / 实验 / 关卡（<b>关卡全不选＝该实验的全部关卡</b>）→ 点「开始 AI 作答」→ 答案写到 <code>exports/answers/</code>。
+            <br><b>真正的自动答题与提交，在头歌关卡页上的篡改猴面板里点「一键作答并提交」</b>——控制台这边没有也不会有提交按钮。
+          </p>
+
+          <div class="answer-grid">
+            <div class="answer-field">
+              <label class="hint" for="answer-base">模型接口（OpenAI 兼容）</label>
+              <input class="answer-input mono" id="answer-base" type="text" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+            </div>
+            <div class="answer-field">
+              <label class="hint" for="answer-model">模型</label>
+              <input class="answer-input mono" id="answer-model" type="text" placeholder="deepseek-chat" autocomplete="off">
+            </div>
+            <div class="answer-field answer-field-wide">
+              <label class="hint" for="answer-key">API Key（只存在本进程内存里，不落盘、不进日志）</label>
+              <input class="answer-input mono" id="answer-key" type="password" placeholder="sk-..." autocomplete="off">
+            </div>
+          </div>
+
+          <div class="answer-pickers">
+            <div class="answer-col">
+              <div class="answer-col-hd">
+                <span class="hint">课程（单选）</span>
+                <span class="badge mono" id="badge-answer-course">0 / 0</span>
+              </div>
+              <div class="list" id="list-answer-courses" data-empty="true" data-empty-text="还没有抓取产物：先在上面提取，或用 tools/build-exports.js 生成视图"></div>
+            </div>
+            <div class="answer-col">
+              <div class="answer-col-hd">
+                <span class="hint">实验（多选）</span>
+                <div class="mini-group">
+                  <button class="btn btn-mini" type="button" data-abulk="all" data-atarget="experiments">全选</button>
+                  <button class="btn btn-mini" type="button" data-abulk="none" data-atarget="experiments">清空</button>
+                </div>
+                <span class="badge mono" id="badge-answer-experiments">已选 0 / 0</span>
+              </div>
+              <div class="list" id="list-answer-experiments" data-empty="true" data-empty-text="先选课程"></div>
+            </div>
+            <div class="answer-col">
+              <div class="answer-col-hd">
+                <span class="hint">关卡（多选）</span>
+                <div class="mini-group">
+                  <button class="btn btn-mini" type="button" data-abulk="all" data-atarget="levels">全选</button>
+                  <button class="btn btn-mini" type="button" data-abulk="none" data-atarget="levels">清空</button>
+                </div>
+                <span class="badge mono" id="badge-answer-levels">已选 0 / 0</span>
+              </div>
+              <div class="list" id="list-answer-levels" data-empty="true" data-empty-text="先选实验"></div>
+            </div>
+          </div>
+
+          <div class="answer-actions">
+            <button class="btn btn-primary" id="btn-answer-run" type="button">开始 AI 作答</button>
+            <button class="btn btn-danger" id="btn-answer-stop" type="button" disabled>停止</button>
+            <button class="btn btn-mini" id="btn-answer-copy" type="button" title="把带 token 的控制台地址复制到剪贴板，粘到篡改猴的「设置本地地址」里">复制控制台地址</button>
+            <span class="hint mono" id="answer-status">尚未开始</span>
+          </div>
+          <div class="bar bar-flush" id="answer-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="AI 作答进度">
+            <div class="bar-fill" id="answer-fill"></div>
+          </div>
+          <p class="hint" id="answer-note"></p>
+          <div class="answer-results" id="answer-results"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-missing">
+        <div class="panel-hd">
+          <span class="step">缺</span>
+          <h2>缺答案清单</h2>
+          <span class="spacer"></span>
+          <button class="btn btn-mini" id="btn-missing-refresh" type="button">刷新</button>
+          <span class="badge mono" id="badge-missing">0</span>
+          <button class="btn btn-mini" id="btn-missing-clear" type="button">清空</button>
+        </div>
+        <div class="missing-body">
+          <p class="hint">
+            课堂和教学课程用的是<b>同一套本地答案</b>（按关卡标识对应 <code>exports/answers/</code>）；
+            只有<b>本地答案里找不到对应关卡、且不是虚拟机题</b>的，篡改猴在「一键答题」时才会记到这里。
+            补上答案后，在篡改猴面板点「按清单再答」即可定向过关。
+          </p>
+          <div class="list" id="list-missing" data-empty="true" data-empty-text="暂无缺答案记录"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-recent">
+        <div class="panel-hd">
+          <span class="step">·</span>
+          <h2>最近保存</h2>
+          <span class="spacer"></span>
+          <span class="badge mono" id="badge-recent">0</span>
+        </div>
+        <div class="saved-list" id="saved-list"><div class="saved-empty">暂无保存记录。</div></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel" id="panel-logs">
+    <div class="panel-hd">
+      <span class="step">·</span>
+      <h2>日志</h2>
+      <span class="spacer"></span>
+      <span class="badge mono" id="badge-logs">0</span>
+    </div>
+    <div class="log-box" id="log-box" role="log" aria-live="off"></div>
+  </section>
+
+  <footer class="foot">
+    <span>契约：GET /api/state · GET /api/events?token= · POST /api/action</span>
+    <span class="mono" id="foot-token">token —</span>
+  </footer>
+</div>
+
+<div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var TOKEN = new URLSearchParams(location.search).get('token') || '';
+  var LOG_LIMIT = 500;
+  var SAVED_LIMIT = 12;
+
+  var state = {
+    phase: '',
+    message: '',
+    user: null,
+    loggedIn: false,
+    courses: [],
+    experiments: [],
+    levels: [],
+    // 多实验统一选择时，关卡列表是「合并列表」：每条自带 experimentName。
+    levelsMulti: false,
+    levelsExperiments: [],
+    selectedCourse: null,
+    selectedExperiments: [],
+    selectedLevels: [],
+    progress: { saved: 0, skipped: 0, failed: 0, current: 0, total: 0 },
+    logs: [],
+    extracted: [],
+    done: null,
+    currentExperiment: null,
+    currentLevel: null,
+    currentType: null,
+    error: null,
+    // AI 作答任务状态：由 /api/state 快照与 SSE 的 answer 事件共同维护
+    answer: { running: false, stopped: false, course: '', experiment: '', done: 0, total: 0, message: '', results: [], log: [] }
+  };
+
+  // 本地待提交选择（用户点选后立即体现，提交成功后由后端阶段推进）
+  var sel = { courseId: null, experiments: new Set(), levels: new Set() };
+  /* AI 作答面板的本地状态：answerCourses 来自 /api/answer/targets，选中的课程/实验/关卡 */
+  var answerSel = { course: '', experiments: new Set(), levels: new Set() };
+  var answerCourses = [];
+  var recentSaved = [];
+  var logsRendered = 0;
+  var lastRendered = { courses: null, experiments: null, levels: null };
+  var connection = 'connecting';
+  var posting = false;
+  // 已应用的实时事件序号：用于识别“比快照更新”的实时状态，避免陈旧 /api/state 覆盖新事件
+  var eventSeq = 0;
+  // 已成功提交、等待引擎推进的选择阶段，避免重复提交
+  var submitted = { course: false, experiments: false, levels: false };
+  // 引擎只在进程内启动一次：start 提交成功后即上锁，直到页面重新加载
+  var started = false;
+
+  var PHASES = {
+    'starting': ['启动中', 'busy'],
+    'browser': ['启动浏览器', 'busy'],
+    'login': ['检查登录', 'busy'],
+    'waiting-login': ['等待登录', 'warn'],
+    'courses': ['读取课程列表', 'busy'],
+    'waiting-course': ['等待选择课程', 'active'],
+    'experiments': ['读取实验列表', 'busy'],
+    'waiting-experiments': ['等待选择实验', 'active'],
+    'levels': ['读取关卡列表', 'busy'],
+    'waiting-levels': ['等待选择关卡', 'active'],
+    'running': ['抓取中', 'run'],
+    'stopping': ['正在停止', 'warn'],
+    'done': ['已完成', 'ok'],
+    'error': ['出错', 'err']
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function toArray(value) { return Array.isArray(value) ? value : []; }
+  function num(value) { var n = Number(value); return Number.isFinite(n) ? n : 0; }
+
+  // 注意：这里必须与后端实际会推送的事件类型保持一致，否则事件会在入口处被丢弃
+  // （曾因缺少 reused/reset，导致「已提取内容」既统计不到复用、也无法被清空；
+  //  又曾因缺 answer，AI 作答进度整条链在前端被丢光，面板恒显示「尚未开始」）。
+  var EVENT_TYPES = ['status', 'courses', 'experiments', 'levels', 'progress', 'saved', 'reused', 'dropped', 'reset', 'log', 'done', 'error', 'answer'];
+  var AFTER_LOGIN_PHASES = ['courses', 'waiting-course', 'experiments', 'waiting-experiments',
+    'levels', 'waiting-levels', 'running', 'stopping', 'done'];
+
+  // 事件信封的 type 与 saved 载荷里的题目 type(code/choice/text) 同名，因此判定顺序为：
+  // SSE 的 event 名 > data.type（是已知事件名时）> 载荷结构 > 未知丢弃。
+  function detectEventType(named, data) {
+    if (EVENT_TYPES.indexOf(named) >= 0) return named;
+    if (EVENT_TYPES.indexOf(data.type) >= 0) return data.type;
+    if (data.path != null || (data.title != null && data.images !== undefined)) return 'saved';
+    if (data.exportRoot != null || 'stopped' in data) return 'done';
+    if (data.phase != null) return 'status';
+    if (Array.isArray(data.courses)) return 'courses';
+    if (Array.isArray(data.experiments)) return 'experiments';
+    if (Array.isArray(data.levels)) return 'levels';
+    if (data.message != null && data.level != null) return 'log';
+    if (data.current != null || data.total != null || data.saved != null) return 'progress';
+    return '';
+  }
+
+  function applyWireEvent(named, data) {
+    if (!data || typeof data !== 'object') return;
+    var type = detectEventType(named, data);
+    if (EVENT_TYPES.indexOf(type) < 0) return;
+    applyEvent(type, data);
+  }
+
+  function el(tag, opts, children) {    var node = document.createElement(tag);
+    opts = opts || {};
+    if (opts.class) node.className = opts.class;
+    if (opts.text != null) node.textContent = String(opts.text);
+    if (opts.attrs) {
+      Object.keys(opts.attrs).forEach(function (key) {
+        var value = opts.attrs[key];
+        if (value === false || value == null) return;
+        node.setAttribute(key, value === true ? '' : String(value));
+      });
+    }
+    if (opts.props) Object.assign(node, opts.props);
+    if (opts.on) {
+      Object.keys(opts.on).forEach(function (key) { node.addEventListener(key, opts.on[key]); });
+    }
+    toArray(children).forEach(function (child) {
+      if (child == null) return;
+      node.append(child);
+    });
+    return node;
+  }
+
+  function formatTime(value) {
+    var date = value ? new Date(value) : new Date();
+    if (isNaN(date.getTime())) return String(value || '').slice(-8);
+    function pad(n) { return String(n).padStart(2, '0'); }
+    return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+  }
+
+  function typeTag(type) {
+    var value = String(type || 'unknown');
+    var cls = value === 'code' ? 'tag-code' : value === 'choice' ? 'tag-choice' : 'tag-unknown';
+    var label = value === 'code' ? 'code 编程题' : value === 'choice' ? 'choice 选择题' : 'unknown 未知';
+    return el('span', { class: 'tag ' + cls, text: value, attrs: { title: label } });
+  }
+
+  /* ------------------------------ toast ------------------------------ */
+
+  function toast(message, kind) {
+    var wrap = $('toast-wrap');
+    var box = el('div', { class: 'toast', attrs: { 'data-kind': kind || 'info', role: 'status' } }, [
+      el('span', { class: 'toast-msg', text: message }),
+      el('button', {
+        class: 'toast-close',
+        text: '×',
+        attrs: { type: 'button', 'aria-label': '关闭提示' },
+        on: { click: function () { box.remove(); } }
+      })
+    ]);
+    wrap.append(box);
+    setTimeout(function () { box.remove(); }, kind === 'error' ? 9000 : 5000);
+  }
+
+  /* ------------------------------ actions ------------------------------ */
+
+  async function postAction(action, payload) {
+    if (!TOKEN) throw new Error('URL 缺少 token，请使用终端输出的地址打开本页');
+    if (posting) throw new Error('上一个操作仍在提交中，请稍候');
+    posting = true;
+    try {
+      var body = Object.assign({ action: action, token: TOKEN }, payload || {});
+      var response = await fetch('/api/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = null;
+      try { data = await response.json(); } catch (error) { data = null; }
+      if (!response.ok || (data && data.ok === false)) {
+        throw new Error((data && data.error) || ('操作失败：HTTP ' + response.status));
+      }
+      return data || { ok: true };
+    } finally {
+      posting = false;
+    }
+  }
+
+  function runAction(action, payload, label) {
+    setBusy(true);
+    return postAction(action, payload)
+      .then(function () {
+        if (action === 'select-course') submitted.course = true;
+        if (action === 'select-experiments') submitted.experiments = true;
+        if (action === 'select-levels') submitted.levels = true;
+        if (action === 'start') started = true;
+        toast(label + '：已提交，等待引擎响应', 'ok');
+        // 服务端动作会直接改写快照（含动作失败日志），静默重新同步一次
+        return fetchState(true);
+      })
+      .catch(function (error) { toast(label + '失败：' + error.message, 'error'); })
+      .finally(function () { setBusy(false); });
+  }
+
+  function setBusy(busy) {
+    document.body.toggleAttribute('data-busy', busy);
+    renderControls();
+  }
+
+  /* ------------------------------ snapshot / event merge ------------------------------ */
+
+  function normalizeId(value) {
+    if (value == null) return null;
+    if (typeof value === 'object') return value.id != null ? value.id : null;
+    return value;
+  }
+
+  function syncSelectionFromServer() {
+    var courseId = normalizeId(state.selectedCourse);
+    if (courseId != null) sel.courseId = courseId;
+
+    var experiments = toArray(state.selectedExperiments);
+    if (experiments.length) {
+      var indices = experiments
+        .map(function (item) {
+          if (typeof item === 'number') return item;
+          if (item && typeof item === 'object') {
+            var found = lookupExperiment(item);
+            return found >= 0 ? found : null;
+          }
+          return null;
+        })
+        .filter(function (value) { return value != null && Number.isInteger(value); });
+      if (indices.length) sel.experiments = new Set(indices);
+    }
+
+    var levels = toArray(state.selectedLevels);
+    if (levels.length) {
+      // 服务端回传的是引擎眼中的选中关卡，按 levelKey 的优先级反查勾选状态。
+      var keys = levels
+        .map(function (item) {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            if (item.identifier != null && String(item.identifier) !== '') return 'id:' + String(item.identifier);
+            if (item.challengeId != null && String(item.challengeId) !== '') return 'cid:' + String(item.challengeId);
+            var position = Number(item.position != null ? item.position : item.index);
+            if (Number.isFinite(position) && position > 0) return 'pos:' + position;
+          }
+          return null;
+        })
+        .filter(Boolean);
+      if (keys.length) sel.levels = new Set(keys);
+    }
+  }
+
+  function lookupExperiment(candidate) {
+    for (var i = 0; i < state.experiments.length; i += 1) {
+      var item = state.experiments[i];
+      if (candidate.homeworkId != null && item.homeworkId === candidate.homeworkId) return i;
+      if (candidate.myshixunIdentifier && item.myshixunIdentifier === candidate.myshixunIdentifier) return i;
+      if (candidate.name && item.name === candidate.name) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * 一轮提取结束后，引擎会把阶段推回 starting（浏览器保持打开，可直接再抓）。
+   * 这时必须清掉上一轮的「已提交/已启动」闸门，否则「开始提取」会一直是灰的
+   * ——用户会以为只能点一次。数据数组由各自的快照/事件分支负责，这里只管闸门。
+   */
+  var TERMINAL_PHASES = ['done', 'error', 'stopping'];
+  function resetRunGates(nextPhase, previousPhase) {
+    if (nextPhase !== 'starting') return false;
+    if (TERMINAL_PHASES.indexOf(previousPhase) === -1) return false;
+    started = false;
+    submitted.course = false;
+    submitted.experiments = false;
+    submitted.levels = false;
+    sel.courseId = null;
+    sel.experiments = new Set();
+    sel.levels = new Set();
+    state.currentLevel = '';
+    state.currentType = '';
+    doneDismissed = false; // 新一轮开始，结果面板恢复可显示
+    return true;
+  }
+
+  function applySnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    var previousPhase = state.phase;
+    if (snapshot.phase != null) {
+      if (resetRunGates(String(snapshot.phase), previousPhase)) state.done = null;
+      state.phase = String(snapshot.phase);
+    }
+    if (snapshot.message != null) state.message = String(snapshot.message);
+    if ('user' in snapshot) state.user = snapshot.user == null ? null : String(snapshot.user);
+    if ('loggedIn' in snapshot) state.loggedIn = Boolean(snapshot.loggedIn);
+    if ('courses' in snapshot) state.courses = toArray(snapshot.courses);
+    if ('experiments' in snapshot) state.experiments = toArray(snapshot.experiments);
+    if ('levels' in snapshot) state.levels = toArray(snapshot.levels);
+    if ('selectedCourse' in snapshot) state.selectedCourse = snapshot.selectedCourse;
+    if ('selectedExperiments' in snapshot) state.selectedExperiments = toArray(snapshot.selectedExperiments);
+    if ('selectedLevels' in snapshot) state.selectedLevels = toArray(snapshot.selectedLevels);
+    if (snapshot.progress && typeof snapshot.progress === 'object') mergeProgress(snapshot.progress, true);
+    if ('done' in snapshot) state.done = snapshot.done || null;
+    if (Array.isArray(snapshot.logs)) {
+      state.logs = snapshot.logs.slice(-LOG_LIMIT);
+      logsRendered = 0;
+      $('log-box').replaceChildren();
+    }
+    if (Array.isArray(snapshot.extracted)) {
+      state.extracted = snapshot.extracted.slice();
+      renderExtracted();
+    }
+    // AI 作答状态也随快照恢复：刷新页面后仍能看到上一轮的进度与结果。
+    if (snapshot.answer && typeof snapshot.answer === 'object') mergeAnswer(snapshot.answer);
+    syncSelectionFromServer();
+    renderAll({ forceLists: true });
+    syncLogs();
+    if (state.done) renderDone();
+  }
+
+  function mergeProgress(progress, quiet) {
+    ['saved', 'skipped', 'failed', 'current', 'total'].forEach(function (key) {
+      if (progress[key] != null) state.progress[key] = num(progress[key]);
+    });
+    if (progress.experimentName != null) state.currentExperiment = progress.experimentName;
+    if (progress.levelName != null) state.currentLevel = progress.levelName;
+    if (progress.levelType != null) state.currentType = progress.levelType;
+    if (!quiet) renderProgress();
+  }
+
+  /**
+   * 合并 AI 作答任务状态（快照与 SSE 的 answer 事件共用）。
+   *
+   * 后端每次 `publishAnswer` 都发全量字段，这里逐字段取；
+   * 不用整包覆盖是为了避免某个字段缺失时把已有信息（如上一轮的 results）抹掉。
+   */
+  function mergeAnswer(data) {
+    if (!data || typeof data !== 'object') return;
+    var answer = state.answer || (state.answer = {});
+    ['running', 'stopped'].forEach(function (key) {
+      if (data[key] != null) answer[key] = Boolean(data[key]);
+    });
+    ['course', 'experiment', 'message'].forEach(function (key) {
+      if (data[key] != null) answer[key] = String(data[key]);
+    });
+    ['done', 'total'].forEach(function (key) {
+      if (data[key] != null) answer[key] = num(data[key]);
+    });
+    if (Array.isArray(data.results)) answer.results = data.results.slice();
+    if (Array.isArray(data.log)) answer.log = data.log.slice(-200);
+    renderAnswerStatus();
+  }
+
+  function applyEvent(type, data) {
+    if (!data || typeof data !== 'object') return;
+    eventSeq += 1;
+    var previousPhase = state.phase;
+
+    switch (type) {
+      case 'status':
+        if (data.phase != null) {
+          if (resetRunGates(String(data.phase), previousPhase)) state.done = null;
+          state.phase = String(data.phase);
+        }
+        state.message = data.message != null ? String(data.message) : '';
+        if ('user' in data) state.user = data.user == null ? null : String(data.user);
+        if ('loggedIn' in data) state.loggedIn = Boolean(data.loggedIn);
+        if (data.user || AFTER_LOGIN_PHASES.indexOf(state.phase) >= 0) state.loggedIn = true;
+        if (state.phase === 'waiting-login' || state.phase === 'login' || state.phase === 'starting') state.loggedIn = Boolean(data.loggedIn);
+        if (data.phase && data.phase !== 'error') state.error = null;
+        break;
+      case 'courses':
+        state.courses = toArray(data.courses);
+        break;
+      case 'experiments':
+        state.experiments = toArray(data.experiments);
+        if (data.course) state.selectedCourse = data.course;
+        sel.experiments = new Set();
+        break;
+      case 'levels':
+        state.levels = toArray(data.levels);
+        // 多实验统一选择时，引擎会一次性推来合并列表（每条带 experimentName）。
+        state.levelsMulti = Boolean(data.multi);
+        state.levelsExperiments = toArray(data.experimentNames);
+        sel.levels = new Set();
+        break;
+      case 'answer':
+        state.answer = data;
+        renderAnswerStatus();
+        break;
+      case 'progress':
+        mergeProgress(data);
+        break;
+      case 'saved':
+        pushSaved(data);
+        // 与服务端快照保持一致：每条 saved 事件计入已保存（后续 progress 事件会覆盖为权威值）
+        state.progress.saved = num(state.progress.saved) + 1;
+        appendExtractedLocal(data, data.status === 'reused' ? 'reused' : 'saved');
+        renderProgress();
+        renderExtracted();
+        break;
+      case 'reused':
+        appendExtractedLocal(data, 'reused');
+        renderExtracted();
+        break;
+      case 'dropped':
+        // 题型白名单：非编程题/选择题（虚拟机、图形化、纯问答）一律抛弃，界面要说清原因。
+        pushLog({
+          time: new Date().toISOString(),
+          level: 'warn',
+          message: '抛弃非编程题/选择题的关卡：' + (data.title || data.level || '未命名') +
+            (data.reason ? '（' + data.reason + '）' : '')
+        });
+        state.progress.dropped = num(state.progress.dropped) + 1;
+        renderProgress();
+        break;
+      case 'reset':
+        // 「开始提取」：服务端已清空，本地同步清掉上一轮的列表与已提取内容
+        state.courses = [];
+        state.experiments = [];
+        state.levels = [];
+        state.levelsMulti = false;
+        state.levelsExperiments = [];
+        state.selectedCourse = null;
+        state.selectedExperiments = [];
+        state.selectedLevels = [];
+        state.extracted = [];
+        state.done = null;
+        state.progress = { saved: 0, skipped: 0, failed: 0, current: 0, total: 0, dropped: 0 };
+        sel.courseId = null;
+        sel.experiments = new Set();
+        sel.levels = new Set();
+        doneDismissed = false;
+        started = false;
+        renderDone();
+        renderExtracted();
+        break;
+      case 'answer':
+        // AI 作答任务：整包覆盖（后端每次 publishAnswer 都发全量字段）
+        mergeAnswer(data);
+        break;
+      case 'log':
+        pushLog({ time: new Date().toISOString(), level: data.level || 'info', message: data.message || '' });
+        break;
+      case 'done':
+        state.done = data;
+        // done 事件自带完整「已提取内容」：SSE 是短命的，以它为准可避免丢条目。
+        if (Array.isArray(data.extracted) && data.extracted.length) {
+          state.extracted = data.extracted.slice();
+          renderExtracted();
+        }
+        if (!state.phase || state.phase !== 'done') state.phase = 'done';
+        renderDone();
+        break;
+      case 'error':
+        state.error = data.message || '未知错误';
+        pushLog({ time: new Date().toISOString(), level: 'error', message: state.error });
+        break;
+      default:
+        break;
+    }
+
+    renderAll();
+    syncLogs();
+    if (type === 'done') renderDone();
+    if (previousPhase !== state.phase) onPhaseChanged(previousPhase);
+  }
+
+  function onPhaseChanged(previousPhase) {
+    renderDone();
+    // 阶段推进说明后端已消费上一轮选择：清掉已提交标记与过期的本地勾选
+    submitted = { course: false, experiments: false, levels: false };
+    if (state.phase === 'waiting-experiments' && previousPhase !== 'waiting-experiments') sel.experiments = new Set();
+    if (state.phase === 'waiting-levels' && previousPhase !== 'waiting-levels') sel.levels = new Set();
+    renderAll();
+  }
+
+  /* ------------------------------ rendering ------------------------------ */
+
+  function phaseInfo(phase) {
+    if (PHASES[phase]) return { label: PHASES[phase][0], tone: PHASES[phase][1] };
+    return { label: phase ? '阶段：' + phase : '未知阶段', tone: 'busy' };
+  }
+
+  function can(what) {
+    var phase = state.phase;
+    switch (what) {
+      case 'course': return phase === 'waiting-course';
+      case 'experiments': return phase === 'waiting-experiments';
+      case 'levels': return phase === 'waiting-levels';
+      // 引擎启动前快照阶段为 starting；启动后由引擎推送后续阶段
+      // 引擎启动前快照阶段为 starting；启动后由引擎推送后续阶段。
+      // 终态（done/error/stopping）也要允许再次启动——一轮结束后浏览器仍开着，
+      // 可以直接换课程/实验继续抓（曾经这里只允许 starting，导致「只能提取一次」）。
+      case 'start': return !started && TERMINAL_PHASES.concat('starting', 'stopping').indexOf(phase) >= 0;
+      // 只要引擎还活着（不是启动前、也没结束/出错）就允许请求停止。
+      // 这里用「排除」而不是枚举：枚举曾漏掉 courses / levels 等阶段，
+      // 导致读课程或读实验时「停止」按钮是灰的、用户无法中止。
+      case 'stop': return phase !== 'starting' && phase !== 'done' && phase !== 'error';
+      default: return false;
+    }
+  }
+
+  function renderAll(options) {
+    options = options || {};
+    renderChrome();
+    renderCourses(options.forceLists);
+    renderExperiments(options.forceLists);
+    renderLevels(options.forceLists);
+    renderProgress();
+    renderControls();
+    renderSelectionBadges();
+    renderRecentlySaved();
+    renderExtracted();
+    renderAnswerStatus();
+  }
+
+  function renderChrome() {
+    var info = phaseInfo(state.phase);
+    var chip = $('chip-phase');
+    chip.dataset.tone = info.tone;
+    $('chip-phase-text').textContent = info.label;
+
+    $('st-phase-text').textContent = info.label;
+    $('st-phase-raw').textContent = state.phase || '—';
+    $('st-phase-raw').title = state.phase || '';
+
+    var login = $('st-login');
+    if (state.loggedIn) {
+      login.dataset.state = 'ok';
+      $('st-login-text').textContent = '已登录';
+    } else if (state.phase === 'waiting-login' || state.phase === 'login' || state.phase === 'starting' || state.phase === 'browser') {
+      login.dataset.state = 'warn';
+      $('st-login-text').textContent = '未登录';
+    } else {
+      login.dataset.state = 'err';
+      $('st-login-text').textContent = '未登录';
+    }
+    $('st-user').textContent = state.user ? '账号 ' + state.user : '未识别账号';
+
+    $('st-message').textContent = state.message || (state.phase ? info.label : '正在读取后端状态…');
+    $('st-logs-count').textContent = '日志 ' + state.logs.length + ' 条 · 阶段 ' + (state.phase || '未知');
+
+    var conn = $('chip-conn');
+    if (connection === 'open') {
+      conn.dataset.tone = 'ok';
+      $('chip-conn-text').textContent = 'SSE 已连接';
+    } else if (connection === 'connecting') {
+      conn.dataset.tone = 'busy';
+      $('chip-conn-text').textContent = 'SSE 连接中';
+    } else {
+      conn.dataset.tone = 'err';
+      $('chip-conn-text').textContent = 'SSE 已断开，重连中';
+    }
+
+    $('banner-login').hidden = state.phase !== 'waiting-login';
+
+    var banner = $('banner-error');
+    if (!TOKEN) {
+      banner.hidden = false;
+      $('banner-error-title').textContent = '缺少访问 token';
+      $('banner-error-text').textContent = '请使用终端输出的完整地址（含 ?token=… ）打开本页面。';
+    } else if (state.error) {
+      banner.hidden = false;
+      $('banner-error-title').textContent = state.phase === 'error' ? '运行出错' : '操作提示';
+      $('banner-error-text').textContent = state.error;
+    } else {
+      banner.hidden = true;
+    }
+
+    $('foot-token').textContent = TOKEN ? 'token ' + TOKEN.slice(0, 8) + '…' : 'token 缺失';
+  }
+
+  function listEl(kind) { return $('list-' + kind); }
+
+  function renderCourses(force) {
+    var data = state.courses;
+    if (!force && lastRendered.courses === data) return;
+    lastRendered.courses = data;
+    var box = listEl('courses');
+    if (!data.length) {
+      box.replaceChildren();
+      box.dataset.empty = 'true';
+      box.dataset.emptyText = state.phase === 'waiting-course'
+        ? '没有读取到课程。请确认账号已登录且课程接口可用。'
+        : '等待读取课程列表…';
+      return;
+    }
+    box.dataset.empty = 'false';
+    box.replaceChildren.apply(box, data.map(function (course, index) {
+      var id = course && course.id != null ? course.id : index;
+      var meta = [];
+      if (course && course.school) meta.push(String(course.school));
+      if (course && course.membersCount != null) meta.push(num(course.membersCount) + ' 名成员');
+      if (course && course.visits != null) meta.push(num(course.visits) + ' 次访问');
+      // homeworkCommonsCount 是「作业总数」而非可抓取的实训数，且 courses.json 里该字段
+      // 常为 0/缺失，直接显示会误导（实际实训数要选中课程后才取得到）。
+      if (course && course.homeworkCommonsCount) meta.push(num(course.homeworkCommonsCount) + ' 个作业');
+      var side = [];
+      if (course && course.classroomCode) side.push(String(course.classroomCode));
+      else if (course && course.id != null) side.push('id ' + course.id);
+
+      var input = el('input', {
+        attrs: { type: 'radio', name: 'course' },
+        props: { checked: String(sel.courseId) === String(id), value: String(id) }
+      });
+      input.addEventListener('change', function () {
+        if (!can('course')) { input.checked = false; return; }
+        sel.courseId = id;
+        submitted.course = false;
+        renderControls();
+        renderSelectionBadges();
+      });
+
+      return el('label', { class: 'row', attrs: { title: (course && course.name) || '' } }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-title', text: (course && course.name) || '未命名课程' }),
+          el('span', { class: 'row-meta' }, meta.map(function (text) { return el('span', { text: text }); }))
+        ]),
+        course && course.isEnd ? el('span', { class: 'tag tag-end', text: '已结课' }) : null,
+        el('span', { class: 'row-side mono', text: side.join(' · '), attrs: { title: side.join(' · ') } })
+      ]);
+    }));
+  }
+
+  function renderExperiments(force) {
+    var data = state.experiments;
+    if (!force && lastRendered.experiments === data) return;
+    lastRendered.experiments = data;
+    var box = listEl('experiments');
+    if (!data.length) {
+      box.replaceChildren();
+      box.dataset.empty = 'true';
+      box.dataset.emptyText = state.phase === 'waiting-experiments'
+        ? '该课程下没有可提取的实训实验。'
+        : '等待读取实验列表…';
+      return;
+    }
+    box.dataset.empty = 'false';
+    box.replaceChildren.apply(box, data.map(function (item, index) {
+      var input = el('input', {
+        attrs: { type: 'checkbox' },
+        props: { checked: sel.experiments.has(index) }
+      });
+      input.addEventListener('change', function () {
+        if (!can('experiments')) { input.checked = sel.experiments.has(index); return; }
+        if (input.checked) sel.experiments.add(index); else sel.experiments.delete(index);
+        submitted.experiments = false;
+        renderControls();
+        renderSelectionBadges();
+      });
+      var meta = [];
+      if (item && item.taskCount != null) meta.push(num(item.taskCount) + ' 个关卡');
+      else meta.push('关卡数未知');
+      if (item && item.homeworkId != null) meta.push('homeworkId ' + item.homeworkId);
+      return el('label', { class: 'row', attrs: { title: (item && item.name) || '' } }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-title', text: (item && item.name) || '未命名实验' }),
+          el('span', { class: 'row-meta' }, meta.map(function (text) { return el('span', { text: text }); }))
+        ]),
+        el('span', {
+          class: 'row-side mono',
+          text: item && item.myshixunIdentifier ? String(item.myshixunIdentifier) : '',
+          attrs: { title: item && item.myshixunIdentifier ? String(item.myshixunIdentifier) : '' }
+        })
+      ]);
+    }));
+  }
+
+  function renderLevels(force) {
+    var data = state.levels;
+    if (!force && lastRendered.levels === data) return;
+    lastRendered.levels = data;
+    var groupHint = $('hint-level-groups');
+    if (groupHint) {
+      var text = levelGroupHintText();
+      groupHint.textContent = text;
+      groupHint.hidden = !text;
+    }
+    var box = listEl('levels');
+    if (!data.length) {
+      box.replaceChildren();
+      box.dataset.empty = 'true';
+      box.dataset.emptyText = state.phase === 'waiting-levels'
+        ? '关卡接口未返回列表，可直接开始，引擎会按关卡链自动遍历。'
+        : '等待读取关卡列表…';
+      return;
+    }
+    box.dataset.empty = 'false';
+    box.replaceChildren.apply(box, data.map(function (level, index) {
+      var key = levelKey(level, index);
+      // 右侧展示的短标识：优先真实 identifier，无标识时退回序号（不能引用未定义变量，
+      // 否则整个关卡列表渲染会抛错、一个条目都出不来）。
+      var identifier = level && level.identifier
+        ? String(level.identifier)
+        : level && level.position != null
+          ? '第 ' + num(level.position) + ' 关'
+          : '#' + (index + 1);
+      var input = el('input', {
+        attrs: { type: 'checkbox' },
+        props: { checked: sel.levels.has(key) }
+      });
+      input.addEventListener('change', function () {
+        if (!can('levels')) { input.checked = sel.levels.has(key); return; }
+        if (input.checked) sel.levels.add(key); else sel.levels.delete(key);
+        submitted.levels = false;
+        renderControls();
+        renderSelectionBadges();
+      });
+      var meta = [];
+      // 多实验会合并成一份关卡列表：必须标出每条属于哪个实验，
+      // 否则用户会以为「只列出了第一个实验的关卡」。
+      if (level && level.experimentName) meta.push(level.experimentName);
+      if (level && level.index != null) meta.push('第 ' + num(level.index) + ' 关');
+      return el('label', {
+        class: 'row' + (level && level.experimentName ? ' has-exp' : ''),
+        attrs: { title: (level && level.name) || '' }
+      }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-exp', text: (level && level.experimentName) || '' }),
+          el('span', { class: 'row-title', text: (level && level.name) || '未命名关卡' }),
+          el('span', { class: 'row-meta' }, meta.map(function (text) { return el('span', { text: text }); }))
+        ]),
+        typeTag(level && level.type),
+        el('span', { class: 'row-side mono', text: identifier, attrs: { title: identifier } })
+      ]);
+    }));
+  }
+
+  function renderSelectionBadges() {
+    $('badge-courses').textContent = '已选 ' + (sel.courseId != null ? 1 : 0) + ' / ' + state.courses.length;
+    $('badge-courses').dataset.state = sel.courseId != null ? 'active' : '';
+    $('badge-experiments').textContent = '已选 ' + sel.experiments.size + ' / ' + state.experiments.length;
+    $('badge-experiments').dataset.state = sel.experiments.size ? 'active' : '';
+    $('badge-levels').textContent = '已选 ' + sel.levels.size + ' / ' + state.levels.length;
+    $('badge-levels').dataset.state = sel.levels.size ? 'active' : '';
+  }
+
+  function renderProgress() {
+    var progress = state.progress;
+    var total = num(progress.total);
+    var current = num(progress.current);
+    var percent = total > 0 ? Math.max(0, Math.min(100, Math.round((current / total) * 100))) : 0;
+    $('prog-fill').style.width = percent + '%';
+    $('prog-bar').setAttribute('aria-valuenow', String(percent));
+    $('badge-progress').textContent = current + ' / ' + total;
+    $('count-saved').textContent = num(progress.saved);
+    $('count-skipped').textContent = num(progress.skipped);
+    $('count-failed').textContent = num(progress.failed);
+    // 本地已存在、未重复抓取的关卡数（第二次提取时最有用）
+    var reusedHint = $('hint-reused');
+    if (reusedHint) {
+      var hints = [];
+      var reused = num(progress.existing);
+      if (reused > 0) hints.push('已存在 ' + reused + ' 关，未重复抓取');
+      var dropped = num(progress.dropped);
+      if (dropped > 0) hints.push('抛弃非编程题/选择题 ' + dropped + ' 关');
+      reusedHint.textContent = hints.join('；');
+      reusedHint.hidden = hints.length === 0;
+    }
+
+    var parts = [];
+    if (state.currentExperiment) parts.push('实验：' + state.currentExperiment);
+    if (state.currentLevel) parts.push('关卡：' + state.currentLevel);
+    if (state.currentType) parts.push('类型：' + state.currentType);
+    if (!parts.length) {
+      if (can('start')) parts.push('等待启动：点击「开始提取」启动引擎');
+      else parts.push(total > 0 ? '准备中…' : '尚未开始');
+    }
+    $('prog-current').textContent = parts.join(' · ');
+  }
+
+  function renderControls() {
+    var courseOn = can('course') && !posting;
+    var experimentsOn = can('experiments') && !posting;
+    var levelsOn = can('levels') && !posting;
+    var startOn = can('start') && !posting;
+    var stopOn = can('stop') && !posting;
+
+    listEl('courses').classList.toggle('locked', !courseOn);
+    listEl('experiments').classList.toggle('locked', !experimentsOn);
+    listEl('levels').classList.toggle('locked', !levelsOn);
+    listEl('courses').querySelectorAll('input').forEach(function (input) { input.disabled = !courseOn; });
+    listEl('experiments').querySelectorAll('input').forEach(function (input) { input.disabled = !experimentsOn; });
+    listEl('levels').querySelectorAll('input').forEach(function (input) { input.disabled = !levelsOn; });
+
+    document.querySelectorAll('[data-bulk]').forEach(function (button) {
+      var target = button.dataset.target;
+      var enabled = target === 'experiments' ? experimentsOn : levelsOn;
+      var hasItems = target === 'experiments' ? state.experiments.length > 0 : state.levels.length > 0;
+      button.disabled = !(enabled && hasItems);
+    });
+
+    var courseButton = $('btn-course');
+    courseButton.disabled = !(courseOn && sel.courseId != null && !submitted.course);
+    $('hint-courses').textContent = hintFor('course', courseOn);
+    $('hint-courses').dataset.state = courseOn && sel.courseId == null ? 'warn' : '';
+
+    var experimentsButton = $('btn-experiments');
+    experimentsButton.disabled = !(experimentsOn && sel.experiments.size > 0 && !submitted.experiments);
+    experimentsButton.textContent = sel.experiments.size
+      ? '提取选中的 ' + sel.experiments.size + ' 个实验'
+      : '提取选中的实验';
+    $('hint-experiments').textContent = hintFor('experiments', experimentsOn);
+    $('hint-experiments').dataset.state = experimentsOn && sel.experiments.size === 0 ? 'warn' : '';
+
+    var levelsButton = $('btn-levels');
+    var noLevelData = levelsOn && state.levels.length === 0;
+    levelsButton.disabled = !(levelsOn && (sel.levels.size > 0 || noLevelData) && !submitted.levels);
+    levelsButton.textContent = state.levels.length === 0 && levelsOn
+      ? '开始抓取（自动遍历全部关卡）'
+      : sel.levels.size ? '开始抓取选中的 ' + sel.levels.size + ' 个关卡' : '开始抓取选中的关卡';
+    $('hint-levels').textContent = hintFor('levels', levelsOn);
+    $('hint-levels').dataset.state = levelsOn && sel.levels.size === 0 && state.levels.length > 0 ? 'warn' : '';
+
+    var startButton = $('btn-start');
+    startButton.disabled = !startOn;
+    startButton.textContent = '开始提取';
+    startButton.classList.toggle('btn-primary', startOn && state.phase === 'starting');
+    startButton.title = startOn
+      ? '启动引擎并打开抓取用的浏览器窗口'
+      : (started ? '引擎已启动' : '当前阶段不可启动：' + (state.phase || '未知'));
+    $('btn-stop').disabled = !stopOn;
+    $('btn-stop').title = stopOn ? '请求停止当前任务' : '当前阶段不可停止';
+  }
+
+  /**
+   * 关卡列表说明：多实验合并时明确写出涉及几个实验，
+   * 避免用户误以为「只列出了第一个实验的关卡」。
+   */
+  function levelScopeHint() {
+    var names = [];
+    state.levels.forEach(function (level) {
+      var name = level && level.experimentName;
+      if (name && names.indexOf(name) < 0) names.push(name);
+    });
+    if (names.length <= 1) return '';
+    return '（来自 ' + names.length + ' 个实验：' + names.join('、') + '）';
+  }
+
+  /** 关卡区的分组说明：多实验合并列表时逐行标出所属实验，并给出统计。 */
+  function levelGroupHintText() {
+    var counts = [];
+    state.levels.forEach(function (level) {
+      var name = level && level.experimentName;
+      if (!name) return;
+      var hit = counts.filter(function (item) { return item.name === name; })[0];
+      if (hit) hit.count += 1;
+      else counts.push({ name: name, count: 1 });
+    });
+    if (counts.length <= 1) return '';
+    return '共 ' + state.levels.length + ' 关，来自 ' + counts.length + ' 个实验：' +
+      counts.map(function (item) { return item.name + ' ' + item.count + ' 关'; }).join('、');
+  }
+
+  function hintFor(kind, enabled) {
+    if (posting) return '正在提交操作…';
+    if (enabled) {
+      if (submitted[kind]) return '已提交选择，等待引擎推进到下一阶段…';
+      if (kind === 'course') return sel.courseId != null ? '已选中课程，点击右侧按钮提交。' : '请选择一个课程（单选）。';
+      if (kind === 'experiments') {
+        return state.experiments.length
+          ? (sel.experiments.size ? '已选 ' + sel.experiments.size + ' 个实验，点击右侧按钮开始。' : '请勾选实验，可多选或使用「全选 / 反选」。')
+          : '当前课程没有可选的实训实验。';
+      }
+      return state.levels.length
+        ? (sel.levels.size
+            ? '已选 ' + sel.levels.size + ' 个关卡' + levelScopeHint() + '，点击右侧按钮开始。'
+            : '请勾选关卡' + levelScopeHint() + '，可多选或使用「全选 / 反选」。')
+        : '无关卡列表，开始后由引擎按关卡链自动遍历。';
+    }
+    if (kind === 'course') return state.phase === 'waiting-course' ? '' : '当前阶段不可选择课程：' + (state.phase || '未知');
+    if (kind === 'experiments') return '当前阶段不可选择实验：' + (state.phase || '未知');
+    return '当前阶段不可选择关卡：' + (state.phase || '未知');
+  }
+
+  function pushSaved(data) {
+    // 兼容 { type:'saved', payload:{…} } 这类嵌套写法
+    var body = data.payload && typeof data.payload === 'object' && !Array.isArray(data.payload)
+      ? Object.assign({}, data, data.payload)
+      : data;
+    // 事件信封的 type 与题目类型同名：优先 taskType，其次取非事件名的 type（code/choice/text）
+    var taskType = body.taskType
+      || (body.type && EVENT_TYPES.indexOf(body.type) < 0 ? body.type : '');
+    recentSaved.unshift({
+      title: body.title || '未命名关卡',
+      type: taskType || 'unknown',
+      level: body.level || '',
+      path: body.path || '',
+      images: body.images
+    });
+    if (recentSaved.length > SAVED_LIMIT) recentSaved.length = SAVED_LIMIT;
+    renderRecentlySaved();
+  }
+
+  function renderRecentlySaved() {
+    var box = $('saved-list');
+    $('badge-recent').textContent = String(recentSaved.length);
+    if (!recentSaved.length) {
+      box.replaceChildren(el('div', { class: 'saved-empty', text: '暂无保存记录。' }));
+      return;
+    }
+    box.replaceChildren.apply(box, recentSaved.map(function (item) {
+      return el('div', { class: 'saved-line' }, [
+        typeTag(item.type),
+        el('span', { class: 'row-title', text: item.title, attrs: { title: item.title } }),
+        el('span', { class: 'saved-path mono', text: item.path, attrs: { title: item.path } })
+      ]);
+    }));
+  }
+
+  function pushLog(entry) {
+    state.logs.push(entry);
+    if (state.logs.length > LOG_LIMIT) {
+      state.logs.splice(0, state.logs.length - LOG_LIMIT);
+      logsRendered = 0;
+      $('log-box').replaceChildren();
+    }
+  }
+
+  function renderLogs() {
+    $('badge-logs').textContent = String(state.logs.length);
+    $('st-logs-count').textContent = '日志 ' + state.logs.length + ' 条 · 阶段 ' + (state.phase || '未知');
+  }
+
+  function logLine(entry) {
+    return el('div', { class: 'log-line', attrs: { 'data-level': entry.level || 'info' } }, [
+      el('span', { class: 'log-time', text: formatTime(entry.time) }),
+      el('span', { class: 'log-msg', text: entry.message == null ? '' : String(entry.message) })
+    ]);
+  }
+
+  function syncLogs() {
+    var box = $('log-box');
+    if (state.logs.length < logsRendered) {
+      box.replaceChildren();
+      logsRendered = 0;
+    }
+    var stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+    for (var i = logsRendered; i < state.logs.length; i += 1) box.append(logLine(state.logs[i]));
+    logsRendered = state.logs.length;
+    if (stick) box.scrollTop = box.scrollHeight;
+    renderLogs();
+  }
+
+  var doneDismissed = false;
+
+  /**
+   * 本地累积一条「已提取内容」（与服务端快照同构，SSE 事件到达时即时更新）。
+   */
+  function appendExtractedLocal(data, status) {
+    if (!Array.isArray(state.extracted)) state.extracted = [];
+    state.extracted.push({
+      time: new Date().toISOString().slice(11, 19),
+      status: status === 'reused' ? 'reused' : 'saved',
+      title: String(data.title || ''),
+      level: String(data.level || data.title || ''),
+      taskType: String(data.taskType || ''),
+      images: num(data.images),
+      path: String(data.path || ''),
+      directory: String(data.directory || ''),
+      experiment: data.experiment ? String(data.experiment) : String(state.currentExperiment || ''),
+      course: data.course
+        ? String(data.course)
+        : state.selectedCourse
+          ? String(state.selectedCourse.name || '')
+          : ''
+    });
+  }
+
+  /**
+   * 「已提取内容」面板：汇总本次会话已保存/复用的关卡，并把
+   * 「开始提取（清空重来）」与「继续提取（保留）」分成两个按钮。
+   * 两者都保留浏览器与登录态；区别只在是否清空课程/实验/关卡列表。
+   */
+  function renderExtracted() {
+    var panel = $('panel-extracted');
+    var items = Array.isArray(state.extracted) ? state.extracted : [];
+    var busy = state.phase && state.phase !== 'done' && state.phase !== 'error' && state.phase !== 'starting';
+    var hasAny = items.length > 0 || (state.done && (num(state.done.saved) || num(state.done.skipped)));
+    panel.hidden = !hasAny;
+    if (!hasAny) return;
+
+    $('extracted-badge').textContent = String(items.length);
+
+    // 按 课程 / 实验 归组，便于确认「哪些实验提取了多少关」
+    var groups = [];
+    var index = {};
+    items.forEach(function (item) {
+      var key = (item.course || '') + '\u0000' + (item.experiment || '');
+      if (index[key] == null) {
+        index[key] = groups.length;
+        groups.push({
+          course: item.course || '（未知课程）',
+          experiment: item.experiment || '（未知实验）',
+          saved: 0,
+          reused: 0,
+          rows: []
+        });
+      }
+      var group = groups[index[key]];
+      if (item.status === 'reused') group.reused += 1; else group.saved += 1;
+      group.rows.push(item);
+    });
+
+    var reused = items.filter(function (item) { return item.status === 'reused'; }).length;
+    var savedCount = items.length - reused;
+    $('extracted-summary').textContent =
+      '本次会话已提取 ' + items.length + ' 关（新保存 ' + savedCount + '，复用已存在 ' + reused + '），涉及 ' +
+      groups.length + ' 个实验。';
+    $('extracted-hint').textContent =
+      '「开始提取」会清空下面的课程/实验/关卡列表并重新读取课程；「继续提取」保留这些内容，' +
+      '适合补抓同一实验的其它关卡或换一个实验。两者都不会关闭浏览器。';
+
+    var list = $('extracted-list');
+    list.replaceChildren.apply(list, groups.map(function (group) {
+      var rows = group.rows.map(function (item) {
+        return el('div', { class: 'extracted-item' + (item.status === 'reused' ? ' is-reused' : '') }, [
+          el('span', { class: 'mono', text: item.level || item.title || '未命名关卡' }),
+          el('span', { class: 'extracted-tag', text: item.status === 'reused' ? '复用' : item.taskType || '已保存' }),
+          item.images > 0 ? el('span', { class: 'extracted-tag', text: '图 ' + item.images }) : null
+        ]);
+      });
+      return el('div', { class: 'extracted-group' }, [
+        el('div', { class: 'extracted-group-hd' }, [
+          el('strong', { text: group.course }),
+          el('span', { class: 'extracted-sep', text: '›' }),
+          el('strong', { text: group.experiment }),
+          el('span', { class: 'spacer' }),
+          el('span', { class: 'hint mono', text: '新 ' + group.saved + ' · 复用 ' + group.reused })
+        ])
+      ].concat(rows));
+    }));
+
+    // 任务进行中不允许再次启动
+    $('btn-restart').disabled = busy;
+    $('btn-continue').disabled = busy;
+  }
+
+  function renderDone() {
+    var panel = $('panel-done');
+    var done = state.done;
+    if (!done || typeof done !== 'object' || doneDismissed) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    $('done-saved').textContent = num(done.saved);
+    $('done-skipped').textContent = num(done.skipped);
+    $('done-failed').textContent = num(done.failed);
+    $('done-badge').textContent = done.stopped ? '已停止（部分结果）' : 'done';
+    $('done-root').textContent = done.exportRoot || '—';
+    $('done-root').title = done.exportRoot || '';
+    var notes = [];
+    if (done.stopped) notes.push('任务被提前停止，以上为已抓取的部分结果。');
+    if (num(done.failed) > 0) notes.push('存在失败项，请查看日志定位原因。');
+    if (num(done.dropped) > 0) {
+      notes.push('已抛弃 ' + num(done.dropped) + ' 关非编程题/选择题（如虚拟机、图形化、纯问答），产物里只有编程题与选择题。');
+    }
+    if (!notes.length) notes.push('全部关卡处理完毕，每个实验一个 md 文件。');
+    $('done-note').textContent = notes.join(' ');
+  }
+
+  /* ------------------------------ bulk selection ------------------------------ */
+
+  function applyBulk(target, mode) {
+    var host = target === 'experiments' ? listEl('experiments') : listEl('levels');
+    if (host.classList.contains('locked')) return;
+    submitted[target] = false;
+    var next = new Set();
+    if (target === 'experiments') {
+      state.experiments.forEach(function (item, index) {
+        var current = sel.experiments.has(index);
+        if (mode === 'all' || (mode === 'invert' && !current)) next.add(index);
+      });
+      sel.experiments = next;
+    } else {
+      state.levels.forEach(function (level, index) {
+        var key = levelKey(level, index);
+        var current = sel.levels.has(key);
+        if (mode === 'all' || (mode === 'invert' && !current)) next.add(key);
+      });
+      sel.levels = next;
+    }
+    host.querySelectorAll('.row input').forEach(function (input) { input.checked = false; });
+    renderListsChecked();
+    renderControls();
+    renderSelectionBadges();
+  }
+
+  /**
+   * 关卡的稳定键：优先关卡标识，其次列表自带的 challengeId，最后用序号。
+   * 关卡列表常常只有名称（identifier 为空），此前各处 fallback 不一致
+   * （渲染用 'level-N'、提交却发 String(identifier)='undefined'），
+   * 导致「只能全选、无法选择性跳过」。所有地方统一走这个函数。
+   */
+  function levelKey(level, index) {
+    if (level && typeof level === 'object') {
+      if (level.identifier != null && String(level.identifier) !== '') return 'id:' + String(level.identifier);
+      if (level.challengeId != null && String(level.challengeId) !== '') return 'cid:' + String(level.challengeId);
+      var position = Number(level.position != null ? level.position : level.index);
+      if (Number.isFinite(position) && position > 0) return 'pos:' + position;
+    }
+    return 'idx:' + index;
+  }
+
+  function renderListsChecked() {
+    var experimentRows = listEl('experiments').querySelectorAll('.row input');
+    state.experiments.forEach(function (item, index) {
+      if (experimentRows[index]) experimentRows[index].checked = sel.experiments.has(index);
+    });
+    var levelRows = listEl('levels').querySelectorAll('.row input');
+    state.levels.forEach(function (level, index) {
+      if (levelRows[index]) levelRows[index].checked = sel.levels.has(levelKey(level, index));
+    });
+    var courseRows = listEl('courses').querySelectorAll('.row input');
+    state.courses.forEach(function (course, index) {
+      var id = course && course.id != null ? course.id : index;
+      if (courseRows[index]) courseRows[index].checked = String(sel.courseId) === String(id);
+    });
+  }
+
+  /* ------------------------------ network ------------------------------ */
+
+  async function fetchState(silent) {
+    // 若请求期间已有更新的实时事件到达，该快照可能陈旧，重取而不是覆盖实时状态
+    for (var attempt = 0; attempt < 3; attempt += 1) {
+      var seqBefore = eventSeq;
+      try {
+        var response = await fetch('/api/state?token=' + encodeURIComponent(TOKEN), { headers: { Accept: 'application/json' } });
+        if (response.status === 403) {
+          // 契约未明确规定 /api/state 的 token 传递方式，回退为不带查询参数再试一次
+          response = await fetch('/api/state', { headers: { Accept: 'application/json' } });
+        }
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var snapshot = await response.json();
+        if (eventSeq !== seqBefore) continue;
+        applySnapshot(snapshot);
+        if (!silent) toast('已重新同步后端状态', 'info');
+        return true;
+      } catch (error) {
+        if (!silent) {
+          toast('同步状态失败：' + error.message, 'error');
+          state.error = '同步 /api/state 失败：' + error.message;
+          renderChrome();
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  function connectEvents() {
+    if (!TOKEN) {
+      connection = 'error';
+      renderChrome();
+      return;
+    }
+    var source = new EventSource('/api/events?token=' + encodeURIComponent(TOKEN));
+
+    function handle(type, event) {
+      var data = null;
+      try { data = JSON.parse(event.data); } catch (error) { data = null; }
+      applyWireEvent(type, data);
+    }
+
+    source.onopen = function () {
+      var wasDown = connection !== 'open';
+      connection = 'open';
+      renderChrome();
+      if (wasDown) fetchState(true);
+    };
+
+    source.onmessage = function (event) { handle('', event); };
+
+    ['status', 'courses', 'experiments', 'levels', 'progress', 'saved', 'log', 'done', 'error', 'answer']
+      .forEach(function (type) {
+        source.addEventListener(type, function (event) { handle(type, event); });
+      });
+
+    source.onerror = function () {
+      connection = 'error';
+      renderChrome();
+    };
+  }
+
+  /* ------------------------------ AI 作答面板 ------------------------------ */
+
+  /** 拉取「可出答案」的课程/实验/关卡（来自 exports 下的关卡存档）。 */
+  async function loadAnswerTargets() {
+    try {
+      var response = await fetch('/api/answer/targets?token=' + encodeURIComponent(TOKEN));
+      var payload = await response.json();
+      if (!payload.ok) throw new Error(payload.error || '读取失败');
+      answerCourses = toArray(payload.courses);
+      if (answerSel.course && !answerCourses.some(function (course) { return course.name === answerSel.course; })) {
+        answerSel.course = '';
+        answerSel.experiments = new Set();
+        answerSel.levels = new Set();
+      }
+      if (!answerSel.course && answerCourses.length === 1) answerSel.course = answerCourses[0].name;
+      renderAnswerPanel();
+    } catch (error) {
+      toast('读取作答目标失败：' + error.message, 'error');
+    }
+  }
+
+  function currentAnswerCourse() {
+    return answerCourses.filter(function (course) { return course.name === answerSel.course; })[0] || null;
+  }
+
+  function renderAnswerPanel() {
+    var courseList = $('list-answer-courses');
+    var experimentList = $('list-answer-experiments');
+    var levelList = $('list-answer-levels');
+    if (!courseList) return;
+
+    courseList.dataset.empty = answerCourses.length ? 'false' : 'true';
+    courseList.replaceChildren.apply(courseList, answerCourses.map(function (course) {
+      var input = el('input', { attrs: { type: 'radio', name: 'answer-course' }, props: { checked: course.name === answerSel.course } });
+      input.addEventListener('change', function () {
+        answerSel.course = course.name;
+        answerSel.experiments = new Set();
+        answerSel.levels = new Set();
+        renderAnswerPanel();
+      });
+      var totalLevels = course.experiments.reduce(function (sum, item) { return sum + item.levelCount; }, 0);
+      return el('label', { class: 'row' + (course.name === answerSel.course ? ' is-active' : '') }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-title', text: course.name }),
+          el('span', { class: 'row-meta' }, [
+            el('span', { text: course.experiments.length + ' 个实验' }),
+            el('span', { text: totalLevels + ' 关' })
+          ])
+        ])
+      ]);
+    }));
+    $('badge-answer-course').textContent = answerSel.course ? '已选 1 / ' + answerCourses.length : '0 / ' + answerCourses.length;
+
+    var course = currentAnswerCourse();
+    var experiments = course ? course.experiments : [];
+    experimentList.dataset.empty = experiments.length ? 'false' : 'true';
+    experimentList.dataset.emptyText = course ? '该课程还没有抓取产物' : '先选课程';
+    experimentList.replaceChildren.apply(experimentList, experiments.map(function (experiment, index) {
+      var checked = answerSel.experiments.has(experiment.name);
+      var input = el('input', { attrs: { type: 'checkbox' }, props: { checked: checked } });
+      input.addEventListener('change', function () {
+        if (input.checked) answerSel.experiments.add(experiment.name);
+        else answerSel.experiments.delete(experiment.name);
+        answerSel.levels = new Set();
+        renderAnswerPanel();
+      });
+      return el('label', { class: 'row' }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-title', text: experiment.name }),
+          el('span', { class: 'row-meta' }, [
+            el('span', { text: experiment.levelCount + ' 关' }),
+            el('span', { text: '已有答案 ' + experiment.answered + ' 关' })
+          ])
+        ])
+      ]);
+    }));
+    $('badge-answer-experiments').textContent =
+      '已选 ' + answerSel.experiments.size + ' / ' + experiments.length;
+
+    // 关卡：合并所有选中实验的关卡（每条标出所属实验）
+    var merged = [];
+    experiments.forEach(function (experiment) {
+      if (!answerSel.experiments.has(experiment.name)) return;
+      experiment.levels.forEach(function (level) {
+        merged.push({ experiment: experiment.name, level: level });
+      });
+    });
+    levelList.dataset.empty = merged.length ? 'false' : 'true';
+    levelList.dataset.emptyText = answerSel.experiments.size ? '这些实验没有关卡' : '先选实验';
+    levelList.replaceChildren.apply(levelList, merged.map(function (item) {
+      var key = item.experiment + '#' + item.level.id;
+      var checked = answerSel.levels.has(key);
+      var input = el('input', { attrs: { type: 'checkbox' }, props: { checked: checked } });
+      input.addEventListener('change', function () {
+        if (input.checked) answerSel.levels.add(key);
+        else answerSel.levels.delete(key);
+        renderAnswerPanel();
+      });
+      return el('label', { class: 'row has-exp' }, [
+        input,
+        el('span', { class: 'row-main' }, [
+          el('span', { class: 'row-exp', text: item.experiment }),
+          el('span', { class: 'row-title', text: '第' + item.level.taskIndex + '关 ' + (item.level.title || '') }),
+          el('span', { class: 'row-meta' }, [
+            el('span', { text: item.level.type === 'choice' ? '选择题' : '编程题' }),
+            item.level.language ? el('span', { text: item.level.language }) : null
+          ].filter(Boolean))
+        ]),
+        el('span', { class: 'row-side mono', text: item.level.id })
+      ]);
+    }));
+    $('badge-answer-levels').textContent =
+      '已选 ' + answerSel.levels.size + ' / ' + merged.length;
+
+    renderAnswerStatus();
+  }
+
+  function renderAnswerStatus() {
+    var answer = state.answer || {};
+    var running = Boolean(answer.running);
+    var total = num(answer.total);
+    var done = num(answer.done);
+    var percent = total > 0 ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
+    var finished = !running && total > 0;
+
+    $('badge-answer').textContent = total ? done + ' / ' + total : '0 / 0';
+    $('badge-answer').dataset.state = running ? 'active' : total && done >= total ? 'ok' : '';
+    $('answer-fill').style.width = percent + '%';
+    $('answer-bar').setAttribute('aria-valuenow', String(percent));
+    $('btn-answer-run').disabled = running;
+    $('btn-answer-stop').disabled = !running;
+
+    $('answer-status').textContent = running
+      ? '作答中：' + (answer.experiment ? '「' + answer.experiment + '」' : '') + (answer.message || '')
+      : finished
+        ? '已完成：' + done + ' / ' + total + ' 个实验' + (answer.message ? '｜' + answer.message : '')
+        : '尚未开始';
+
+    // 提示按状态给「下一步该做什么」。原来两种状态写的是同一句话，等于没提示。
+    $('answer-note').textContent = running
+      ? '答案逐实验写入 exports/answers/，等全部结束再去篡改猴拉取，避免拉到一半。'
+      : finished
+        ? '下一步：打开任意关卡页 → 篡改猴面板「设置本地地址」粘贴上面复制的地址 →「从本地拉答案」→「一键作答并提交」。'
+        : '答案写到 exports/answers/，篡改猴读它自动提交。需要先有抓取产物（exports 下的 levels.jsonl）。';
+
+    var results = toArray(answer.results);
+    var box = $('answer-results');
+    box.replaceChildren.apply(box, results.map(function (item) {
+      var state2 = item.error ? 'err' : item.ok ? 'ok' : 'warn';
+      var detail = item.error
+        ? item.error
+        : item.answered + '/' + item.total + ' 关' + (item.issues && item.issues.length ? '，' + item.issues.length + ' 处待修' : '');
+      return el('div', { class: 'answer-result', attrs: { 'data-state': state2 } }, [
+        el('b', { text: item.experiment }),
+        el('span', { text: detail }),
+        item.answerPath ? el('span', { class: 'mono', text: item.answerPath }) : null
+      ].filter(Boolean));
+    }));
+  }
+
+  /** 把带 token 的控制台地址复制到剪贴板（粘到篡改猴的「设置本地地址」即可）。 */
+  async function copyConsoleAddress() {
+    var address = location.href;
+    try {
+      await navigator.clipboard.writeText(address);
+      toast('已复制控制台地址，粘到篡改猴的「设置本地地址」里即可', 'ok');
+    } catch (error) {
+      // 剪贴板 API 在非安全上下文/无权限时不可用：退回到「选中让人手抄」
+      toast('自动复制失败，请手动复制地址栏：' + address, 'warn');
+    }
+  }
+
+  async function startAnswerRun() {
+    var course = currentAnswerCourse();
+    if (!course) { toast('请先选择课程', 'error'); return; }
+    var experiments = Array.from(answerSel.experiments);
+    if (!experiments.length) { toast('请至少选择一个实验', 'error'); return; }
+    var apiKey = $('answer-key').value.trim();
+    if (!apiKey) { toast('请填写 API Key', 'error'); return; }
+    // 关卡：只在「选了部分关卡」时才限定；全不选 = 该实验全部关卡
+    var levels = null;
+    var merged = [];
+    course.experiments.forEach(function (experiment) {
+      if (!answerSel.experiments.has(experiment.name)) return;
+      experiment.levels.forEach(function (level) { merged.push(experiment.name + '#' + level.id); });
+    });
+    if (answerSel.levels.size && answerSel.levels.size < merged.length) {
+      levels = Array.from(answerSel.levels).map(function (key) { return key.split('#')[1]; });
+    }
+    try {
+      var response = await fetch('/api/answer/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: TOKEN,
+          course: course.name,
+          experiments: experiments,
+          levels: levels,
+          apiKey: apiKey,
+          baseUrl: $('answer-base').value.trim() || undefined,
+          model: $('answer-model').value.trim() || undefined
+        })
+      });
+      var payload = await response.json();
+      if (!payload.ok) throw new Error(payload.error || '启动失败');
+      toast('已开始 AI 作答：' + experiments.length + ' 个实验', 'ok');
+      renderAnswerStatus();
+    } catch (error) {
+      toast('启动 AI 作答失败：' + error.message, 'error');
+    }
+  }
+
+  async function stopAnswerRun() {
+    try {
+      await fetch('/api/answer/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: TOKEN })
+      });
+      toast('已请求停止 AI 作答', 'warn');
+    } catch (error) {
+      toast('停止失败：' + error.message, 'error');
+    }
+  }
+
+  /* ------------------------------ AI 作答面板折叠 ------------------------------ */
+
+  /**
+   * AI 作答面板内容很长，会把后面的「最近保存」顶得很远：
+   * 支持整卡折叠成一行标题，状态记在 localStorage，刷新后保持。
+   * 折叠只隐藏 .answer-body，标题栏的进度徽章（badge-answer）仍实时更新。
+   */
+  function setupAnswerFold() {
+    var panel = $('panel-answer');
+    var button = $('btn-answer-fold');
+    if (!panel || !button) return;
+    function apply(folded) {
+      panel.classList.toggle('folded', folded);
+      button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      button.textContent = folded ? '展开 ▸' : '收起 ▾';
+    }
+    var saved = '';
+    try { saved = localStorage.getItem('answerFolded') || ''; } catch (error) { /* 无痕/禁存储时降级为不记忆 */ }
+    apply(saved === '1');
+    button.addEventListener('click', function () {
+      var folded = !panel.classList.contains('folded');
+      apply(folded);
+      try { localStorage.setItem('answerFolded', folded ? '1' : '0'); } catch (error) { /* 同上 */ }
+    });
+  }
+
+  /* ------------------------------ 缺答案清单 ------------------------------ */
+
+  /** 渲染清单：行结构复用「已提取内容」的既有样式类。 */
+  function renderMissing(items) {
+    var list = $('list-missing');
+    var badge = $('badge-missing');
+    if (!list) return;
+    var rows = (items || []).map(function (item) {
+      return el('div', { class: 'extracted-item' }, [
+        el('span', { class: 'mono', text: item.level || '（未命名关卡）' }),
+        el('span', { class: 'extracted-tag', text: item.reason || 'no-answer' }),
+        el('span', { class: 'hint', text: [item.course, item.experiment].filter(Boolean).join(' · ') }),
+        el('span', { class: 'hint mono', text: item.reported_at ? formatTime(item.reported_at) : '' })
+      ]);
+    });
+    if (badge) badge.textContent = String((items || []).length);
+    list.replaceChildren.apply(list, rows);
+    list.dataset.empty = rows.length ? 'false' : 'true';
+  }
+
+  async function loadMissing() {
+    try {
+      var response = await fetch('/api/missing?token=' + encodeURIComponent(TOKEN), {
+        headers: { Accept: 'application/json' }
+      });
+      var payload = await response.json();
+      if (!payload || !payload.ok) {
+        toast('读取缺答案清单失败', 'error');
+        return;
+      }
+      renderMissing(payload.items);
+    } catch (error) {
+      toast('读取缺答案清单失败：' + error.message, 'error');
+    }
+  }
+
+  async function clearMissingList() {
+    if (!window.confirm('清空缺答案清单？（只清记录，不动任何答案文件）')) return;
+    try {
+      var response = await fetch('/api/missing?token=' + encodeURIComponent(TOKEN), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear' })
+      });
+      var payload = await response.json();
+      if (payload && payload.ok) {
+        renderMissing([]);
+        toast('缺答案清单已清空', 'ok');
+      } else {
+        toast('清空失败：' + ((payload && payload.error) || response.status), 'error');
+      }
+    } catch (error) {
+      toast('清空失败：' + error.message, 'error');
+    }
+  }
+
+  /* ------------------------------ wiring ------------------------------ */
+
+  function bind() {
+    $('btn-refresh').addEventListener('click', function () { fetchState(false); });
+
+    $('btn-answer-refresh').addEventListener('click', function () { loadAnswerTargets(); });
+    $('btn-answer-run').addEventListener('click', startAnswerRun);
+    $('btn-answer-stop').addEventListener('click', stopAnswerRun);
+    $('btn-answer-copy').addEventListener('click', copyConsoleAddress);
+    setupAnswerFold();
+    document.querySelectorAll('[data-abulk]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var target = button.dataset.atarget;
+        var mode = button.dataset.abulk;
+        var course = currentAnswerCourse();
+        if (!course) return;
+        if (target === 'experiments') {
+          answerSel.experiments = mode === 'all'
+            ? new Set(course.experiments.map(function (item) { return item.name; }))
+            : new Set();
+          answerSel.levels = new Set();
+        } else {
+          answerSel.levels = new Set();
+          if (mode === 'all') {
+            course.experiments.forEach(function (experiment) {
+              if (!answerSel.experiments.has(experiment.name)) return;
+              experiment.levels.forEach(function (level) {
+                answerSel.levels.add(experiment.name + '#' + level.id);
+              });
+            });
+          }
+        }
+        renderAnswerPanel();
+      });
+    });
+
+    $('btn-course').addEventListener('click', function () {
+      if (sel.courseId == null) return;
+      runAction('select-course', { courseId: sel.courseId }, '选择课程');
+    });
+
+    $('btn-experiments').addEventListener('click', function () {
+      var indices = Array.from(sel.experiments).sort(function (a, b) { return a - b; });
+      if (!indices.length) return;
+      runAction('select-experiments', { indices: indices }, '选择实验');
+    });
+
+    $('btn-levels').addEventListener('click', function () {
+      // 只提交被勾选的关卡。无标识的列表用 position/challengeId 表达选择，
+      // 不再发送 "undefined"（那会让服务端匹配不到，退化成「全选」）。
+      var picked = state.levels.filter(function (level, index) {
+        return sel.levels.has(levelKey(level, index));
+      });
+      if (!picked.length) {
+        toast('请至少勾选一个关卡', 'error');
+        return;
+      }
+      runAction('select-levels', {
+        levels: picked.map(function (level) {
+          return {
+            identifier: level.identifier != null ? String(level.identifier) : '',
+            position: Number(level.position != null ? level.position : level.index) || null,
+            challengeId: level.challengeId != null ? String(level.challengeId) : ''
+          };
+        })
+      }, '选择关卡');
+    });
+
+    // 「开始提取（清空重来）」：清空上一轮的课程/实验/关卡列表与已提取内容
+    $('btn-restart').addEventListener('click', function () {
+      doneDismissed = true;
+      renderDone();
+      runAction('reset', {}, '开始提取');
+    });
+
+    // 「继续提取（保留上面内容）」：保留列表，直接回到课程选择继续补抓
+    $('btn-continue').addEventListener('click', function () {
+      doneDismissed = false;
+      var answersOnlyToggle = $('opt-answers-only');
+      runAction('start', {
+        skipExisting: !($('opt-redownload') && $('opt-redownload').checked),
+        answersOnly: Boolean(answersOnlyToggle && answersOnlyToggle.checked)
+      }, '继续提取');
+    });
+
+    $('btn-start').addEventListener('click', function () {
+      // 一轮提取结束后再次点击 = 开始新一轮：先收起上一轮的结果面板。
+      doneDismissed = true;
+      renderDone();
+      var redownload = $('opt-redownload');
+      var answersOnlyToggle = $('opt-answers-only');
+      runAction('start', {
+        skipExisting: !(redownload && redownload.checked),
+        answersOnly: Boolean(answersOnlyToggle && answersOnlyToggle.checked)
+      }, '开始提取');
+    });
+
+    $('btn-stop').addEventListener('click', function () {
+      runAction('stop', {}, '停止任务');
+    });
+
+    $('btn-diagnose').addEventListener('click', function () {
+      runAction('diagnose', {}, '诊断');
+    });
+
+    $('btn-copy-root').addEventListener('click', function () {
+      var text = $('done-root').textContent;
+      copyText(text).then(function (ok) {
+        toast(ok ? '已复制导出目录' : '复制失败，请手动选中复制', ok ? 'ok' : 'warn');
+      });
+    });
+
+    document.querySelectorAll('[data-bulk]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        applyBulk(button.dataset.target, button.dataset.bulk);
+      });
+    });
+
+    $('btn-missing-refresh').addEventListener('click', loadMissing);
+    $('btn-missing-clear').addEventListener('click', clearMissingList);
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === '/' && event.target.tagName !== 'INPUT') {
+        event.preventDefault();
+        $('btn-refresh').focus();
+      }
+    });
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) { /* 回退方案 */ }
+    try {
+      var area = el('textarea', { props: { value: text } });
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.append(area);
+      area.select();
+      var ok = document.execCommand('copy');
+      area.remove();
+      return ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function init() {
+    bind();
+    renderAll({ forceLists: true });
+    syncLogs();
+    if (!TOKEN) {
+      state.error = 'URL 缺少 token，请使用终端输出的完整地址打开本页面。';
+      renderChrome();
+      toast('URL 缺少 token，无法连接后端', 'error');
+      return;
+    }
+    fetchState(true).then(function () {
+      connectEvents();
+      renderAll({ forceLists: true });
+      // AI 作答面板的候选来自 exports 下的关卡存档（与抓取状态无关，单独拉一次）。
+      loadAnswerTargets();
+      loadMissing();
+    });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+</body>
+</html>

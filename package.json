@@ -1,0 +1,17 @@
+{
+  "name": "educoder-task-extractor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Extract Educoder course experiments and task starter materials to local files.",
+  "type": "commonjs",
+  "scripts": {
+    "extract": "node extractor/run.js",
+    "ui": "node extractor/run.js --ui",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "writer": "node extractor/writer-server.js",
+    "crawler": "node extractor/traditional-crawler.js"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
