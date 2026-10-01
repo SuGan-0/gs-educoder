@@ -503,7 +503,7 @@ test('listChallenges：兼容数组 / {data:[]} / {challenges:[]} 三种形状',
     const page = stubPage(() => ok(body));
     const challenges = await api.listChallenges(page, experiment);
     assert.equal(page.calls[0].url, CHALLENGES_URL);
-    assert.deepEqual(challenges, [{ identifier: 'abc', name: '第1关', index: 1, position: 1, type: 'choice' }]);
+    assert.deepEqual(challenges, [{ identifier: 'abc', name: '第1关', index: 1, position: 1, challengeId: '', type: 'choice' }]);
   }
 });
 
@@ -566,6 +566,35 @@ test('listChallenges：接口失败一律返回 []（不抛出）', async () => 
   assert.equal(nothing.calls.length, 0, '既无 myshixun 标识也无 homeworkId 时不应发请求');
 });
 
+// ---------------------------------------------------- listChallengeNames
+
+test('listChallengeNames：解析 challenge_list 为「名称 + 序号 + challengeId」，不编造标识', async () => {
+  const page = stubPage(() => ok(JSON.stringify({
+    challenge_list: [
+      { challenge_id: 5547038, position: 1, name: '顺序图题目初体验', score: 12.5 },
+      { challenge_id: 5547039, position: 2, name: '请画出酒店工作人员角色' },
+      { challenge_id: 5547040, position: 3 },
+      'not-an-object'
+    ]
+  })));
+  const levels = await api.listChallengeNames(page, { shixunIdentifier: 'qgiwumjn' });
+  assert.match(page.calls[0].url, /\/api\/shixuns\/qgiwumjn\/challenges\.json/);
+  assert.deepEqual(levels, [
+    { name: '顺序图题目初体验', position: 1, challengeId: '5547038' },
+    { name: '请画出酒店工作人员角色', position: 2, challengeId: '5547039' }
+  ]);
+  assert.ok(levels.every((level) => !('identifier' in level)), '这条接口没有关卡标识，不得编造');
+});
+
+test('listChallengeNames：没有 shixun 标识时不发请求，接口失败返回 []', async () => {
+  const none = stubPage(() => ok('{}'));
+  assert.deepEqual(await api.listChallengeNames(none, { shixunIdentifier: '' }), []);
+  assert.equal(none.calls.length, 0);
+
+  const networkError = stubPage(() => new Error('net::ERR_CONNECTION_RESET'));
+  assert.deepEqual(await api.listChallengeNames(networkError, { shixunIdentifier: 'x' }), []);
+});
+
 // ------------------------------------------------------ 模块导出面 / 只读约束
 
 test('导出面严格等于契约', () => {
@@ -580,6 +609,7 @@ test('导出面严格等于契约', () => {
       'apiGet',
       'checkLogin',
       'classifyResponse',
+      'listChallengeNames',
       'listChallenges',
       'listCourses',
       'listExperiments',

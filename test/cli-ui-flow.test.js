@@ -256,9 +256,10 @@ function createFakePlaywright(options = {}) {
         if (parsed.pathname.endsWith('get_user_info.json')) body = JSON.stringify({ login: 'p8sxailt2' });
         else if (parsed.pathname.endsWith('/courses.json')) body = JSON.stringify({ count: 1, courses: [COURSE] });
         else if (parsed.pathname.endsWith('challenges.json')) {
-          body = JSON.stringify(
-            withSecondExperiment && parsed.pathname.includes('zq655f1e') ? CHALLENGES_B : CHALLENGES
-          );
+          // 引擎现在按**实验自己的 myshixun 标识**直接请求接口（不再导航后读页面响应），
+          // 因此桩要按 myshixun 标识分派；同时保留 shixun 标识以兼容兜底路径。
+          const isSecondExperiment = parsed.pathname.includes('zqad65672b') || parsed.pathname.includes('zq655f1e');
+          body = JSON.stringify(withSecondExperiment && isSecondExperiment ? CHALLENGES_B : CHALLENGES);
         } else if (parsed.pathname.endsWith('homework_commons.json')) body = JSON.stringify(experiments);
         else if (parsed.pathname.endsWith('rep_content.json')) body = JSON.stringify({ content: { content: BASE64('print("starter")\n') } });
         else {

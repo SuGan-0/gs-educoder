@@ -802,7 +802,7 @@ test('引擎：多实验连抓时每个实验都走自己的关卡链（不得�
   assert.equal(navigations.length, 1, '已经在自己的实训页时不要重复导航（会冲掉入口状态）');
 });
 
-test('引擎：关卡列表不得取到「别的实验」的同名端点响应（缓存归属校验）', (t) => {
+test('引擎：关卡列表只认本实验的接口（不会再串到别的实验）', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
@@ -812,37 +812,40 @@ test('引擎：关卡列表不得取到「别的实验」的同名端点响应�
   });
 
   const engine = new ExtractEngine({ onEvent: () => {} });
-  // 缓存里同时有「单元测试」（2 关）与「白盒测试」（7 关）的响应，顺序把别人的放前面。
-  engine.responseCache.set(
-    'https://data.educoder.net/api/shixuns/zqab7e3c/challenges.json?id=zqab7e3c',
-    JSON.stringify({
-      challenge_list: Array.from({ length: 7 }, (_value, index) => ({
-        name: `白盒第${index + 1}关`,
-        position: index + 1,
-        challenge_id: 500 + index
-      }))
-    })
-  );
-  engine.responseCache.set(
-    'https://data.educoder.net/api/shixuns/zq6177bf/challenges.json?id=zq6177bf',
-    JSON.stringify({
-      challenge_list: [
-        { name: '使用Junit进行单元测试', position: 1, challenge_id: 601 },
-        { name: '单元测试覆盖率', position: 2, challenge_id: 602 }
-      ]
-    })
-  );
+  // 旧实现从「按路径片段匹配」的响应缓存里凑列表，实测会把「白盒测试」的 7 关
+  // 当成「单元测试」自己的（两者端点路径尾段相同）。现在关卡列表只按
+  // **本实验自己的标识**请求接口，结构上就不可能串台——这条用例锁住这个性质：
+  // 请求 URL 里必须出现本实验的 myshixun 标识，且结果就是该响应。
+  const requested = [];
+  engine.page = {
+    url: () => 'https://www.educoder.net/',
+    async evaluate(fn, arg) {
+      const url = String((arg && arg.url) || '');
+      requested.push(url);
+      if (url.includes('/api/myshixuns/zq3a1b66ee/challenges.json')) {
+        return {
+          status: 200,
+          body: JSON.stringify([
+            { identifier: 'g1', subject: '使用Junit进行单元测试', position: 1, challenge_id: 601 },
+            { identifier: 'g2', subject: '单元测试覆盖率', position: 2, challenge_id: 602 }
+          ])
+        };
+      }
+      // 别的实验的端点即使被请求到，也不该被采用
+      return { status: 200, body: JSON.stringify({ challenge_list: Array.from({ length: 7 }, (_v, i) => ({ name: `白盒第${i + 1}关`, position: i + 1, challenge_id: 500 + i })) }) };
+    }
+  };
 
-  const unitTest = {
+  const levels = await engine.loadLevels({
     name: '单元测试',
     shixunIdentifier: 'zq6177bf',
     myshixunIdentifier: 'zq3a1b66ee'
-  };
-  const levels = engine.levelsFromCache(
-    [`api/shixuns/${unitTest.shixunIdentifier}/challenges.json`, `api/myshixuns/${unitTest.myshixunIdentifier}/challenges.json`],
-    unitTest
+  }, { emit: false });
+
+  assert.ok(
+    requested.every((url) => url.includes('zq3a1b66ee')),
+    `只应按本实验的标识请求，实际请求了：${requested.join(' | ')}`
   );
-  assert.equal(levels.length, 2, `必须取到本实验的 2 关，实际 ${levels.length}`);
   assert.deepEqual(
     levels.map((level) => level.name),
     ['使用Junit进行单元测试', '单元测试覆盖率'],
@@ -1015,7 +1018,7 @@ test('引擎：实验分页按 query_total_count 校验，页数不足时整批�
   );
 });
 
-test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业页」而不是 shixun 页', async (t) => {
+test('引擎：读关卡列表不导航——两条路径都是直连接口', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
@@ -1026,6 +1029,7 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
 
   const engine = new ExtractEngine({ onEvent: () => {} });
   const navigated = [];
+  const requested = [];
   engine.page = {
     url: () => 'https://www.educoder.net/classrooms/zqf25f66/shixun_homework',
     goto: async (url) => {
@@ -1034,19 +1038,35 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
     waitForLoadState: async () => {},
     waitForTimeout: async () => {},
     on: () => {},
-    off: () => {}
+    off: () => {},
+    async evaluate(fn, arg) {
+      requested.push(String((arg && arg.url) || ''));
+      // 只有名称与序号，没有 identifier —— 正是没有 myshixun 标识时的接口形态
+      return {
+        status: 200,
+        body: JSON.stringify({
+          challenge_list: [
+            { name: '制定进度计划', position: 1, challenge_id: 88000009 },
+            { name: '找出代码中的bug', position: 2, challenge_id: 88000010 }
+          ]
+        })
+      };
+    }
   };
   engine.currentCourse = { name: '示例课程A', classroomCode: 'zqf25f66' };
-  engine.levelsFromCache = () => []; // 没有缓存 → 会按「等不到列表」收尾，但导航已经发生
 
-  await engine.loadLevels({ name: '软件工程初体验', homeworkId: 88000004, shixunIdentifier: '', myshixunIdentifier: '' }, { emit: false });
-
-  assert.ok(navigated.length, '必须发生导航');
-  assert.match(
-    navigated[0],
-    /\/classrooms\/zqf25f66\/shixun_homework\/88000004\?tabs=0$/,
-    `子标签实验应打开它的作业页，实际：${navigated[0]}`
+  const levels = await engine.loadLevels(
+    { name: '软件工程初体验', homeworkId: 88000004, shixunIdentifier: 'zqshixun01', myshixunIdentifier: '' },
+    { emit: false }
   );
+
+  // 旧实现要先导航到实验页、等页面自己发请求、轮询响应缓存最多 8 秒（还要重试一次导航）。
+  // 现在一次接口调用就够：这是整轮抓取最明显的一处加速。
+  assert.deepEqual(navigated, [], '读关卡列表不该再导航');
+  assert.equal(requested.length, 1, '一次请求就够');
+  assert.match(requested[0], /\/api\/shixuns\/zqshixun01\/challenges\.json/);
+  assert.deepEqual(levels.map((level) => [level.name, level.position]), [['制定进度计划', 1], ['找出代码中的bug', 2]]);
+  assert.ok(levels.every((level) => !level.identifier), '这条接口没有关卡标识，入口要靠回溯');
 });
 
 test('引擎：实验列表一次请求取全，不按「章」逐个读取（2026-10-01 实测）', async (t) => {
@@ -1673,10 +1693,11 @@ test('引擎：关卡列表只有名称（无标识）时，用 findChainStart �
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
+  const api = require('../extractor/lib/educoder-api');
   const exportRoot = withTempExportRoot();
 
   // 真实形态：/api/shixuns/{id}/challenges.json 返回 { challenge_list:[{name,position}] }，
-  // 只有名称与序号、没有关卡标识。这里直接预置响应缓存，验证解析与入口判定本身。
+  // 只有名称与序号、没有关卡标识。这里直接预置接口响应，验证解析与入口判定本身。
   const nameOnly = [
     { name: '面向对象技术的基本概念', position: 1, challenge_id: 1 },
     { name: 'UML概述', position: 2, challenge_id: 2 }
@@ -1703,19 +1724,17 @@ test('引擎：关卡列表只有名称（无标识）时，用 findChainStart �
 
   await engine.launch();
 
-  // 1) challenge_list 形态能被解析（带查询串的真实 key 也要命中）
-  engine.responseCache.set(
-    'https://data.educoder.net/api/shixuns/zzzunique1/challenges.json?id=zzzunique1',
-    JSON.stringify({ challenge_list: nameOnly })
-  );
-  const levels = engine.levelsFromCache(
-    ['api/shixuns/zzzunique1/challenges.json', 'api/myshixuns/zq4b6968ab/challenges.json'],
-    { name: '面向对象分析与设计' }
+  // 1) challenge_list 形态能被解析成「名称 + 序号」，且不编造标识。
+  //    用独立的假页面，不要覆盖 engine.page——下面还要靠它做回溯。
+  const levels = await api.listChallengeNames(
+    fakePageFor({ 'api/shixuns/zzzunique1/challenges.json': { challenge_list: nameOnly } }),
+    { name: '面向对象分析与设计', shixunIdentifier: 'zzzunique1' }
   );
   assert.equal(levels.length, 2, '必须能解析 challenge_list 形态');
   assert.equal(levels[0].name, '面向对象技术的基本概念');
-  assert.equal(levels[0].index, 1, 'position 必须映射为 index');
-  assert.equal(levels[0].identifier, '', '该形态没有标识，应留空而不是编造');
+  assert.equal(levels[0].position, 1);
+  assert.equal(levels[0].challengeId, '1', 'challenge_id 是这一形态下的选择身份');
+  assert.ok(!('identifier' in levels[0]), '该形态没有标识，不得编造');
 
   // 2) 列表只有名称（无标识）时仍要能定位入口：回溯实训上下文得到链首
   engine.discoveredLevels = levels;

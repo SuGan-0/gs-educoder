@@ -18,7 +18,6 @@ const CLASSROOMS_URL = 'https://www.educoder.net/users/p8sxailt2/classrooms';
 const TEXT_LIMIT = 64 * 1024;
 const REQUEST_TIMEOUT = 15000;
 /** 关卡列表等待预算：真实环境实测导航后立即命中（0ms），留 8 秒余量即可。 */
-const LEVEL_LIST_TIMEOUT = 8000;
 
 function truncate(value, limit = TEXT_LIMIT) {
   const text = String(value ?? '');
@@ -87,7 +86,6 @@ class ExtractEngine {
     this.currentTotal = 0;
     /** 多实验时的整轮进度计数 {current,total}；单实验为 null（沿用 currentIndex/currentTotal）。 */
     this.runProgress = null;
-    this.responseCache = new Map();
     this.timestamp = () => new Date().toISOString().slice(11, 19);
   }
 
@@ -164,7 +162,6 @@ class ExtractEngine {
       throw new Error(message);
     }
     this.page = this.context.pages()[0] || (await this.context.newPage());
-    this.watchResponses(this.page);
     if (this.networkLog) this.attachNetworkCapture(this.page);
     this.log('浏览器已启动，登录状态取自本地浏览器目录。');
   }
@@ -228,55 +225,9 @@ class ExtractEngine {
     });
   }
 
-  /**
-   * 页面自身请求的响应缓存。
-   *
-   * 头歌的 data API 会对本工具的直连请求返回 -102「设备时间不匹配」（实测：时间偏差 0 秒、
-   * cookie/Referer/zzud 都带齐也一样），但**页面自己发出的同一请求完全正常**。
-   * 因此抓取数据的首选路径是：导航到对应页面，截获页面自身 XHR 的响应体。
-   */
-  watchResponses(page) {
-    if (!page || typeof page.on !== 'function') return;
-    page.on('response', async (response) => {
-      const url = response.url();
-      // 兼容绝对 URL 与相对路径（测试桩只给相对路径）：统一取 /api/ 起的路径名作键。
-      const path = String(url).split('?')[0].split('#')[0];
-      const index = path.indexOf('/api/');
-      const apiPath = index >= 0 ? path.slice(index) : '';
-      if (!apiPath) return;
-      if (!/\/api\/tasks\/[^/]+\.json|\/api\/(?:my)?shixuns\/[^/]+\/challenges\.json|\/api\/courses\/[^/]+\/homework_commons\.json/.test(apiPath)) {
-        return;
-      }
-      try {
-        const body = await response.text();
-        this.responseCache.set(apiPath, body);
-      } catch {
-        /* 响应体不可读时忽略 */
-      }
-    });
-  }
 
 
   /** 与 cachedResponse 同源，但返回命中的缓存键（响应 URL）与响应体，便于调用方判断归属。 */
-  cachedResponseEntry(fragment, { exact = false } = {}) {
-    const normalize = (value) => {
-      const text = String(value || '');
-      const pathOnly = text.split('?')[0].split('#')[0];
-      const index = pathOnly.indexOf('/api/');
-      return (index >= 0 ? pathOnly.slice(index) : pathOnly).replace(/\/+$/, '');
-    };
-    const target = normalize(fragment);
-    if (!target) return null;
-    const entries = [...this.responseCache];
-    const exactHit = entries.find(([key]) => normalize(key) === target);
-    if (exactHit) return { key: exactHit[0], body: exactHit[1] };
-    if (exact) return null;
-    const looseHit = entries.find(([key]) => {
-      const candidate = normalize(key);
-      return candidate.endsWith(target) || target.endsWith(candidate);
-    });
-    return looseHit ? { key: looseHit[0], body: looseHit[1] } : null;
-  }
 
   /** 只导航（已在目标页则跳过），不等待任何特定响应。 */
   async navigateTo(page, url) {
@@ -540,39 +491,6 @@ class ExtractEngine {
    * 先导航到该页（页面才会发请求）→ 命中响应缓存 → 都没拿到再用 data API。
    * 之前直接读缓存，而此前从未进过该页，缓存恒为空 → 关卡列表总是空。
    */
-  /**
-   * 从响应缓存里凑出关卡列表。
-   *
-   * 两个端点的信息量不同，要合并使用：
-   * - `api/myshixuns/{id}/challenges.json` → 有 identifier（可直接选关与定位入口）
-   * - `api/shixuns/{id}/challenges.json`   → 只有 name/position（但一定拿得到，能显示关卡名）
-   * 优先返回带 identifier 的；只有名称时返回按序号排列的列表（identifier 留空）。
-   */
-  levelsFromCache(fragments, experiment) {
-    // 多实验连抓时，缓存里可能同时存在**别的实验**的同名端点响应
-    // （`/api/shixuns/{其他id}/challenges.json`）；片段匹配只看尾部路径，会把别人的列表
-    // 当成自己的（实测「白盒测试」列出 7 关、而它自己只有 2 关）。因此命中后还要校验：
-    // 响应路径里出现的 shixun 标识必须属于本实验。
-    const ownIds = [experiment.shixunIdentifier, experiment.myshixunIdentifier]
-      .filter((id) => id !== undefined && id !== null && String(id) !== '')
-      .map(String);
-    const belongsToThisExperiment = (path) => {
-      const ids = [...String(path).matchAll(/\/(?:my)?shixuns\/([^/]+)\//g)].map((match) => match[1]);
-      if (!ids.length) return true; // 路径里看不出归属（例如只有片段命中），不拦
-      return !ownIds.length || ids.some((id) => ownIds.includes(id));
-    };
-
-    let nameOnly = [];
-    for (const fragment of fragments) {
-      const entry = this.cachedResponseEntry(fragment);
-      if (!entry || !belongsToThisExperiment(entry.key)) continue;
-      const parsed = this.parseChallenges(entry.body, experiment, 'page');
-      if (!parsed.length) continue;
-      if (parsed.some((level) => level.identifier)) return parsed;
-      if (!nameOnly.length) nameOnly = parsed;
-    }
-    return nameOnly;
-  }
 
   /**
    * 读取某个实验的关卡列表。
@@ -581,66 +499,41 @@ class ExtractEngine {
    * 一次性发出合并列表，这里必须 `{ emit: false }` —— 否则每读一个实验就覆盖一次界面，
    * 关卡区只会显示「最后一个被读取的实验」的关卡（多选实验时的真实 bug）。
    */
-  async loadLevels(experiment, { emit = true } = {}) {    let levels = [];
-    const fragments = [
-      `api/shixuns/${experiment.shixunIdentifier}/challenges.json`,
-      `api/myshixuns/${experiment.myshixunIdentifier}/challenges.json`
-    ].filter((fragment) => !fragment.includes('undefined'));
-
-    const pageUrl = experiment.shixunIdentifier
-      ? `https://www.educoder.net/shixuns/${experiment.shixunIdentifier}/challenges`
-      : '';
-    // 有些实验是「课堂实验里的子标签」，没有 shixun_identifier，只有 homework_id：
-    // 这时直接打开它的作业页（与用户点击子标签的 URL 同形：
-    // /classrooms/{课程码}/shixun_homework/{homework_id}?tabs=0），让页面自己发关卡请求。
-    const classroomCode = experiment.classroomCode || this.currentCourse?.classroomCode || '';
-    const homeworkPageUrl = !pageUrl && experiment.homeworkId && classroomCode
-      ? `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework/${experiment.homeworkId}?tabs=0`
-      : '';
-    const openUrl = pageUrl || homeworkPageUrl;
-
-    if (openUrl) {
-      // 页面自己的请求不一定在 domcontentloaded 时就发出，等网络空闲更稳。
-      await this.navigateTo(this.page, openUrl);
-      await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-
-      const deadline = Date.now() + LEVEL_LIST_TIMEOUT;
-      let waited = 0;
-      let retried = false;
-      while (!levels.length && Date.now() < deadline) {
-        // 读关卡列表期间也要能响应「停止」，否则用户会以为按钮失效。
-        if (await this.stopping()) {
-          this.log('收到停止请求，已中断关卡列表读取。', 'warn');
-          break;
-        }
-        levels = this.levelsFromCache(fragments, experiment);
-        if (levels.length) break;
-        // 前 5 秒没等到就再导航一次，促使页面重发请求。
-        if (!retried && waited >= 5000) {
-          retried = true;
-          await this.navigateTo(this.page, openUrl);
-          await this.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-        }
-        await this.sleep(250);
-        waited += 250;
+  /**
+   * 读关卡列表。**两条路径都直连接口：不导航、不轮询、不等响应。**
+   *
+   * | 实验类型 | 接口 | 拿到什么 |
+   * |---|---|---|
+   * | 有 `myshixun_identifier`（实测 40 个里 35 个） | `/api/myshixuns/{id}/challenges.json` | 名称 + 序号 + **关卡标识** |
+   * | 没有（新发布、本人还没打开过） | `/api/shixuns/{id}/challenges.json` | 名称 + 序号，**没有标识** |
+   *
+   * 没有标识时入口只能靠点页面上的「查看实战」再沿 `prev_game` 回溯（`enterFirstLevel`）。
+   *
+   * 旧实现是「先导航到实验页 → 等页面自己发请求 → 轮询响应缓存最多 8 秒 → 再重试一次导航」。
+   * 那是在误以为直连会被 `-102` 拒绝的年代写的；现在没有任何理由，而且每个实验都要
+   * 多等最多 8 秒、多一次完整页面导航。
+   */
+  async loadLevels(experiment, { emit = true } = {}) {
+    let levels = [];
+    if (experiment.myshixunIdentifier) {
+      try {
+        levels = await api.listChallenges(this.page, experiment, { user: this.user });
+      } catch (error) {
+        this.log(`关卡接口读取失败：${error.message}`, 'warn');
       }
-      if (!levels.length) {
-        this.log(`等待 ${waited}ms 未取到页面自身的关卡列表，改用其它途径。`, 'warn');
-      }
+      if (levels.length) this.log(`已通过接口读取到 ${levels.length} 个关卡（含关卡标识）。`);
     }
 
     if (!levels.length) {
-      try {
-        levels = await api.listChallenges(this.page, experiment);
-        if (levels.length) this.log(`已通过 data API 读取到 ${levels.length} 个关卡。`);
-      } catch (error) {
-        this.log(`关卡列表读取失败，将按关卡链抓取全部：${error.message}`, 'warn');
+      // 兜底：只有名称与序号。选关仍可用（按序号/challengeId），入口交给回溯。
+      levels = await api.listChallengeNames(this.page, experiment, { user: this.user });
+      if (levels.length) {
+        this.log(`接口只给出 ${levels.length} 个关卡名称（无标识），入口将用 prev_game 回溯确定。`);
       }
     }
+
     if (!levels.length) {
       this.log('未能读取关卡列表；将尝试沿关卡链遍历，并尽可能从页面元素确定起点。', 'warn');
-    } else if (!levels.some((level) => level.identifier)) {
-      this.log('页面只提供了关卡名称（无标识），入口将用 prev_game 回溯确定。');
     }
     this.discoveredLevels = levels;
     if (emit) this.emit({ type: 'levels', experiment, levels });
@@ -702,19 +595,36 @@ class ExtractEngine {
         .filter((level) => level && level.identifier)
         .map((level) => [String(level.identifier), level])
     );
+    /** 序号：接口给的 `position` 优先，其次 `index`（页面解析出来的只有 index）。 */
+    const orderOf = (level) => {
+      const value = Number(level.position ?? level.index);
+      return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+    };
+    const smallest = (list) => (list.length
+      ? list.reduce((min, item) => (orderOf(item) < orderOf(min) ? item : min))
+      : null);
 
     // 候选优先级：页面链接中序号最小者 → 关卡列表序号最小者 → 关卡列表首项 → 实训上下文。
-    const linked = pageLinks
-      .map((href) => ExtractEngine.identifierFromTaskUrl(href))
-      .filter((id) => id && known.has(id))
-      .map((id) => known.get(id));
-    const fromLinks = linked.length
-      ? linked.reduce((min, item) => (Number(item.index) < Number(min.index) ? item : min))
-      : null;
-    const fromList = known.size
-      ? [...known.values()].reduce((min, item) => (Number(item.index) < Number(min.index) ? item : min))
-      : null;
-    const candidate = fromLinks?.identifier
+    const linked = smallest(
+      pageLinks
+        .map((href) => ExtractEngine.identifierFromTaskUrl(href))
+        .filter((id) => id && known.has(id))
+        .map((id) => known.get(id))
+    );
+    const fromList = smallest([...known.values()]);
+
+    // 接口已明确给出「第 1 关」时直接采用，**不必再回溯**。
+    // 旧实现无论列表多完整都要沿 prev_game 回溯确认一次，每关多读一次 tasks.json；
+    // 那是为「页面链接只指向上次停留的关卡」准备的兜底，不该用在接口已给出序号的场景。
+    if (linked && orderOf(linked) === 1) {
+      return { identifier: String(linked.identifier), index: 1, subject: linked.name, source: 'page-link', exact: true };
+    }
+    if (fromList && orderOf(fromList) === 1 && !linked) {
+      this.log(`入口定位：第1关 ${fromList.name || ''}（来自关卡列表）`);
+      return { identifier: String(fromList.identifier), index: 1, subject: fromList.name, source: 'level-list', exact: true };
+    }
+
+    const candidate = linked?.identifier
       || fromList?.identifier
       || (this.discoveredLevels || []).find((level) => level.identifier)?.identifier
       || experiment.gameIdentifier
@@ -722,15 +632,7 @@ class ExtractEngine {
 
     if (!candidate) return { identifier: null, source: 'none' };
 
-    const source = fromLinks ? 'page-link' : fromList ? 'level-list' : 'context';
-
-    // 列表已明确给出「序号为 1」的关卡时无需回溯，省一次导航。
-    if (fromLinks && Number(fromLinks.index) === 1) {
-      return { identifier: String(fromLinks.identifier), index: 1, subject: fromLinks.name, source: 'page-link' };
-    }
-    if (fromList && Number(fromList.index) === 1 && !fromLinks) {
-      return { identifier: String(fromList.identifier), index: 1, subject: fromList.name, source: 'level-list' };
-    }
+    const source = linked ? 'page-link' : fromList ? 'level-list' : 'context';
 
     // 其余情况一律回溯确认链首。
     const start = await this.findChainStart(candidate, experiment);
@@ -1380,7 +1282,6 @@ class ExtractEngine {
     if (identifier) {
       this.log(`已通过「查看实战」进入关卡：${identifier}`);
       if (this.networkLog) this.attachNetworkCapture(target);
-      this.watchResponses(target);
     } else {
       this.log('「查看实战」未能拿到关卡标识。', 'warn');
     }
@@ -2253,7 +2154,6 @@ class ExtractEngine {
     this.discoveredExperiments = [];
     this.discoveredLevels = [];
     this.loadedCourses = null;
-    this.responseCache.clear();
   }
 
   /**
@@ -2270,9 +2170,6 @@ class ExtractEngine {
   }
 
   /** 缓存只保留本次会话，避免跨轮运行时命中过期响应。 */
-  pruneResponseCache() {
-    if (this.responseCache.size > 200) this.responseCache.clear();
-  }
 
   async run() {
     if (this.running) throw new Error('已有提取任务正在运行。');
@@ -2436,7 +2333,6 @@ class ExtractEngine {
       // 视图（实验.md / metadata）在整轮结束时统一生成一次——抓取过程中只追加 levels.jsonl。
       await this.flushExperimentViews().catch(() => {});
       this.running = false;
-      this.pruneResponseCache();
     }
   }
 }

@@ -563,10 +563,55 @@ function toChallenge(item) {
     name: item.subject || item.name || '',
     index: rawIndex,
     position: toNumber(rawPosition, 0),
+    // 关卡的数字主键：列表没有 identifier 时靠它做「选中的是哪一关」的身份（见 BUG-019）。
+    challengeId: item.challenge_id === undefined || item.challenge_id === null ? '' : String(item.challenge_id),
     type: Array.isArray(item.chooses) && item.chooses.length
       ? 'choice'
       : item.with_code_file ? 'code' : 'unknown'
   };
+}
+
+/**
+ * 读取实训的关卡列表——**只有名称与序号，没有关卡标识**。
+ *
+ * `/api/shixuns/{id}/challenges.json` 一定拿得到（`challenge_list`），
+ * 但响应里没有 `identifier`（实测字段是 `challenge_id` / `position` / `name` / `score` …）。
+ * 因此它只用于「没有 `myshixun_identifier` 的实验」显示关卡名与序号；
+ * 关卡标识只能靠页面上的「查看实战」+ `prev_game` 回溯取得。
+ *
+ * 接口失败返回 []（不抛出），与 `listChallenges` 同口径。
+ */
+async function listChallengeNames(page, experiment, opts = {}) {
+  const shixunIdentifier = experiment && experiment.shixunIdentifier;
+  if (shixunIdentifier === undefined || shixunIdentifier === null || String(shixunIdentifier) === '') return [];
+  const user = normalizeText(opts.user) || AUTH_USER;
+  const url = `${DATA_ORIGIN}/api/shixuns/${encodeURIComponent(shixunIdentifier)}/challenges.json`
+    + `?id=${encodeURIComponent(shixunIdentifier)}&zzud=${encodeURIComponent(user)}`;
+  let payload;
+  try {
+    payload = (await apiGet(page, url)).json();
+  } catch (error) {
+    return [];
+  }
+  const items = Array.isArray(payload)
+    ? payload
+    : payload && Array.isArray(payload.challenge_list)
+      ? payload.challenge_list
+      : payload && Array.isArray(payload.data)
+        ? payload.data
+        : payload && Array.isArray(payload.challenges) ? payload.challenges : [];
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const name = normalizeText(item.name || item.subject);
+      if (!name) return null;
+      return {
+        name,
+        position: toNumber(item.position, 0),
+        challengeId: item.challenge_id === undefined || item.challenge_id === null ? '' : String(item.challenge_id)
+      };
+    })
+    .filter(Boolean);
 }
 
 /**
@@ -615,6 +660,7 @@ module.exports = {
   listExperiments,
   listShixunCategories,
   listChallenges,
+  listChallengeNames,
   ApiError,
   AuthExpiredError,
   SignatureRejectedError

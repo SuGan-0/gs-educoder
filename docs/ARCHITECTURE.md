@@ -89,8 +89,24 @@ X-EDU-Type:      pc        ← 必须精确为 pc，写成 web 会失败
 | 课程（课堂） | `GET /api/users/{login}/courses.json` |
 | 实验列表 | `GET /api/courses/{classroomCode}/homework_commons.json` |
 | 章分类（仅兜底用） | `GET /api/courses/{classroomCode}/left_banner.json` |
-| 关卡列表 | `GET /api/myshixuns/{myshixun_identifier}/challenges.json` |
+| 关卡列表（含标识） | `GET /api/myshixuns/{myshixun_identifier}/challenges.json` |
+| 关卡列表（仅名称） | `GET /api/shixuns/{shixun_identifier}/challenges.json` |
 | 关卡正文 | `GET /api/tasks/{identifier}.json` |
+
+**读关卡列表不导航**。两条路径都直连接口：
+
+| 实验类型 | 接口 | 拿到什么 |
+|---|---|---|
+| 有 `myshixun_identifier`（实测 40 个里 35 个） | `myshixuns/{id}/challenges.json` | 名称 + 序号 + **关卡标识** |
+| 没有（新发布、本人还没打开过） | `shixuns/{id}/challenges.json` | 名称 + 序号，**没有标识** |
+
+入口（第 1 关）优先用接口给的 `position`：列表里 `position === 1` 的那一关就是链首，
+**不再回溯**。旧实现无论列表多完整都要沿 `prev_game` 回溯确认一次，每关多读一次
+`tasks.json`；那是为「页面链接只指向上次停留的关卡」准备的兜底，不该用在接口已给序号的场景。
+只有「列表没有标识」时才退回 `enterFirstLevel` + `findChainStart`。
+
+> 旧实现是「先导航到实验页 → 等页面自己发请求 → 轮询响应缓存最多 8 秒 → 再重试一次导航」。
+> 那是在误以为直连会被 `-102` 拒绝的年代写的。删掉后引擎测试耗时从 147 秒降到 3.3 秒。
 
 **实验列表一次取全，不按「章」逐个读取**（2026-10-01 实测）：
 
@@ -143,16 +159,19 @@ X-EDU-Type:      pc        ← 必须精确为 pc，写成 web 会失败
 `shixun_exec.json` 得到，未必总能拿到；因此 `openExperiment` 还有两层兜底（当前页面 URL 里的
 关卡标识 → 页面链接/页面数据里的关卡标识），否则入口将无从定位。
 
-关卡列表的两个真实端点信息量不同，必须合并使用：
+关卡列表的两个真实端点信息量不同，按实验类型选一个即可（**不再合并、不再缓存**）：
 
 | 端点 | 内容 |
 |---|---|
-| `/api/shixuns/{shixun_identifier}/challenges.json` | `{ challenge_list: [{ name, position, challenge_id }] }`，**有名称、无关卡标识**；一定拿得到（导航到 `/shixuns/{id}/challenges` 即触发） |
-| `/api/myshixuns/{myshixun_identifier}/challenges.json` | 含 `identifier`，可直接选关；但不一定被页面请求 |
+| `/api/myshixuns/{myshixun_identifier}/challenges.json` | 含 `identifier`，可直接选关与定位入口 |
+| `/api/shixuns/{shixun_identifier}/challenges.json` | `{ challenge_list: [{ name, position, challenge_id }] }`，**有名称、无关卡标识** |
 
-因此 `levelsFromCache` 优先采用**带 identifier** 的那份；只有名称时也能显示关卡名，
-此时入口交给 `findChainStart` 回溯。注意响应缓存必须**按路径名匹配**：页面真实请求
-带查询串（如 `?id=ob8xcwt9`），用整串 `includes` 会永远匹配不上（曾导致关卡列表恒为空）。
+`myshixun` 端点优先；拿不到时才用 `shixuns` 端点显示关卡名与序号，
+此时入口交给 `enterFirstLevel`（点「查看实战」）+ `findChainStart` 回溯。
+
+> 这里曾经有一套「响应缓存 + 按路径片段匹配」的机制，并且踩过「片段匹配会把别的实验的
+> 关卡列表当成自己的」（实测「白盒测试」列出 7 关、而它自己只有 2 关）。
+> 现在关卡列表只按**本实验自己的标识**请求接口，结构上不可能串台。
 
 诊断入口：控制台右上角「诊断」按钮（`engine.diagnose()`）会在**已打开的浏览器**里检查
 cookie、登录接口原文、页面 DOM 与时间偏差，无需关窗口；真实环境探针见 `tools/`。
