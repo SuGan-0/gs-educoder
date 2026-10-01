@@ -487,6 +487,28 @@ function withTempExportRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'touge-test-'));
 }
 
+/**
+ * 最小的假页面：按 URL 片段返回接口响应。
+ *
+ * `apiGet` 走的是 `page.evaluate(fetchInPage, { url, headers })`，返回 `{ status, body }`。
+ * 只想测「接口响应 → 引擎字段映射」时用它，比整套假 Playwright 更直白。
+ *
+ * @param {Record<string, unknown>} routes  URL 片段 → 响应体（对象会被序列化）
+ */
+function fakePageFor(routes) {
+  return {
+    url: () => 'https://www.educoder.net/',
+    async evaluate(_fn, arg) {
+      const url = String((arg && arg.url) || '');
+      for (const [fragment, body] of Object.entries(routes)) {
+        if (!url.includes(fragment)) continue;
+        return { status: 200, body: typeof body === 'string' ? body : JSON.stringify(body) };
+      }
+      return { status: 404, body: '' };
+    }
+  };
+}
+
 // ---------------------------------------------------------------- 测试
 
 /** 各用例共用的「页面自身请求」回放数据（引擎优先走这条路径）。 */
@@ -838,45 +860,159 @@ test('引擎：课堂实验下的「子标签实验」也要列出来（示例�
   });
 
   const engine = new ExtractEngine({ onEvent: () => {} });
-  // 顶层是「单元测试」，它下面挂着子标签「软件工程初体验」（只有 homework_id、没有 shixun_identifier），
+  // 接口返回的实验列表**本来就是扁平的**：实测软件工程导论 40 个实验里，
+  // 「软件工程初体验」那 8 个子项就是顶层条目，不需要再递归 children。
   // 顶层还混了一个普通作业（is_shixun=false，不该被收）。
-  const payload = {
-    homeworks: [
-      {
-        name: '单元测试',
-        homework_id: 88000011,
-        homework_commons_id: 88000011,
-        shixun_identifier: 'zqab7e3c',
-        myshixun_identifier: 'cccccccccc',
-        challenge_count: 2,
-        is_shixun: true,
-        children: [
-          {
-            name: '软件工程初体验',
-            homework_id: 88000004,
-            is_shixun: false,
-            challenge_count: 1
-          }
-        ]
-      },
-      { name: '第一章作业', homework_id: 999, is_shixun: false }
-    ]
-  };
+  engine.page = fakePageFor({
+    'homework_commons.json': {
+      query_total_count: 3,
+      homeworks: [
+        {
+          name: '单元测试',
+          homework_id: 88000011,
+          shixun_identifier: 'zqab7e3c',
+          myshixun_identifier: 'cccccccccc',
+          challenge_count: 2,
+          is_shixun: true,
+          upper_category_name: '7、软件测试'
+        },
+        {
+          name: '软件工程初体验',
+          homework_id: 88000004,
+          shixun_identifier: '',
+          myshixun_identifier: 'dddddddddd',
+          challenge_count: 1,
+          is_shixun: true,
+          upper_category_name: '1、软件工程初体验'
+        },
+        { name: '这是一次普通作业', homework_id: 999, is_shixun: false, upper_category_name: '7、软件测试' }
+      ]
+    }
+  });
 
-  const experiments = engine.parseExperiments(JSON.stringify(payload), 'page');
+  const experiments = await engine.loadExperiments({ name: '示例课程A', classroomCode: 'zqf25f66' });
+
   assert.deepEqual(
     experiments.map((item) => item.name),
-    ['单元测试', '软件工程初体验'],
-    `子标签实验必须列出来，普通作业不能收进来，实际：${experiments.map((item) => item.name).join(',')}`
+    ['[7、软件测试] 单元测试', '[1、软件工程初体验] 软件工程初体验'],
+    `子标签实验要列出来、普通作业不能收进来，实际：${experiments.map((item) => item.name).join(',')}`
   );
-  const parent = experiments[0];
-  const child = experiments[1];
-  assert.equal(parent.nested, false);
-  assert.equal(parent.shixunIdentifier, 'zqab7e3c');
-  assert.equal(child.nested, true, '子标签要标出来');
-  assert.equal(child.parentName, '单元测试', '子标签要记住挂在哪个实验下');
-  assert.equal(child.homeworkId, 88000004, '子标签靠 homework_id 定位');
-  assert.equal(child.shixunIdentifier, '', '子标签可能没有 shixun 标识');
+  assert.equal(experiments[0].homeworkId, 88000011);
+  assert.equal(experiments[0].shixunIdentifier, 'zqab7e3c');
+  assert.equal(experiments[0].myshixunIdentifier, 'cccccccccc');
+  assert.equal(experiments[1].homeworkId, 88000004, '子标签靠 homework_id 定位');
+  assert.equal(experiments[1].shixunIdentifier, '', '子标签可能没有 shixun 标识');
+});
+
+test('引擎：没有「章」的课堂不加前缀（否则历史导出目录会对不上）', async (t) => {
+  const fake = installFakePlaywright();
+  const restoreApi = patchApiForFakes();
+  const { ExtractEngine } = freshEngineModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const engine = new ExtractEngine({ onEvent: () => {} });
+  // 实测：机器学习 / Java设计模式 这类课堂的 upper_category_name 为 null，
+  // 历史导出目录名就是裸实验名（CNN、面向对象分析与设计），不能凭空加前缀。
+  engine.page = fakePageFor({
+    'homework_commons.json': {
+      query_total_count: 2,
+      homeworks: [
+        {
+          name: 'CNN', homework_id: 88000002, shixun_identifier: 'zq6177bf',
+          myshixun_identifier: 'zq3a1b66ee', is_shixun: true, upper_category_name: null
+        },
+        {
+          name: '模型评估与选择', homework_id: 88000001, shixun_identifier: 'zq655f1e',
+          myshixun_identifier: 'zqad65672b', is_shixun: true
+        }
+      ]
+    }
+  });
+
+  const experiments = await engine.loadExperiments({ name: '机器学习', classroomCode: 'HCEAP94S' });
+
+  assert.deepEqual(experiments.map((item) => item.name), ['CNN', '模型评估与选择']);
+  assert.deepEqual(experiments.map((item) => item.categoryName), ['', '']);
+});
+
+test('引擎：没有 myshixun 标识的实验才去读章分类（主路径不读）', async (t) => {
+  const fake = installFakePlaywright();
+  const restoreApi = patchApiForFakes();
+  const { ExtractEngine } = freshEngineModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const engine = new ExtractEngine({ onEvent: () => {} });
+  const seen = [];
+  const routes = {
+    'homework_commons.json': {
+      query_total_count: 2,
+      homeworks: [
+        // 有 myshixun → 主路径能拿到关卡标识
+        { name: '集成测试和确认测试', homework_id: 1, shixun_identifier: 'a', myshixun_identifier: 'ztraefuc2p', is_shixun: true, upper_category_name: '7、软件测试' },
+        // 没有 myshixun（实测：新发布、还没被本人打开过的实验）→ 需要兜底，才需要章分类
+        { name: '面向对象分析之顺序图', homework_id: 4200885, shixun_identifier: 'qgiwumjn', myshixun_identifier: null, is_shixun: true, upper_category_name: '8、面向对象分析' }
+      ]
+    },
+    'left_banner.json': {
+      course_modules: [{
+        name: '课堂实验',
+        type: 'shixun',
+        second_category: [
+          { name: '7、软件测试', category_id: 1663579 },
+          { name: '8、面向对象分析', category_id: 1586166 }
+        ]
+      }]
+    }
+  };
+  const base = fakePageFor(routes);
+  engine.page = {
+    ...base,
+    async evaluate(fn, arg) {
+      seen.push(String((arg && arg.url) || ''));
+      return base.evaluate(fn, arg);
+    }
+  };
+
+  const experiments = await engine.loadExperiments({ name: '软件工程导论', classroomCode: '2i6ng7vp' });
+
+  assert.ok(
+    seen.some((url) => url.includes('left_banner.json')),
+    '有实验缺 myshixun 标识时必须读一次章分类，否则兜底路径不知道去哪个章页'
+  );
+  assert.equal(experiments.find((item) => item.name.includes('顺序图')).categoryId, '1586166');
+});
+
+test('引擎：实验分页按 query_total_count 校验，页数不足时整批失败', async (t) => {
+  const fake = installFakePlaywright();
+  const restoreApi = patchApiForFakes();
+  const { ExtractEngine } = freshEngineModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const engine = new ExtractEngine({ onEvent: () => {} });
+  // 声明 3 条却只给 1 条，第二页为空 → 分页被截断，必须抛错而不是静默少抓。
+  engine.page = fakePageFor({
+    'homework_commons.json': {
+      query_total_count: 3,
+      homeworks: [
+        { name: '只有一条', homework_id: 1, shixun_identifier: 'a', myshixun_identifier: 'b', is_shixun: true }
+      ]
+    }
+  });
+
+  await assert.rejects(
+    () => engine.loadExperiments({ name: '示例课程A', classroomCode: 'zqf25f66' }),
+    /分页提前结束/,
+    '分页不完整时必须整批失败'
+  );
 });
 
 test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业页」而不是 shixun 页', async (t) => {
@@ -913,7 +1049,7 @@ test('引擎：只有 homework_id 的子标签实验，关卡列表走「作业�
   );
 });
 
-test('引擎：课堂实验按「章标签」分视图，必须逐个读取并合并（示例课程A实测）', (t) => {
+test('引擎：实验列表一次请求取全，不按「章」逐个读取（2026-10-01 实测）', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
   const { ExtractEngine } = freshEngineModule();
@@ -923,52 +1059,40 @@ test('引擎：课堂实验按「章标签」分视图，必须逐个读取并�
   });
 
   const engine = new ExtractEngine({ onEvent: () => {} });
-
-  // 侧栏响应给出 7 个章分类（与真实 left_banner.json 同形）
-  const banner = JSON.stringify({
-    course_modules: [
-      { id: 88000014, name: '课堂实验', type: 'shixun', second_category: [
-        { name: '课堂实验', category_id: 88000004, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000004' },
-        { name: '课堂实验', category_id: 88000007, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000007' },
-        { name: '课堂实验', category_id: 88000008, second_category_url: '/classrooms/zqf25f66/shixun_homework/88000008' }
-      ] }
-    ]
+  const requested = [];
+  const base = fakePageFor({
+    'homework_commons.json': {
+      query_total_count: 3,
+      homeworks: [
+        { name: '制定进度计划', homework_id: 11, shixun_identifier: 'a', myshixun_identifier: 'ma', is_shixun: true, upper_category_name: '1、软件工程初体验' },
+        { name: '软件过程模型', homework_id: 12, shixun_identifier: 'b', myshixun_identifier: 'mb', is_shixun: true, upper_category_name: '2、软件工程概述' },
+        { name: '单元测试', homework_id: 13, shixun_identifier: 'c', myshixun_identifier: 'mc', is_shixun: true, upper_category_name: '7、软件测试' }
+      ]
+    }
   });
-  const categories = engine.shixunCategoriesFromBanner(banner);
-  assert.deepEqual(categories.map((item) => item.id), ['88000004', '88000007', '88000008'], '要取出每个章的 category_id');
-  assert.equal(categories[0].url, '/classrooms/zqf25f66/shixun_homework/88000004');
-  assert.deepEqual(engine.shixunCategoriesFromBanner('不是 JSON'), [], '坏响应不能抛错');
-  assert.deepEqual(engine.shixunCategoriesFromBanner(JSON.stringify({ course_modules: [] })), []);
+  engine.page = {
+    ...base,
+    async evaluate(fn, arg) {
+      requested.push(String((arg && arg.url) || ''));
+      return base.evaluate(fn, arg);
+    }
+  };
 
-  // 合并：各章为主；默认视图带来新实验时追加；重复项按「作业主键+实训标识」去重
-  const initial = [
-    { name: '集成测试和确认测试', homeworkId: 88000005, shixunIdentifier: 'zqa079e5' },
-    { name: '单元测试', homeworkId: 88000012, shixunIdentifier: 'x' },
-    { name: '只在默认视图里的实验', homeworkId: 999, shixunIdentifier: 'only-default' }
-  ];
-  const chapterLists = [
-    [[{ name: '找出代码中的bug', homeworkId: 88000009, shixunIdentifier: 'a' },
-      { name: '制定进度计划', homeworkId: 88000015, shixunIdentifier: 'b' }], '1、软件工程初体验'],
-    [[{ name: '软件过程模型', homeworkId: 88000016, shixunIdentifier: 'c' }], '2、软件工程概述'],
-    // 第 3 章与默认视图有重复（同一个 homework_id），不能重复计入
-    [[{ name: '集成测试和确认测试', homeworkId: 88000005, shixunIdentifier: 'zqa079e5' }], '3、可行性研究']
-  ];
+  const experiments = await engine.loadExperiments({ name: '软件工程导论', classroomCode: '2i6ng7vp' });
 
-  const merged = engine.mergeExperimentLists(initial, chapterLists);
-  const names = merged.map((item) => item.name);
-  // 章内 4 个（第 3 章那条与默认视图重复，只算一次）+ 默认视图独有的 2 个（单元测试、只在默认视图里的实验）
-  assert.equal(merged.length, 6, `实际：${names.join(' | ')}`);
-  assert.equal(names.filter((name) => /集成测试和确认测试/.test(name)).length, 1, '重复项只保留一次');
-  assert.ok(
-    names.includes('[1、软件工程初体验] 找出代码中的bug'),
-    '章内条目要带所属章前缀，便于界面区分'
+  // 实测（软件工程导论 2i6ng7vp）：不带 category 返回 40 个实验，
+  // 与 8 个章各自读取后合并去重（9+3+4+6+6+2+5+5=40）**逐条一致，差异 0**。
+  // 所以「按章逐个导航 + 截获响应 + 合并」整套机制是多余的，这里锁住它不被加回来。
+  assert.equal(
+    requested.filter((url) => url.includes('homework_commons.json')).length,
+    1,
+    '实验列表应当一次请求取全'
   );
-  assert.equal(merged[0].categoryName, '1、软件工程初体验');
-  assert.ok(names.includes('只在默认视图里的实验'), '默认视图里独有的实验要保留');
-
-  // 没有章视图时原样返回（保持旧行为）
-  assert.deepEqual(engine.mergeExperimentLists(initial, []), initial);
-  assert.deepEqual(engine.mergeExperimentLists(initial, null), initial);
+  assert.ok(
+    !requested.some((url) => url.includes('category=')),
+    '不得按章重复请求（那只会把同一次结果拆成 8 次）'
+  );
+  assert.deepEqual(experiments.map((item) => item.categoryName), ['1、软件工程初体验', '2、软件工程概述', '7、软件测试']);
 });
 
 test('引擎：签名被拒（-102）时快速失败并指向 educoder-sign.js，不再抓页面兜底', async (t) => {
@@ -1086,28 +1210,19 @@ test('引擎：登录探测已判定为已登录时不得停留在等待登录',
   assert.ok(phases.includes('done'));
 });
 
-test('引擎：课程没有课堂实验时不得回退直连 API（否则报出误导性的 -102 错误）', async (t) => {
+test('引擎：课程没有课堂实验时按正常空结果处理，不报错也不出现误导性的 -102', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();
-  const api = require('../extractor/lib/educoder-api');
-  const originalListExperiments = api.listExperiments;
   const { ExtractEngine } = freshEngineModule();
   const exportRoot = withTempExportRoot();
   const events = [];
-  let apiCalls = 0;
 
-  // 页面明确回答「没有课堂实验」：真实响应无顶层 status，homeworks 为 []
+  // 接口明确回答「没有课堂实验」：真实响应无顶层 status，homeworks 为 []
   fake.state.ownResponses = [
     ['api/courses/VX58GTJP/homework_commons.json', JSON.stringify({ course_identity: 5, homeworks: [], all_count: 0 })]
   ];
-  // 直连 API 若被调用（不该被调用）就抛 -102，用于证明没回退
-  api.listExperiments = async () => {
-    apiCalls += 1;
-    throw new Error('data 接口拒绝了本工具的直连请求（-102 设备时间校验）');
-  };
 
   t.after(() => {
-    api.listExperiments = originalListExperiments;
     restoreApi();
     fake.restore();
     fs.rmSync(exportRoot, { recursive: true, force: true });
@@ -1134,9 +1249,8 @@ test('引擎：课程没有课堂实验时不得回退直连 API（否则报出�
   });
 
   assert.deepEqual(experiments, [], '该课程没有课堂实验，应返回空数组');
-  assert.equal(apiCalls, 0, '页面已给出响应时不得再回退直连 API');
   assert.ok(
-    events.some((event) => event.type === 'log' && /没有可提取的课堂实验|都不是课堂实验/.test(event.message)),
+    events.some((event) => event.type === 'log' && /没有可提取的课堂实验/.test(event.message)),
     '必须明确说明该课程没有课堂实验，而不是报错'
   );
   assert.ok(
@@ -1144,7 +1258,9 @@ test('引擎：课程没有课堂实验时不得回退直连 API（否则报出�
     '不应出现 -102 相关告警'
   );
 
-  // 整条 run() 也必须以「正常结束」收场，而不是 error 阶段
+  // 整条 run() 也必须以「正常结束」收场，而不是 error 阶段。
+  // 这里必须选**没有课堂实验的那个课堂**：run() 走的是控制台选的课程，
+  // 而「选到有实验的课程」不属于本用例要覆盖的情形。
   events.length = 0;
   const engine2 = new ExtractEngine({
     exportRoot,
@@ -1152,7 +1268,12 @@ test('引擎：课程没有课堂实验时不得回退直连 API（否则报出�
     pageSettleMs: 0,
     onEvent: (event) => events.push(event),
     control: {
-      waitForCourse: async (c) => c[0],
+      waitForCourse: async () => ({
+        id: 120002,
+        name: '网络编程技术-26-27第一学期',
+        classroomCode: 'VX58GTJP',
+        classroomUrl: 'https://www.educoder.net/classrooms/VX58GTJP/announcement'
+      }),
       waitForExperiments: async (e) => e,
       waitForLevels: async () => null,
       shouldStop: async () => false

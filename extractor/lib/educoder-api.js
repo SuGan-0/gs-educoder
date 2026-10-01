@@ -429,8 +429,20 @@ async function listCourses(page, opts = {}) {
 // ---------------------------------------------------------------- 实验
 
 /**
- * 读取课程下可提取的实训（实验）列表。
- * 只保留 `item.is_shixun` 为真的条目。
+ * 读取课程下可提取的实训（实验）列表。只保留 `item.is_shixun` 为真的条目。
+ *
+ * ## 为什么不需要按「章」逐个读取
+ *
+ * 实测（2026-10-01，软件工程导论 `2i6ng7vp`，8 个章）：
+ *
+ * | 取法 | 结果 |
+ * |---|---|
+ * | 不带 `category`，分页取全 | 40 个实验 |
+ * | 8 个章各自读取后合并去重（9+3+4+6+6+2+5+5） | 40 个实验 |
+ * | 差异 | **0 个** |
+ *
+ * 章名由每条记录的 `upper_category_name` 直接给出（无章的课堂该字段为 `null`），
+ * 所以「按章逐个导航 + 截获响应 + 合并」整套机制是多余的。
  *
  * 注意：成功的响应**往往根本不带 status 字段**（实测真实响应为
  * `{ course_identity, homeworks, all_count, ... }`），因此不盲目判 `payload.status`。
@@ -439,23 +451,100 @@ async function listExperiments(page, course, opts = {}) {
   const classroomCode = course && course.classroomCode;
   if (!classroomCode) throw new ApiError('缺少 classroomCode，无法读取课程实验。');
   const user = normalizeText(opts.user) || AUTH_USER;
-  const url = `${DATA_ORIGIN}/api/courses/${encodeURIComponent(classroomCode)}/homework_commons.json`
-    + `?limit=100&status=0&id=${encodeURIComponent(classroomCode)}&type=4&order=0`
-    + `&zzud=${encodeURIComponent(user)}`;
+  const perPage = toNumber(opts.perPage, DEFAULT_PER_PAGE) || DEFAULT_PER_PAGE;
+
+  const raw = [];
+  const seenIds = new Set();
+  let expected = null;
+  for (let index = 1; index <= COURSES_PAGE_LIMIT; index += 1) {
+    const url = `${DATA_ORIGIN}/api/courses/${encodeURIComponent(classroomCode)}/homework_commons.json`
+      + `?limit=${perPage}&page=${index}&status=0&id=${encodeURIComponent(classroomCode)}&type=4&order=0`
+      + `&zzud=${encodeURIComponent(user)}`;
+    const response = await apiGet(page, url);
+    const verdict = classifyResponse(response.status, response.text);
+    if (!verdict.ok) throw new ApiError(`读取课程实验失败：${verdict.reason}`, { status: response.status });
+    const payload = response.json();
+    const batch = payload && Array.isArray(payload.homeworks) ? payload.homeworks : [];
+    if (payload && Number.isFinite(Number(payload.query_total_count))) {
+      const observed = Number(payload.query_total_count);
+      if (expected !== null && observed !== expected) {
+        throw new ApiError(`分页期间实验总数发生变化（${expected} → ${observed}），本次结果不可信，请重试。`);
+      }
+      expected = observed;
+    }
+
+    let fresh = 0;
+    for (const item of batch) {
+      const key = item && item.homework_id !== undefined && item.homework_id !== null ? String(item.homework_id) : '';
+      if (key && seenIds.has(key)) continue;
+      if (key) seenIds.add(key);
+      raw.push(item);
+      fresh += 1;
+    }
+
+    // 用「原始行数」对齐 count：count 包含被过滤掉的非实训条目，按有效数对齐必然误判。
+    if (expected !== null && raw.length >= expected) break;
+    if (!batch.length || fresh === 0) {
+      // 空页、或整页都是已见过的条目（服务端忽略了 page 参数）——都到此为止。
+      // 若此时仍没凑够声明的数量，说明分页被截断，宁可整批失败也不静默少抓。
+      if (expected !== null && raw.length < expected) {
+        throw new ApiError(`实验分页提前结束：只取到 ${raw.length} 行，接口声明 ${expected} 行。`);
+      }
+      break;
+    }
+    if (index === COURSES_PAGE_LIMIT) {
+      throw new ApiError(`实验分页超出安全上限（${COURSES_PAGE_LIMIT} 页）仍未取全，已停止。`);
+    }
+  }
+
+  const experiments = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || !item.is_shixun) continue;
+    const key = item.homework_id === undefined || item.homework_id === null ? '' : String(item.homework_id);
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    experiments.push({
+      name: normalizeText(item.name),
+      // 章名：有章的课堂才有值，界面与导出目录靠它加 `[章名] ` 前缀。
+      categoryName: normalizeText(item.upper_category_name),
+      homeworkId: item.homework_id,
+      shixunIdentifier: normalizeText(item.shixun_identifier),
+      myshixunIdentifier: normalizeText(item.myshixun_identifier),
+      taskCount: toNumber(item.challenge_count, 0)
+    });
+  }
+  Object.defineProperty(experiments, 'rawTotal', { value: raw.length, enumerable: false });
+  return experiments;
+}
+
+/**
+ * 读取课堂的「课堂实验」章分类（`left_banner.json`）。
+ *
+ * **只有兜底路径用得到**：没有 `myshixun_identifier` 的实验拿不到关卡标识，
+ * 只能靠导航到它所在的章页再点卡片（见 extract-engine 的 openExperiment）。
+ * 主路径（有 myshixun 标识）完全不需要章分类。
+ *
+ * 返回 `[{ id, name }]`，`name` 形如「8、面向对象分析」。
+ */
+async function listShixunCategories(page, course, opts = {}) {
+  const classroomCode = course && course.classroomCode;
+  if (!classroomCode) throw new ApiError('缺少 classroomCode，无法读取章分类。');
+  const user = normalizeText(opts.user) || AUTH_USER;
+  const url = `${DATA_ORIGIN}/api/courses/${encodeURIComponent(classroomCode)}/left_banner.json`
+    + `?zzud=${encodeURIComponent(user)}`;
   const response = await apiGet(page, url);
   const verdict = classifyResponse(response.status, response.text);
-  if (!verdict.ok) throw new ApiError(`读取课程实验失败：${verdict.reason}`, { status: response.status });
+  if (!verdict.ok) throw new ApiError(`读取章分类失败：${verdict.reason}`, { status: response.status });
   const payload = response.json();
-  const items = payload && Array.isArray(payload.homeworks) ? payload.homeworks : [];
-  return items
-    .filter((item) => item && item.is_shixun)
-    .map((item) => ({
-      name: item.name,
-      homeworkId: item.homework_id,
-      shixunIdentifier: item.shixun_identifier,
-      myshixunIdentifier: item.myshixun_identifier,
-      taskCount: item.challenge_count || 0
-    }));
+  const modules = payload && Array.isArray(payload.course_modules) ? payload.course_modules : [];
+  const module = modules.find((item) => item && item.name === '课堂实验')
+    || modules.find((item) => item && Array.isArray(item.second_category) && item.second_category.length && item.type === 'shixun');
+  return ((module && module.second_category) || [])
+    .filter((item) => item && item.category_id)
+    .map((item) => ({ id: String(item.category_id), name: normalizeText(item.name) }));
 }
 
 // ---------------------------------------------------------------- 关卡
@@ -524,6 +613,7 @@ module.exports = {
   classifyResponse,
   listCourses,
   listExperiments,
+  listShixunCategories,
   listChallenges,
   ApiError,
   AuthExpiredError,

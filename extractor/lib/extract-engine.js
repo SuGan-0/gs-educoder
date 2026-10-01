@@ -256,37 +256,6 @@ class ExtractEngine {
     });
   }
 
-  /**
-   * 从缓存里按 URL 取值（页面自身抓到的优先）。
-   *
-   * 必须**按路径名**匹配，不能做整串 includes：页面真实请求常带查询串
-   * （例如 `/api/shixuns/xxx/challenges.json?id=xxx`），而调用方给的片段没有查询串，
-   * 用 includes 会永远匹配不上（曾导致关卡列表恒为空）。
-   */
-  cachedResponse(fragment, { exact = false } = {}) {
-    const normalize = (value) => {
-      const text = String(value || '');
-      const pathOnly = text.split('?')[0].split('#')[0];
-      const index = pathOnly.indexOf('/api/');
-      return (index >= 0 ? pathOnly.slice(index) : pathOnly).replace(/\/+$/, '');
-    };
-    const target = normalize(fragment);
-    if (!target) return null;
-    for (const [key, body] of this.responseCache) {
-      const candidate = normalize(key);
-      if (candidate === target) return body;
-    }
-    if (exact) return null;
-    // 非精确模式（历史行为）：允许「片段包含于 URL」的宽松匹配。
-    // 之所以必须保留：调用方常用不带实验标识的片段（如 `api/myshixun/x/challenges.json`
-    // 与实际响应的 `api/myshixuns/x/challenges.json` 不同），精确匹配会永远取不到。
-    // 「不同实验互相串台」由调用方用「实验标识必须出现在路径里」这一条来兜底（见 levelsFromCache）。
-    for (const [key, body] of this.responseCache) {
-      const candidate = normalize(key);
-      if (candidate.endsWith(target) || target.endsWith(candidate)) return body;
-    }
-    return null;
-  }
 
   /** 与 cachedResponse 同源，但返回命中的缓存键（响应 URL）与响应体，便于调用方判断归属。 */
   cachedResponseEntry(fragment, { exact = false } = {}) {
@@ -326,54 +295,6 @@ class ExtractEngine {
   }
 
   /** 导航到某页并等待页面自身发出匹配的 API 请求，返回其响应体。 */
-  async captureOwnResponse(page, url, fragment, timeout = REQUEST_TIMEOUT) {
-    let captured = null;
-    const handler = async (response) => {
-      if (captured || !response.url().includes(fragment)) return;
-      try {
-        captured = await response.text();
-      } catch {
-        captured = null;
-      }
-    };
-    page.on('response', handler);
-    try {
-      // 已经在目标页面时不要再 goto（会刷新页面）：改为先等一会儿，
-      // 若仍无响应再 reload 一次——因为页面停止发请求后就永远等不到了
-      // （连续读取同一页面时会踩到：旧响应已在缓存外被消费掉）。
-      let alreadyThere = false;
-      try {
-        alreadyThere = page.url() === url;
-      } catch {
-        alreadyThere = false;
-      }
-      if (!alreadyThere) {
-        await page.goto(url, { waitUntil: 'domcontentloaded' }).catch((error) => {
-          this.log(`打开页面失败：${error.message}`, 'warn');
-        });
-      }
-      const deadline = Date.now() + timeout;
-      const reloadAfter = alreadyThere ? Math.min(2000, timeout) : timeout;
-      let reloaded = false;
-      let lastNotice = Date.now();
-      while (!captured && Date.now() < deadline) {
-        if (alreadyThere && !reloaded && Date.now() > deadline - timeout + reloadAfter) {
-          reloaded = true;
-          await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
-        }
-        // 长时间等待时给一次进度反馈，避免界面看起来像卡死（等待窗口最长 15 秒）。
-        if (Date.now() - lastNotice >= 5000) {
-          lastNotice = Date.now();
-          this.log(`仍在等待页面自身的响应：${fragment}`);
-        }
-        await this.sleep(250);
-      }
-    } finally {
-      page.off('response', handler);
-    }
-    if (captured) this.responseCache.set(fragment, captured);
-    return captured;
-  }
 
   async ensureLogin() {
     this.status('login', '正在检查登录状态…');
@@ -557,333 +478,59 @@ class ExtractEngine {
     return courses;
   }
 
+  /**
+   * 读取课堂下的实验列表。
+   *
+   * 直接调 `homework_commons.json`：**不截获页面响应、也不按章逐个读取**。
+   * 实测不带 `category` 就返回全部实验，章名由每条记录的 `upper_category_name`
+   * 给出（见 `educoder-api.listExperiments` 的实测表格）。
+   *
+   * 显示名加 `[章名] ` 前缀——**只在有章时才加**。这不是美化：导出目录名与答案
+   * 文件名都用它，历史产物就是这么命名的（软件工程导论 30 个目录全部带前缀，
+   * 而机器学习 / Java设计模式 这类没有章的课堂不加前缀），规则不一致就会把已有
+   * 资料全部对不上。
+   */
   async loadExperiments(course) {
-    // 首选：页面自身请求（data API 对直连请求返回 -102，但页面自己的请求完全正常）。
-    // 见 watchResponses / captureOwnResponse 的说明。
-    // 匹配片段用「路径」而不是完整 URL：页面响应里可能带不同查询串。
-    // classroomUrl 可能缺失（调用方只给了 classroomCode），必须能自行兜底，
-    // 否则这里会抛错并把整条链路带偏（曾因此误判「课程没有实验」）。
-    const experimentsFragment = `api/courses/${course.classroomCode}/homework_commons.json`;
-    const shixunUrl = course.classroomUrl
-      ? course.classroomUrl.replace(/\/announcement$/, '/shixun_homework')
-      : `https://www.educoder.net/classrooms/${course.classroomCode}/shixun_homework`;
-    const pageBody = await this.captureOwnResponse(this.page, shixunUrl, experimentsFragment);
     let experiments = [];
-    // 关键：页面响应拿到了就是拿到了——即使里面有 0 个实训实验，也说明该课程**没有**课堂实验，
-    // 不应再回退到会被 -102 拒绝的直连接口（那只会产生误导性的报错）。
-    const pageAnswered = typeof pageBody === 'string' && pageBody.length > 0;
-    if (pageAnswered) {
-      experiments = this.parseExperiments(pageBody, 'page');
-      // 课堂实验页把实验按「章标签」分成多个 category 视图，页面自身请求带
-      // `&category={id}`；不带 category 的响应只是其中一个分类，直接用它就会漏掉其余各章
-      // （实测示例课程A：默认视图 20 项，而第 1 章还有 9 项完全不同的实验）。
-      // 因此这里按章标签逐个补齐。
-      experiments = await this.loadCategoryExperiments(experiments, course, shixunUrl);
-    } else {
-      this.log('未能截获页面自身的实验列表响应，改用 data 接口回退。', 'warn');
+    try {
+      experiments = await api.listExperiments(this.page, course, { user: this.user });
+    } catch (error) {
+      // 不回退到解析页面：接口现在能通，抓不到就是真失败。
+      // 静默换个来源会把「签名坏了」伪装成「这个课堂没有实验」，比直接报错危险得多。
+      this.log(`实验接口读取失败：${error.message}`, 'error');
+      throw error;
+    }
+    experiments = experiments.map((item) => ({
+      ...item,
+      name: item.categoryName ? `[${item.categoryName}] ${item.name}` : item.name
+    }));
+
+    // 兜底路径才需要章分类：没有 myshixun_identifier 的实验拿不到关卡标识，
+    // 只能先打开它所在的章页再点卡片。主路径用不到，所以按需读取。
+    if (experiments.some((item) => !item.myshixunIdentifier && item.categoryName)) {
+      const categories = await api
+        .listShixunCategories(this.page, course, { user: this.user })
+        .catch((error) => {
+          this.log(`章分类读取失败（只影响无标识实验的兜底路径）：${error.message}`, 'warn');
+          return [];
+        });
+      const idByName = new Map(categories.map((item) => [item.name, item.id]));
+      experiments = experiments.map((item) => ({ ...item, categoryId: idByName.get(item.categoryName) || '' }));
     }
 
-    // 回退：仅在页面没给出响应时才直连 data API。
-    if (!pageAnswered && !experiments.length) {
-      try {
-        experiments = await api.listExperiments(this.page, course);
-        if (experiments.length) this.log('已通过 data API 读取实验列表。');
-      } catch (error) {
-        this.log(`实验接口读取失败：${error.message}`, 'warn');
-      }
-    }
-    if (pageAnswered && !experiments.length) {
-      // 页面明确说没有实验，但 DOM 上若还挂着「开始学习」，说明是解析/捕获漏了——
-      // 宁可明确报出不一致，也不要让用户以为课程本来就没有实验。
-      const domHint = await this.page
-        .evaluate(() => {
-          const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
-          return {
-            startButtons: (text.match(/开始学习/g) || []).length,
-            hasEmptyHint: /暂时还没有相关数据|暂无数据/.test(text)
-          };
-        })
-        .catch(() => ({ startButtons: 0, hasEmptyHint: false }));
-      if (domHint.startButtons > 0) {
-        this.log(
-          `页面读到 ${domHint.startButtons} 个「开始学习」，但实验列表解析为 0 条——` +
-            '列表响应可能未捕获到，请点「诊断」或重试。',
-          'error'
-        );
-      } else if (domHint.hasEmptyHint) {
-        this.log('该课程的课堂实验页面显示「暂时还没有相关数据」，确实没有可提取的实验。');
-      } else {
-        const total = this.parseHomeworkCount(pageBody);
-        this.log(
-          total > 0
-            ? `该课程在本页面有 ${total} 项作业，但都不是可提取的实训（既无实训标识也无作业主键），因此没有可提取的实验。`
-            : '该课程在当前视图下没有任何作业，没有可提取的课堂实验。'
-        );
-      }
-    }
-
+    if (!experiments.length) this.log('该课堂没有可提取的课堂实验。');
     this.discoveredExperiments = experiments;
     this.emit({ type: 'experiments', course, experiments });
     return experiments;
   }
 
   /** 从 homework_commons 响应里取作业总数，用于区分「没有作业」与「有作业但没有课堂实验」。 */
-  parseHomeworkCount(body) {
-    try {
-      const payload = JSON.parse(body);
-      if (Array.isArray(payload?.homeworks)) return payload.homeworks.length;
-      const count = Number(payload?.all_count ?? payload?.task_count ?? NaN);
-      return Number.isFinite(count) ? count : 0;
-    } catch {
-      return 0;
-    }
-  }
 
-  /**
-   * 递归收集「像实训条目」的对象。
-   *
-   * 为什么不能只看顶层的 `is_shixun`：一门课的课堂实验列表里，一个条目下面还可能挂着
-   * 子标签（实测 URL 形如 `/classrooms/{课程}/shixun_homework/{homework_id}?tabs=0`，
-   * 例如「软件工程初体验」就是挂在某个课堂实验下的子实训）。这些子项有时嵌在
-   * `children` / `items` / `homeworks` 之类的数组字段里，而且不一定带 `is_shixun`，
-   * 只按顶层过滤就会整片漏掉。
-   *
-   * 判定：只要带实训标识（shixun_identifier）或有实训主键（homework_id / homework_commons_id），
-   * 就认为是可提取的实验；按标识去重，父项在前、子项紧随其后。
-   */
-  collectShixunItems(node, out = [], depth = 0, insideShixun = false) {
-    if (!node || typeof node !== 'object' || depth > 4) return out;
-    if (Array.isArray(node)) {
-      for (const item of node) this.collectShixunItems(item, out, depth + 1, insideShixun);
-      return out;
-    }
-    const shixunIdentifier = typeof node.shixun_identifier === 'string' ? node.shixun_identifier : '';
-    const myshixunIdentifier = typeof node.myshixun_identifier === 'string' ? node.myshixun_identifier : '';
-    const markedAsShixun = node.is_shixun === true || node.is_shixun === 1;
-    const hasShixunId = Boolean(shixunIdentifier) || Boolean(myshixunIdentifier);
-    const hasName = Boolean(node.name || node.homework_name || node.subject);
-    const hasHomeworkId = Number.isFinite(Number(node.homework_id)) && Number(node.homework_id) > 0;
-    // 收条目的三种情况：
-    // ① 顶层显式标了 is_shixun，或带实训标识；
-    // ② **父项是实训**时，子标签即使没标 is_shixun、也没有实训标识，只要是「有 homework_id 的作业」
-    //    就要收——实测「软件工程初体验」就是这样挂在课堂实验下面的（URL
-    //    /classrooms/{课程}/shixun_homework/{homework_id}?tabs=0）；
-    // ③ 其余（普通作业）一律不收，避免把非实训作业混进来。
-    const shouldCollect = hasName && (markedAsShixun || hasShixunId || (insideShixun && hasHomeworkId));
-    if (shouldCollect) out.push(node);
-    const childContext = insideShixun || markedAsShixun || hasShixunId;
-    // 继续往下找子标签：优先看名字里带 child/item/homework/group 的数组字段
-    for (const [key, value] of Object.entries(node)) {
-      if (!Array.isArray(value) || !value.length) continue;
-      const first = value[0];
-      if (!first || typeof first !== 'object') continue;
-      const interesting = childContext || /child|sub|item|homework|group|list|shixun/i.test(key);
-      if (interesting) this.collectShixunItems(value, out, depth + 1, childContext);
-    }
-    return out;
-  }
 
-  /**
-   * 从侧栏响应里取出「课堂实验」下面的章标签分类。
-   *
-   * 实测：课堂实验页会请求 `left_banner.json`，其中 `course_modules[]` 里 name 为
-   * 「课堂实验」的那一项，`second_category[]` 就是页面顶部那排章标签，
-   * 每项的 `category_id` 正是 URL 里的那一段（如 `/shixun_homework/88000004`）。
-   */
-  shixunCategoriesFromBanner(body) {
-    try {
-      const payload = JSON.parse(body);
-      const modules = payload.course_modules || [];
-      const module =
-        modules.find((item) => item.name === '课堂实验') ||
-        modules.find((item) => Array.isArray(item.second_category) && item.second_category.length && item.type === 'shixun');
-      return (module?.second_category || [])
-        .filter((item) => item && item.category_id)
-        .map((item) => ({ id: String(item.category_id), url: item.second_category_url || '' }));
-    } catch {
-      return [];
-    }
-  }
 
-  /**
-   * 按章标签补齐实验列表。
-   *
-   * 课堂实验页按「章」分视图：页面自身请求带 `&category={分类id}`，每个分类返回**不同**的实验集合；
-   * 不带 category 的响应只是其中一个分类。因此逐个分类导航 + 截获页面自身响应，再合并去重。
-   * 拿不到分类（例如侧栏响应没截获到）时原样返回，行为与之前一致。
-   */
-  async loadCategoryExperiments(initial, course, shixunUrl) {
-    const bannerFragment = `api/courses/${course.classroomCode}/left_banner.json`;
-    const bannerAttempt = await this.captureOwnResponse(this.page, shixunUrl, bannerFragment, 8000).catch(() => null);
-    const bannerBody = bannerAttempt || this.cachedResponse(bannerFragment);
-    const categories = this.shixunCategoriesFromBanner(bannerBody);
-    if (categories.length <= 1) return initial;
 
-    // 页面上那排章标签的文案（如「1、软件工程初体验」）比接口里的 name 更可读，优先用 DOM 里的
-    const tabNames = await this.page
-      .evaluate(() =>
-        [...document.querySelectorAll('a[href*="shixun_homework"]')]
-          .map((node) => ({
-            text: (node.textContent || '').replace(/\s+/g, ' ').trim(),
-            href: node.getAttribute('href') || ''
-          }))
-          .filter((row) => row.text && /\d/.test(row.text))
-      )
-      .catch(() => []);
-    const nameFor = (category) => {
-      const hit = tabNames.find((row) => row.href.includes(`/${category.id}`));
-      return hit ? hit.text : '';
-    };
-
-    this.log(`课堂实验按章分为 ${categories.length} 个视图，逐个读取（默认视图只作兜底）…`);
-    const fragment = `api/courses/${course.classroomCode}/homework_commons.json`;
-    const chapterLists = [];
-    for (const category of categories) {
-      if (await this.stopping()) break;
-      const categoryUrl = category.url
-        ? new URL(category.url, 'https://www.educoder.net').href
-        : `${shixunUrl}/${category.id}?tabs=0`;
-      const previous = this.responseCache.get(fragment);
-      this.responseCache.delete(fragment); // 清掉上一章的响应，避免复用成同一份列表
-      const body = await this.captureOwnResponse(this.page, categoryUrl, fragment, 12000).catch(() => null);
-      if (!body) {
-        if (previous) this.responseCache.set(fragment, previous);
-        this.log(`章「${category.id}」的实验列表没截获到，跳过。`, 'warn');
-        continue;
-      }
-      const list = this.parseExperiments(body, 'page').map((item) => ({ ...item, categoryId: category.id }));
-      const chapterName = nameFor(category) || category.id;
-      chapterLists.push([list, chapterName]);
-      this.log(`章「${chapterName}」读到 ${list.length} 个实验。`);
-    }
-
-    // 一章都没读到（例如侧栏分类失效）时，回退到最初的默认视图，行为与旧实现一致。
-    if (!chapterLists.length) return initial;
-
-    const fromChapters = this.mergeExperimentLists([], chapterLists).length;
-    const finalList = this.mergeExperimentLists(initial, chapterLists);
-    this.log(
-      `按章共 ${fromChapters} 个实验` +
-        (finalList.length > fromChapters
-          ? `，默认视图额外补充 ${finalList.length - fromChapters} 个不在任何章视图里的实验。`
-          : '（默认视图没有带来新实验）。')
-    );
-    return finalList;
-  }
-
-  /**
-   * 合并「各章实验列表」与「默认视图」，返回最终实验列表（纯函数，便于离线测试）。
-   *
-   * @param {Array} initial    不带 category 的默认视图（可能为空）
-   * @param {Array<[Array, string]>} chapterLists  每个元素是 [该章的实验数组, 章名]
-   *
-   * 规则：
-   * - 以各章为主，章内条目名字加 `[章名]` 前缀，避免不同章的同名实验混淆；
-   * - 去重键 = `homeworkId|shixunIdentifier`，其次 `name|homeworkId`
-   *   （实测不同章会给出同一个 homework_id，只按名字去重会漏）；
-   * - 默认视图与各章有重复且所属分类未知，只在它带来**新**实验时追加。
-   */
-  mergeExperimentLists(initial, chapterLists) {
-    const list = (Array.isArray(initial) ? initial : []).filter(Boolean);
-    const chapters = (Array.isArray(chapterLists) ? chapterLists : []).filter(
-      (item) => Array.isArray(item) && Array.isArray(item[0])
-    );
-    if (!chapters.length) return list;
-
-    const merged = [];
-    const seen = new Set();
-    const add = (experiment, chapterName) => {
-      if (!experiment || typeof experiment !== 'object') return;
-      const keys = [
-        `${experiment.homeworkId || ''}|${experiment.shixunIdentifier || ''}`,
-        `${experiment.name}|${experiment.homeworkId || ''}`
-      ];
-      if (keys.some((key) => seen.has(key))) return;
-      for (const key of keys) seen.add(key);
-      merged.push(
-        chapterName
-          ? {
-              ...experiment,
-              categoryName: chapterName,
-              // 章分类 id 必须带上：openExperiment 要靠它先打开章页才能找到卡片
-              categoryId: experiment.categoryId || '',
-              name: `[${chapterName}] ${experiment.name}`
-            }
-          : experiment
-      );
-    };
-
-    for (const [experiments, chapterName] of chapters) {
-      for (const experiment of experiments) add(experiment, chapterName);
-    }
-    for (const experiment of list) add(experiment, '');
-    return merged;
-  }
 
   /** 解析 homework_commons.json 响应体 → Experiment[]（页面与 API 两条路径共用）。 */
-  parseExperiments(body, source) {
-    let payload = null;
-    try {
-      payload = JSON.parse(body);
-    } catch (error) {
-      this.log('实验列表响应不是合法 JSON，已忽略。', 'warn');
-      return [];
-    }
-    // 只认数字 status：真实响应里 status 可能是字符串（如 "required"），
-    // 用真值判断会把「带了字符串 status 的正常响应」当成业务错误、静默返回空实验列表。
-    if (payload && typeof payload.status === 'number' && payload.status !== 0) {
-      this.log(`实验列表返回业务错误：${payload.message || payload.status}`, 'warn');
-      return [];
-    }
-    const roots = Array.isArray(payload?.homeworks)
-      ? payload.homeworks
-      : Array.isArray(payload?.homework_commons)
-        ? payload.homework_commons
-        : Array.isArray(payload?.data)
-          ? payload.data
-          : [];
-
-    const experiments = [];
-    const seen = new Set();
-    for (const root of roots) {
-      // 父项 + 它下面的子标签（子实训）一起收
-      for (const item of this.collectShixunItems(root, [])) {
-        const shixunIdentifier = item.shixun_identifier || item.myshixun?.shixun_identifier || '';
-        const myshixunIdentifier = item.myshixun_identifier || item.myshixun?.identifier || '';
-        const homeworkId = Number.isFinite(Number(item.homework_id))
-          ? item.homework_id
-          : Number.isFinite(Number(item.homework_commons_id))
-            ? item.homework_commons_id
-            : Number.isFinite(Number(item.homework_common_id))
-              ? item.homework_common_id
-              : undefined;
-        // 连实训标识和作业主键都没有的条目没法抓：跳过（保持原有稳健性）
-        if (!shixunIdentifier && !myshixunIdentifier && homeworkId === undefined) continue;
-        const key = `${shixunIdentifier}|${myshixunIdentifier}|${homeworkId}|${item.name || item.homework_name}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        experiments.push({
-          name: item.name || item.homework_name || '未命名实验',
-          homeworkId,
-          shixunIdentifier,
-          myshixunIdentifier,
-          taskCount: item.challenge_count || item.task_count || item.homework_commons_count || 0,
-          nested: item !== root,
-          parentName: item === root ? '' : root.name || root.homework_name || '',
-          source
-        });
-      }
-    }
-    const nestedCount = experiments.filter((item) => item.nested).length;
-    if (experiments.length && source === 'page') {
-      this.log(
-        `已通过页面自身请求读取到 ${experiments.length} 个课堂实验` +
-          (nestedCount ? `（其中 ${nestedCount} 个是子标签实验）` : '') +
-          '。'
-      );
-    }
-    return experiments;
-  }
 
   /**
    * 读取实验的关卡列表。
@@ -1931,34 +1578,6 @@ class ExtractEngine {
       metadataPath: path.join(directory, `${fileBase}.metadata.json`),
       assetsDir: path.join(directory, 'assets')
     };
-  }
-
-  /** 读回已存在的实验文件（正文 + 结构化数据）；不存在或不可解析时返回 null。 */
-  async readExperimentFile(courseName, experimentName) {
-    const paths = this.experimentPaths(courseName, experimentName);
-    let markdown = '';
-    try {
-      markdown = await fs.readFile(paths.markdownPath, 'utf8');
-    } catch {
-      return null;
-    }
-    let metadata = null;
-    try {
-      metadata = JSON.parse(await fs.readFile(paths.metadataPath, 'utf8'));
-    } catch {
-      metadata = null;
-    }
-    return { paths, markdown, metadata };
-  }
-
-  /** 从已存在的实验文件里取出各关的原始小节文本（增量合并时优先原样保留）。 */
-  parseLevelSections(markdown) {
-    const sections = new Map();
-    const pattern = /^## 第(\d+)关：([^\n]*)\n([\s\S]*?)(?=^## 第\d+关：|(?![\s\S]))/gm;
-    for (const match of String(markdown || '').matchAll(pattern)) {
-      sections.set(Number(match[1]), `## 第${match[1]}关：${match[2]}\n${match[3]}`.trim());
-    }
-    return sections;
   }
 
   /**

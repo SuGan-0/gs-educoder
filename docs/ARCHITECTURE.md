@@ -82,9 +82,32 @@ X-EDU-Type:      pc        ← 必须精确为 pc，写成 web 会失败
 ### 现在的取数方式：直接调接口
 
 `lib/educoder-api.js` 的 `apiGet` 为每个请求注入上述签名头；页面仍需要
-（会话 cookie 由浏览器维护、登录走持久化 profile），但**不再有任何响应截获**：
-`watchResponses` / `captureOwnResponse` / `cachedResponse` / `coursesFromPage`
-已删除，`fetchTask` / `captureLevel` 直接取接口，不再逐关导航。
+（会话 cookie 由浏览器维护、登录走持久化 profile），但**取数一律直连接口**：
+
+| 数据 | 接口 |
+|---|---|
+| 课程（课堂） | `GET /api/users/{login}/courses.json` |
+| 实验列表 | `GET /api/courses/{classroomCode}/homework_commons.json` |
+| 章分类（仅兜底用） | `GET /api/courses/{classroomCode}/left_banner.json` |
+| 关卡列表 | `GET /api/myshixuns/{myshixun_identifier}/challenges.json` |
+| 关卡正文 | `GET /api/tasks/{identifier}.json` |
+
+**实验列表一次取全，不按「章」逐个读取**（2026-10-01 实测）：
+
+| 取法 | 结果 |
+|---|---|
+| 不带 `category`，分页取全 | 40 个实验 |
+| 8 个章各自读取后合并去重（9+3+4+6+6+2+5+5） | 40 个实验 |
+| 差异 | **0 个** |
+
+章名由每条记录的 `upper_category_name` 直接给出（无章的课堂该字段为 `null`）。
+因此历史上那套「按章逐个导航 + 截获响应 + `mergeExperimentLists` 合并」已整块删除；
+显示名加 `[章名] ` 前缀的规则保留，但**只在有章时才加**——导出目录名与答案文件名都用它，
+历史产物就是这么命名的（软件工程导论 30 个目录全带前缀，机器学习 / Java设计模式 不带）。
+
+仍然保留响应截获的地方**只剩兜底路径**：没有 `myshixun_identifier` 的实验
+（实测 40 个里有 5 个，都是新发布、本人还没打开过的）拿不到关卡标识，
+只能导航到它所在的章页再点卡片。主路径完全不需要。
 
 自带诊断：控制台「诊断」按钮会跑一次**签名自检**（用一个必须签名的接口验证，
 身份接口免签名所以证明不了签名是否有效）；命令行用 `node tools/probe-signature.js`，

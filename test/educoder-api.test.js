@@ -387,13 +387,67 @@ test('listExperiments：只保留 is_shixun，字段映射严格按契约', asyn
   assert.equal(
     page.calls[0].url,
     'https://data.educoder.net/api/courses/DEMO0001/homework_commons.json'
-      + '?limit=100&status=0&id=DEMO0001&type=4&order=0&zzud=p8sxailt2',
+      + '?limit=100&page=1&status=0&id=DEMO0001&type=4&order=0&zzud=p8sxailt2',
     '必须带完整查询参数：裸 URL 会被服务端按默认 limit 截断实验列表'
   );
   assert.deepEqual(experiments, [
-    { name: 'CNN', homeworkId: 88000002, shixunIdentifier: 'zq655f1e', myshixunIdentifier: 'zqad65672b', taskCount: 5 },
-    { name: '无 challenge_count', homeworkId: 2, shixunIdentifier: 's2', myshixunIdentifier: 'm2', taskCount: 0 }
+    { name: 'CNN', categoryName: '', homeworkId: 88000002, shixunIdentifier: 'zq655f1e', myshixunIdentifier: 'zqad65672b', taskCount: 5 },
+    { name: '无 challenge_count', categoryName: '', homeworkId: 2, shixunIdentifier: 's2', myshixunIdentifier: 'm2', taskCount: 0 }
   ]);
+});
+
+test('listExperiments：章名取 upper_category_name，没有章时为空串', async () => {
+  const payload = {
+    query_total_count: 2,
+    homeworks: [
+      { is_shixun: true, homework_id: 1, name: '顺序图', shixun_identifier: 'a', myshixun_identifier: 'm', upper_category_name: '8、面向对象分析' },
+      { is_shixun: true, homework_id: 2, name: 'CNN', shixun_identifier: 'b', myshixun_identifier: 'n', upper_category_name: null }
+    ]
+  };
+  const page = stubPage(() => ok(JSON.stringify(payload)));
+  const experiments = await api.listExperiments(page, { classroomCode: 'DEMO0001' });
+  assert.deepEqual(experiments.map((item) => item.categoryName), ['8、面向对象分析', '']);
+});
+
+test('listExperiments：按 query_total_count 分页取全', async () => {
+  const pages = {
+    1: { query_total_count: 2, homeworks: [{ is_shixun: true, homework_id: 1, name: 'A', shixun_identifier: 'a', myshixun_identifier: 'm' }] },
+    2: { query_total_count: 2, homeworks: [{ is_shixun: true, homework_id: 2, name: 'B', shixun_identifier: 'b', myshixun_identifier: 'n' }] }
+  };
+  const seenPages = [];
+  const page = stubPage((url) => {
+    const pageNo = Number(/[?&]page=(\d+)/.exec(url)[1]);
+    seenPages.push(pageNo);
+    return ok(JSON.stringify(pages[pageNo] || { query_total_count: 2, homeworks: [] }));
+  });
+  const experiments = await api.listExperiments(page, { classroomCode: 'DEMO0001', perPage: 1 });
+  assert.deepEqual(experiments.map((item) => item.name), ['A', 'B']);
+  assert.deepEqual(seenPages, [1, 2], '凑够声明的数量就停，不多请求');
+});
+
+test('listExperiments：分页被截断（页数不足）时整批失败', async () => {
+  const page = stubPage(() => ok(JSON.stringify({
+    query_total_count: 5,
+    homeworks: [{ is_shixun: true, homework_id: 1, name: 'A', shixun_identifier: 'a', myshixun_identifier: 'm' }]
+  })));
+  await assert.rejects(
+    () => api.listExperiments(page, { classroomCode: 'DEMO0001' }),
+    /分页提前结束/,
+    '声明 5 条只给 1 条且后续页为空，必须整批失败而不是静默少抓'
+  );
+});
+
+test('listExperiments：分页期间总数变化时整批失败', async () => {
+  const pages = [
+    { query_total_count: 2, homeworks: [{ is_shixun: true, homework_id: 1, name: 'A', shixun_identifier: 'a', myshixun_identifier: 'm' }] },
+    { query_total_count: 3, homeworks: [{ is_shixun: true, homework_id: 2, name: 'B', shixun_identifier: 'b', myshixun_identifier: 'n' }] }
+  ];
+  let index = 0;
+  const page = stubPage(() => ok(JSON.stringify(pages[Math.min(index++, pages.length - 1)])));
+  await assert.rejects(
+    () => api.listExperiments(page, { classroomCode: 'DEMO0001', perPage: 1 }),
+    /总数发生变化/
+  );
 });
 
 test('listExperiments：真实健康响应无顶层 status，不得抛错', async () => {
@@ -529,6 +583,7 @@ test('导出面严格等于契约', () => {
       'listChallenges',
       'listCourses',
       'listExperiments',
+      'listShixunCategories',
       'probeLogin'
     ]
   );
