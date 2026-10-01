@@ -1,5 +1,9 @@
 node_modules/
 exports/
+# 作业提醒的本地状态：SQLite 快照/推送记账、进程锁
+data/
+# 本地私有配置：Server 酱 SendKey、路径覆盖等，不进仓库
+.env
 .educoder-browser/
 .educoder-cookie.json
 .educoder-browser-data.json

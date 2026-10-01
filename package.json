@@ -7,6 +7,7 @@
   "scripts": {
     "extract": "node extractor/run.js",
     "ui": "node extractor/run.js --ui",
+    "reminder": "node extractor/reminder.js",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "writer": "node extractor/writer-server.js",
     "crawler": "node extractor/traditional-crawler.js"

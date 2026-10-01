@@ -10,6 +10,7 @@
 | **extractor** | Node + Playwright（`npm run extract` / `npm run ui`） | 登录一次，把课程 → 课堂实验 → 关卡的题目正文、选项、初始代码、图片抓成本地存档 |
 | **本地控制台** | `npm run ui`（只监听 127.0.0.1） | 驱动抓取；聚合答案库（AI 作答 / 平台标准答案回传）；给篡改猴提供答案、关卡映射、选项个数 |
 | **篡改猴脚本** | Tampermonkey 用户脚本 | 在关卡页自动填答案、点「评测」、等结论、进下一关；支持教学课程队列批量推进 |
+| **作业提醒** | `npm run reminder`（常驻服务） | 采集本人**进行中课堂**的课堂实验与图文作业，按截止时间提醒（本地文件或 Server 酱）；只读，不碰题目与答案 |
 
 > **免责声明**：本工具只用于个人学习、备份自己有权限访问的课程内容。
 > 自动作答与提交可能违反平台条款，使用风险自负；请勿用于刷课代做等用途。
@@ -73,6 +74,111 @@ exports/
 ### 5. 装篡改猴脚本，开始自动作答
 
 见[篡改猴脚本](#篡改猴脚本)。
+
+---
+
+## 作业提醒：每天自动抓取 + 截止时间提醒
+
+抓取范围是**本人进行中的课堂**（不是题目），两类作业都采：
+
+| 类型 | 接口 `type` | 完成状态字段 |
+| --- | --- | --- |
+| 课堂实验 | `4` | `shixun_finished_status` |
+| 图文作业 | `1` | `un_commit_work` |
+
+截止时间**优先取精确的 `end_time_s`，其次 `end_time`**；补交时间 `late_time` 不当作正常截止时间。
+状态无法识别时记为「未知」，**不会推断成未完成**（否则已交作业会被反复提醒）。
+
+### 投递通道：提醒发到哪里
+
+两种通道，**共用同一套去重记账**，随时可切换、数据不用迁移：
+
+| 通道 | `REMINDER_CHANNEL` | 说明 |
+| --- | --- | --- |
+| **本地文件** | `local`（默认） | 不发手机。待办写成 `data/pending-reminders.md`，提醒流水追加到 `data/reminders.log` |
+| **微信推送** | `serverchan` | 推到微信（[Server 酱](https://sct.ftqq.com) Turbo / ³），需要 `SERVERCHAN_SENDKEY` |
+
+不设置 `REMINDER_CHANNEL` 时自动判定：有 SendKey 走 `serverchan`，没有则走 `local`。
+所以**不填任何密钥也能先把整条链路跑通**。
+
+> **本地通道适合谁**：不想注册推送服务，只想让服务在服务器上跑着、把待办整理成文件，
+> 自己（或换个方式）去看。代价是**它不会主动叫你** —— 1 小时提醒只会写进 `reminders.log`，
+> 你得自己打开看。要「到点就响」，请用 `serverchan`。
+
+### 部署与运行
+
+这是**常驻服务**，不是「每天跑一次」的脚本：1 小时提醒需要分钟级检查，
+每天跑一次必然漏掉它。在服务器上让它长期运行（systemd / supervisor / pm2 均可），
+进程被拉起后会自己按间隔同步。
+
+```powershell
+# 1) 复制配置模板并填写（.env 已 gitignore）
+#    用本地通道：只需 UNDATED_REMINDER_MODE / QUOTA_POLICY（模板里已有默认值）
+#    用微信推送：再填 SERVERCHAN_SENDKEY
+copy .env.example .env
+
+# 2) 确认登录态（登录态复用 .educoder-browser，与 npm run ui 共用）
+npm run reminder -- auth-check
+
+# 3) 采集一次并打印两类作业与截止时间
+npm run reminder -- sync
+
+# 4) 看当前待办（分档：已逾期 / 24 小时内 / 7 天内 / 更远 / 无截止时间）
+npm run reminder -- status
+
+# 5) 校验配置（不联网、不投递）
+npm run reminder -- check
+
+# 6) 预览「此刻该提醒什么」（不联网、不投递）
+npm run reminder -- preview
+
+# 7) 投递一条测试通知
+npm run reminder -- test
+
+# 8) 投递「未来 N 天截止」真实数据汇总，核对采集与截止时间算得对不对
+#    （占一次额度，但不占正式的 24 小时 / 1 小时提醒名额）
+npm run reminder -- test-upcoming --days=30
+
+# 9) 正式运行（常驻）
+npm run reminder -- run
+```
+
+> **运行 `run` / `auth-check` 前请先关掉本地控制台**（`npm run ui`）。
+> 同一个 `.educoder-browser` 目录不能被两个 Chromium 同时使用，占用时会明确报错并提示。
+>
+> **服务器上只需要完整 chromium**：命令内部用 `channel: 'chromium'` 走新无头模式，
+> 不依赖 `chrome-headless-shell`。装依赖用 `npx playwright install chromium`。
+
+### 提醒规则
+
+- **截止前 24 小时**提醒一次，**截止前 1 小时**再提醒一次；进入 1 小时窗口后**只发紧急阶段**，不叠加。
+- **没有截止时间**的未完成作业按 `UNDATED_REMINDER_MODE` 处理：`once`（每个阶段只提醒一次）或 `daily`（每天一次）。
+- 已完成、已归档、未发布、已截止的作业**一律不提醒**。
+- **投递前复核**：真的要提醒时，只重新拉取涉及的课堂与作业类型——老师刚延期、学生刚提交都会立刻反映到内容里。
+- **延期会重新提醒**：去重键包含截止时间与「被改过几次」，老师改期后是一个新事件。
+- 重启不丢去重记录；同一条提醒在**同一截止时间、同一阶段**下只提醒一次。
+- 投递失败按 5 分钟 / 30 分钟退避重试，单事件最多 3 次；微信通道有本地日发送上限（Turbo 免费通道最多 5 次）。
+- 采集失败（分页不完整、结构异常、登录失效）**保留上一份成功快照**，不会写出半份结果，也不会误报「作业消失了」。
+
+### 配置项
+
+见 [.env.example](.env.example)。只有 `UNDATED_REMINDER_MODE` 与 `QUOTA_POLICY` 必填，
+其余有默认值；`SERVERCHAN_SENDKEY` 只在使用微信通道时需要。
+
+### 存储
+
+| 路径 | 说明 |
+| --- | --- |
+| `data/reminder.sqlite3` | 作业快照、截止时间变更历史、同步时间、提醒去重与额度记账（Node 内置 `node:sqlite`，**不新增依赖**） |
+| `data/pending-reminders.md` | **当前全部待办**（按紧急程度分档），每次同步后重写。本地通道下这就是你要看的那份 |
+| `data/reminders.log` | **已触发的提醒流水**（追加），记录每次提醒的时间与内容 |
+| `data/reminder.lock` | 单实例进程锁（PID 感知：进程已死或锁过旧会自动接管），防止 systemd 与手工命令同时跑导致重复提醒 |
+
+`pending-reminders.md` 与 `reminders.log` 互补：前者答「现在还剩什么没做」，
+后者答「什么时候提醒过什么」。只看一个都会看不明白。
+
+题目存档（`exports/levels.jsonl`）与作业快照**刻意分开**：前者是一次写入、可重建的视图，
+后者需要按主键更新、保留变更历史、做去重记账，两者读写模式不同，不强行统一。
 
 ---
 
@@ -308,7 +414,8 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 | --- | --- |
 | `npm run ui` | 本地控制台（推荐入口） |
 | `npm run extract` | 终端交互抓取 |
-| `npm test` | 离线测试（假 Playwright，不联网不需要账号） |
+| `npm run reminder -- check\|auth-check\|sync\|status\|preview\|once\|run\|test\|test-upcoming` | 作业提醒（见[作业提醒](#作业提醒每天自动抓取--截止时间提醒)） |
+| `npm test` | 离线测试（假 Playwright / 假传输层，不联网不需要账号） |
 | `node tools/build-exports.js` | 从存档重建题目视图（幂等） |
 | `node tools/validate-answers.js` | 校验答案库 |
 
@@ -353,6 +460,8 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 | `.educoder-keys.json` | 签名常量 AK/SK（公开客户端常量，但不在公开仓库携带） |
 | `.educoder-browser-data.json` / `.educoder-network.jsonl` | 旧方案数据 / 抓包日志（默认不记录） |
 | `exports/` | 抓取的题目、图片、答案库、运行日志 |
+| `data/` | 作业提醒的 SQLite 快照与提醒记账、本地待办与流水、进程锁 |
+| `.env` | 作业提醒配置（用微信通道时含 Server 酱 SendKey） |
 | `docs/README-traditional.md`、`docs/BUG.md`、`docs/HANDOVER.md`、`docs/DEVELOPMENT_STATUS.md` | 本地开发文档（交接、问题清单、旧方案说明） |
 
 ---
