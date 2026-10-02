@@ -23,16 +23,23 @@ const path = require('node:path');
 
 const { readArchive, orderedLevels } = require('../extractor/lib/level-store');
 const { validateAnswers } = require('../extractor/lib/answer-validator');
-const { answerFileName } = require('../extractor/lib/task-parser');
+const fmt = require('../extractor/lib/answer-format');
 
 const ROOT = path.resolve(__dirname, '..');
 const EXPORT_ROOT = process.env.EDUCODER_EXPORT_ROOT || path.join(ROOT, 'exports');
 const ANSWER_DIR = path.join(EXPORT_ROOT, 'answers');
 
-/** 按优先级找答案文件：集中目录 → 实验目录 answers/ → 实验目录根。 */
-async function findAnswerFile(dir, experiment, course) {
+/**
+ * 按优先级找答案文件：
+ * ① v2 位置（`answers/{班级}（{课堂码}）/{实验}.answers.json`）
+ * ② v1 旧位置（`answers/{班级}__{实验}.answers.json`，只读兼容）
+ * ③ 实验目录下的早期产物
+ */
+async function findAnswerFile(dir, experiment, course, classroom) {
+  const identity = classroom || { name: course };
   const candidates = [
-    path.join(ANSWER_DIR, `${answerFileName(course, experiment)}.answers.json`),
+    fmt.answerPathFor(EXPORT_ROOT, identity, { name: experiment }),
+    fmt.legacyAnswerPathFor(EXPORT_ROOT, identity, { name: experiment }),
     path.join(dir, 'answers', `${experiment}.answers.json`),
     path.join(dir, `${experiment}.answers.json`)
   ];
@@ -87,11 +94,16 @@ async function main() {
   let failed = 0;
   for (const target of targets) {
     const levels = orderedLevels((await readArchive(path.join(target.dir, 'levels.jsonl'))).records);
-    const answerFile = await findAnswerFile(target.dir, target.experiment, target.course);
+    // 班级身份取自关卡存档：名称会重名，课堂码不会。
+    const first = levels.find(Boolean) || {};
+    const classroom = { name: first.course || target.course, code: first.classroomCode || '' };
+    const experimentBlock = { name: first.experiment || target.experiment };
+
+    const answerFile = await findAnswerFile(target.dir, target.experiment, target.course, classroom);
     if (!answerFile) {
       console.log(
-        `缺答案  ${target.course} / ${target.experiment}：${levels.length} 关，` +
-          `未找到 answers/${answerFileName(target.course, target.experiment)}.answers.json`
+        `缺答案  ${classroom.name} / ${target.experiment}：${levels.length} 关，` +
+          `未找到 ${path.relative(EXPORT_ROOT, fmt.answerPathFor(EXPORT_ROOT, classroom, experimentBlock))}`
       );
       failed += 1;
       continue;
@@ -99,13 +111,14 @@ async function main() {
     let answers = {};
     let declared = {};
     try {
-      const parsed = JSON.parse(await fs.readFile(answerFile, 'utf8'));
-      declared = { course: parsed.course || '', experiment: parsed.experiment || '' };
-      answers = Array.isArray(parsed.answers)
-        ? Object.fromEntries(parsed.answers.filter((item) => item && item.level_id).map((item) => [item.level_id, item]))
-        : parsed.answers || parsed;
+      const document = fmt.normalizeDocument(
+        JSON.parse(await fs.readFile(answerFile, 'utf8')),
+        { classroom, experiment: experimentBlock }
+      );
+      declared = { course: document.classroom.name, experiment: document.experiment.name, code: document.classroom.code };
+      answers = Object.fromEntries(document.answers.map((item) => [item.level_id, item]));
     } catch (error) {
-      console.log(`答案坏  ${target.course} / ${target.experiment}：${error.message}`);
+      console.log(`答案坏  ${classroom.name} / ${target.experiment}：${error.message}`);
       failed += 1;
       continue;
     }

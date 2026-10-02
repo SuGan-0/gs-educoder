@@ -6,6 +6,8 @@
 
 const path = require('node:path');
 
+const fmt = require('./answer-format');
+
 function safeName(value) {
   return String(value || 'untitled')
     .replace(/[\\/:*?"<>|]/g, ' ')
@@ -266,17 +268,17 @@ function levelId(task) {
 }
 
 /**
- * 答案文件的相对路径：**所有答案集中在一个文件夹**，文件名标清课程与实验。
+ * 答案文件的相对路径。
  *
- *   exports/answers/{课程}__{实验}.answers.json
- *   exports/answers/{课程}__{实验}.answers.md     （人可读版，可选）
- *
- * 用「双下划线」分隔课程与实验（课程/实验名里通常不含下划线），
- * 非法字符替换成全角波浪线，避免不同课程（或不同实验）撞名。
+ * 具体位置与命名由 `answer-format.js` 定义（v2：按班级分目录、班级码进目录名），
+ * 这里只是给 md 的 frontmatter 提供「答案该写到哪」的说明文字。
  */
-function answerFileName(course, experiment) {
-  const clean = (value) => String(value || 'untitled').replace(/[\\/:*?"<>|]/g, '～').trim() || 'untitled';
-  return `${clean(course)}__${clean(experiment)}`;
+function answerRelativePath(course, experiment) {
+  return path.relative(path.join(__dirname, '..', '..'), fmt.answerPathFor(
+    path.join(__dirname, '..', '..', 'exports'),
+    { name: course },
+    { name: experiment }
+  )).split(path.sep).join('/');
 }
 
 /**
@@ -315,89 +317,7 @@ function answerSpec(task) {
   ].join('\n');
 }
 
-/**
- * 规范化答案文件里的一条答案，供篡改猴直接使用。
- *
- * 接受最简写法（字符串）与稍详细写法（对象），统一产出：
- * - `{ level_id, kind: 'code', language, answer }`
- * - `{ level_id, kind: 'choice', answers: [{ question, answer: ['A'] }] }`
- *
- * 选择题 `answer` 的写法：单选/单题 `"A"`、多选 `"A,C"`、
- * 多小问 `"1:A;2:B,D"`（题号从 1 开始，顺序与 md 里 `### 选择题` 的序号一致）。
- */
-function normalizeAnswer(levelIdValue, raw, fallback = {}) {
-  const id = String(levelIdValue || '').trim();
-  const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { answer: raw };
-  const kind = String(entry.kind || fallback.kind || '').trim()
-    || (entry.answers ? KINDS.CHOICE : KINDS.CODE);
-  const base = { level_id: id, kind, source: fallback.source || '' };
 
-  if (kind === KINDS.CHOICE) {
-    const questions = [];
-    const push = (question, value) => {
-      const letters = String(value ?? '')
-        .split(/[,，、\s]+/)
-        .map((token) => token.trim().toUpperCase())
-        // 这里只负责「收集字母」：范围合法性（超过选项数）由 answer-validator 报，
-        // 早了会把模型写的非法字母静默吞掉，用户就看不到问题。
-        .filter((token) => /^[A-Z]+$/.test(token))
-        .flatMap((token) => token.split('')) // 容忍 "AB" 这种连写
-        .filter(Boolean);
-      if (letters.length) questions.push({ question: Number(question) || questions.length + 1, answer: [...new Set(letters)].sort() });
-    };
-    if (Array.isArray(entry.answers)) {
-      for (const item of entry.answers) {
-        if (item && typeof item === 'object') push(item.question, Array.isArray(item.answer) ? item.answer.join(',') : item.answer);
-      }
-    } else {
-      const text = String(entry.answer ?? '').trim();
-      if (/[;；]/.test(text) || /^\d+\s*[:：]/.test(text)) {
-        for (const part of text.split(/[;；]+/)) {
-          const match = /^\s*(\d+)\s*[:：]\s*(.+)$/.exec(part);
-          if (match) push(match[1], match[2]);
-        }
-      } else {
-        push(1, text);
-      }
-    }
-    return { ...base, answers: questions };
-  }
-
-  return {
-    ...base,
-    language: String(entry.language || fallback.language || '').trim(),
-    answer: String(entry.answer ?? entry.code ?? '').trim()
-  };
-}
-
-/**
- * normalizeAnswer 的反向：把规范化结构写回**最简写法**（写答案文件时用）。
- * - 编程题 → `{ level_id, kind:'code', language, answer }`
- * - 选择题 → `{ level_id, kind:'choice', answer: 'A' | 'A,C' | '1:A;2:B,D' }`
- */
-function stringifyAnswer(answer) {
-  if (!answer || typeof answer !== 'object') return null;
-  const levelIdValue = String(answer.level_id || '');
-  if (answer.kind === KINDS.CHOICE) {
-    const questions = Array.isArray(answer.answers) ? answer.answers : [];
-    if (!questions.length) return { level_id: levelIdValue, kind: KINDS.CHOICE, answer: '' };
-    const single = questions.length === 1 && Number(questions[0].question) === 1;
-    const text = single
-      ? (questions[0].answer || []).join(',')
-      : questions
-        .slice()
-        .sort((a, b) => Number(a.question) - Number(b.question))
-        .map((item) => `${Number(item.question)}:${(item.answer || []).join(',')}`)
-        .join(';');
-    return { level_id: levelIdValue, kind: KINDS.CHOICE, answer: text };
-  }
-  return {
-    level_id: levelIdValue,
-    kind: KINDS.CODE,
-    language: answer.language || '',
-    answer: answer.answer || ''
-  };
-}
 
 /**
  * 把一关渲染成实验文件里的一节（`## 第N关：x`）。
@@ -453,22 +373,23 @@ function makeExperimentDocument({ course = '', experiment = '', generatedAt = ''
     .map((item) => (typeof item === 'string' ? item.trim() : String(makeLevelSection(item) || '').trim()))
     .filter(Boolean);
   const count = sections.length;
-  const answerFile = `${answerFileName(course, experiment)}.answers.json`;
+  // 答案路径由 answer-format 决定（按班级分目录、班级码进目录名）。
+  const answerFile = answerRelativePath(course, experiment);
   const frontmatter = [
     '---',
     `course: ${course}`,
     `experiment: ${experiment}`,
     `levels: ${count}`,
     `generated_at: ${generatedAt}`,
-    // 明确告诉 AI 答案写到哪里：所有实验的答案集中在 exports/answers/，文件名带课程与实验。
-    `answer_file: answers/${answerFile}`,
+    // 明确告诉 AI 答案写到哪里。
+    `answer_file: ${answerFile}`,
     '---'
   ].join('\n');
   const body = sections.length
     ? sections.join('\n\n---\n\n')
     : '> 本实验没有可提取的编程题或选择题。';
   const hint = count
-    ? `> 作答：把这一份文件的答案写成 \`answers/${answerFile}\`（格式见每关的「作答格式」，整体结构见 \`docs/AI-ANSWER-FORMAT.md\`）。`
+    ? `> 作答：把这一份文件的答案写成 \`${answerFile}\`（格式见每关的「作答格式」，整体结构见 \`docs/AI-ANSWER-FORMAT.md\`）。`
     : '';
   return `${frontmatter}\n\n# ${experiment}\n\n${[hint, body].filter(Boolean).join('\n\n')}\n`;
 }
@@ -554,7 +475,11 @@ function taskFromApi(payload, course, experiment, source) {
     codeEditorEmpty,
     mirrorNames,
     course: course.name,
+    // 课堂码（平台 `course_identifier`）：班级的机器身份。
+    // 关卡存档、答案目录名、篡改猴核对班级都要用它——名称会重名，码不会。
+    classroomCode: course.classroomCode || '',
     experiment: experiment.name,
+    experimentHomeworkId: experiment.homeworkId || 0,
     source,
     taskIndex: challenge.homework_challenge_index || 0
   };
@@ -566,20 +491,23 @@ function taskFromApi(payload, course, experiment, source) {
   return task;
 }
 
-/** 答案文件的整体结构：frontmatter 里写明课程与实验，answers 是唯一必需数组。 */
+/** 答案文件的整体结构（v2）：班级带课堂码，每条答案带平台关卡标识与来源。 */
 function answerDocumentSpec(course, experiment) {
   return [
     '```json',
     '{',
-    `  "course": "${course || '课程名'}",`,
-    `  "experiment": "${experiment || '实验名'}",`,
+    '  "schema_version": 2,',
+    `  "classroom": { "name": "${course || '班级名'}", "code": "课堂码" },`,
+    `  "experiment": { "name": "${experiment || '实验名'}", "homework_id": 0 },`,
     '  "answers": [',
-    '    { "level_id": "L001", "kind": "code", "language": "python", "answer": "完整代码" },',
-    '    { "level_id": "L002", "kind": "choice", "answer": "B" }',
+    '    { "level_id": "L001", "task_identifier": "平台关卡标识", "kind": "code",',
+    '      "answer": { "language": "python", "code": "完整代码" }, "source": "ai" },',
+    '    { "level_id": "L002", "task_identifier": "平台关卡标识", "kind": "choice",',
+    '      "answer": { "questions": [{ "number": 1, "selected": ["B"] }] }, "source": "ai" }',
     '  ]',
     '}',
     '```',
-    `文件位置：\`exports/answers/${answerFileName(course, experiment)}.answers.json\`（所有实验的答案都放这个文件夹）。`
+    `文件位置：\`${answerRelativePath(course, experiment)}\`（答案按班级分目录）。`
   ].join('\n');
 }
 
@@ -593,10 +521,8 @@ module.exports = {
   kindLabel,
   levelId,
   answerSpec,
-  answerFileName,
+  answerRelativePath,
   answerDocumentSpec,
-  normalizeAnswer,
-  stringifyAnswer,
   demoteHeadings,
   taskFromApi,
   detectImageExtension,

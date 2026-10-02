@@ -16,10 +16,10 @@
 
 ```text
 exports/
-├── answers/                          ★ 所有实验的答案集中在这里
-│   ├── {课程}__{实验}.answers.json     （机器可读，按 level_id 索引）
-│   └── {课程}__{实验}.answers.md       （人可读，可选）
-└── 课程/实验/
+├── answers/                          ★ 答案集中在这里，**按班级分目录**
+│   └── {班级}（{课堂码}）/
+│       └── {实验}.answers.json        （机器可读，v2 结构，按 level_id 索引）
+└── 班级/实验/
     ├── levels.jsonl                  ★ 存档：每关一行，只追加，永不读回（唯一事实来源）
     ├── 实验.md                        ← 视图：由存档生成，整轮结束时写一次
     ├── 实验.metadata.json             ← 视图：同上
@@ -27,8 +27,10 @@ exports/
     └── submit.blueprint.json         ★ 篡改猴的提交蓝图（从真实提交录制而来）
 ```
 
-答案放在**一个文件夹**里（不在每个实验目录内），文件名用 `{课程}__{实验}` 标清归属；
-`实验.md` 的 frontmatter 里写了 `answer_file: answers/{课程}__{实验}.answers.json`，
+答案**不在每个实验目录内**，而是集中按班级分目录；目录名里的 `（{课堂码}）` 是平台课堂码，
+班级边界因此是结构性的，篡改猴也能靠它核对「这份答案是不是当前班级的」
+（见 [AI-ANSWER-FORMAT.md](AI-ANSWER-FORMAT.md) §2.6）。
+`实验.md` 的 frontmatter 里写了 `answer_file: exports/answers/{班级}（{课堂码}）/{实验}.answers.json`，
 AI 照这个路径产出即可。格式规范见 [AI-ANSWER-FORMAT.md](AI-ANSWER-FORMAT.md)。
 `submit.blueprint.json` 留在实验目录里（脚本按这个名字找）。
 
@@ -85,14 +87,14 @@ $env:EDUCODER_NETWORK_LOG='0'                 # 显式关闭（等同不设置�
          实验.md                      ← 给 AI 看（frontmatter 里写明答案文件路径）
             │  控制台「AI 作答」面板：选课程/实验/关卡 → 模型出答案
             ▼
-         answers/{课程}__{实验}.answers.json   ← 集中存放，按 level_id 索引
+         answers/{班级}（{课堂码}）/{实验}.answers.json   ← 按班级分目录，按 level_id 索引
             │  GET /api/answers（本地控制台，带 token）
             ▼
          篡改猴：填答案 → 提交 → 下一关
             ▲
             └── submit.blueprint.json（真实提交录制一次，永久复用）
 
-校验      node tools/validate-answers.js   （覆盖度 / 题型 / 选项字母 / 占位代码 / 课程实验一致性）
+校验      node tools/validate-answers.js   （覆盖度 / 题型 / 选项字母 / 占位代码 / 班级实验一致性）
 ```
 
 控制台新增的作答接口（都只动答案文件，不碰题目）：

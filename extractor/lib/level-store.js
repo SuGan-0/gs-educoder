@@ -83,7 +83,10 @@ function toArchiveRecord(task, contentHash) {
     level: task.level || '',
     type: task.type || '',
     course: task.course || '',
+    // 班级的机器身份：答案目录名、篡改猴核对班级都靠它，名称会重名而码不会。
+    classroomCode: task.classroomCode || '',
     experiment: task.experiment || '',
+    experimentHomeworkId: Number(task.experimentHomeworkId) || 0,
     source: task.source || '',
     taskDescription: task.taskDescription || '',
     programmingRequirements: task.programmingRequirements || '',

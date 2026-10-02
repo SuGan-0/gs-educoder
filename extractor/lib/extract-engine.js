@@ -1393,12 +1393,24 @@ class ExtractEngine {
     }
     const saved = await mergeAnswer({
       exportRoot: this.exportRoot,
-      course: courseName,
-      experiment: experimentName,
+      // v2：班级带课堂码（名称会重名，码不会），答案目录按班级分。
+      classroom: {
+        name: courseName,
+        code: task.classroomCode || (typeof course === 'object' ? course?.classroomCode : '') || ''
+      },
+      experiment: {
+        name: experimentName,
+        homeworkId: task.experimentHomeworkId
+          || (typeof experiment === 'object' ? experiment?.homeworkId : 0)
+      },
       levelId: levelIdValue,
       kind,
       language: task.codeLanguage,
-      answer
+      answer,
+      // 平台关卡标识：答案与关卡之间最稳的对应关系（关卡号 L001 只是文件内的序号）。
+      taskIdentifier: ExtractEngine.identifierFromTaskUrl(task.source),
+      title: task.title,
+      source: 'export'
     });
     if (saved.ok) {
       const where = `answers/${path.basename(saved.answerPath)}`;

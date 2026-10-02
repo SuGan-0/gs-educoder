@@ -3,6 +3,7 @@
 // 离线测试：只依赖 node:test / node:assert，内联构造 payload，不读 exports/、不联网。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 const {
   safeName,
@@ -13,8 +14,7 @@ const {
   classifyTask,
   levelId,
   answerSpec,
-  answerFileName,
-  normalizeAnswer,
+  answerRelativePath,
   demoteHeadings,
   taskFromApi,
   detectImageExtension,
@@ -876,7 +876,8 @@ test('makeExperimentDocument：frontmatter + 逐关小节 + --- 分隔', () => {
     'experiment: 实验一',
     'levels: 2',
     'generated_at: 2026-09-25T00:00:00.000Z',
-    'answer_file: answers/Python 程序设计__实验一.answers.json',
+    // 答案路径由 answer-format 决定：按班级分目录
+    'answer_file: exports/answers/Python 程序设计/实验一.answers.json',
     '---',
     '',
     '# 实验一',
@@ -885,7 +886,7 @@ test('makeExperimentDocument：frontmatter + 逐关小节 + --- 分隔', () => {
   assert.equal(document.match(/^## 第\d+关：/gm).length, 2, '两关各一节');
   assert.ok(document.includes('\n\n---\n\n'), '关卡之间用 --- 分隔');
   assert.ok(document.indexOf('## 第2关') < document.indexOf('## 第3关'), '顺序按传入顺序');
-  assert.match(document, /answers\/Python 程序设计__实验一\.answers\.json/, '要明确告诉 AI 答案写哪个文件');
+  assert.match(document, /exports\/answers\/Python 程序设计\/实验一\.answers\.json/, '要明确告诉 AI 答案写哪个文件');
   assert.ok(document.endsWith('\n'));
 });
 
@@ -896,14 +897,16 @@ test('makeExperimentDocument：允许传入已渲染的小节文本（增量合�
     generatedAt: 'T',
     levels: ['## 第1关：旧关\n\n- 关卡 id：L001\n\n### 任务描述\n\n历史内容。']
   });
-  assert.match(document, /^---\ncourse: C\nexperiment: E\nlevels: 1\ngenerated_at: T\nanswer_file: answers\/C__E\.answers\.json\n---/m);
+  assert.match(document, /^---\ncourse: C\nexperiment: E\nlevels: 1\ngenerated_at: T\nanswer_file: exports\/answers\/C\/E\.answers\.json\n---/m);
   assert.ok(document.includes('历史内容。'));
 });
 
-test('answerFileName：课程与实验都写进文件名，非法字符被替换', () => {
-  assert.equal(answerFileName('示例课程B', 'CNN'), '示例课程B__CNN');
-  assert.equal(answerFileName('软件开发/导论', '单元:测试'), '软件开发～导论__单元～测试');
-  assert.equal(answerFileName('', ''), 'untitled__untitled');
+test('answerRelativePath：答案按班级分目录，非法字符被替换', () => {
+  const rel = (course, experiment) => answerRelativePath(course, experiment).split(path.sep).join('/');
+  assert.equal(rel('示例课程B', 'CNN'), 'exports/answers/示例课程B/CNN.answers.json');
+  assert.equal(rel('软件开发/导论', '单元:测试'), 'exports/answers/软件开发～导论/单元～测试.answers.json');
+  // 缺名称时用可读的占位名（answer-format 的默认值），不是 'untitled'
+  assert.equal(rel('', ''), 'exports/answers/未命名班级/未命名实验.answers.json');
 });
 
 test('answerSpec：编程题给「关卡 id + 代码」，选择题给「关卡 id + 选项字母」，不要求理由', () => {
@@ -938,34 +941,6 @@ test('answerSpec：编程题给「关卡 id + 代码」，选择题给「关卡 
   assert.ok(multiSpec.includes('"answer": "1:A;2:B,D"'), multiSpec);
 });
 
-test('normalizeAnswer：把最简写法规范化成篡改猴可直接用的结构', () => {
-  // 编程题
-  const code = normalizeAnswer('L001', { kind: 'code', language: 'python', answer: 'print(1)' });
-  assert.deepEqual(code, { level_id: 'L001', kind: 'code', source: '', language: 'python', answer: 'print(1)' });
-
-  // 单选：直接给字母
-  assert.deepEqual(normalizeAnswer('L002', { kind: 'choice', answer: 'B' }).answers, [{ question: 1, answer: ['B'] }]);
-  // 多选：逗号分隔 + 连写 AB 也要能拆开
-  assert.deepEqual(normalizeAnswer('L003', { kind: 'choice', answer: 'b,d' }).answers, [{ question: 1, answer: ['B', 'D'] }]);
-  assert.deepEqual(normalizeAnswer('L004', { kind: 'choice', answer: 'AB' }).answers, [{ question: 1, answer: ['A', 'B'] }]);
-  // 多小问：题号:选项，分号分隔
-  assert.deepEqual(
-    normalizeAnswer('L005', { kind: 'choice', answer: '1:A; 2:B,D' }).answers,
-    [
-      { question: 1, answer: ['A'] },
-      { question: 2, answer: ['B', 'D'] }
-    ]
-  );
-  // 只在答案里给字符串、没写 kind 时，靠 answers 字段/默认值判断
-  assert.equal(normalizeAnswer('L006', { answer: 'x = 1' }).kind, 'code');
-  assert.equal(normalizeAnswer('L007', { answers: [{ question: 1, answer: ['A'] }] }).kind, 'choice');
-  // 详细写法仍然兼容
-  assert.deepEqual(
-    normalizeAnswer('L008', { kind: 'choice', answers: [{ question: 2, answer: ['C'] }] }).answers,
-    [{ question: 2, answer: ['C'] }]
-  );
-});
-
 test('demoteHeadings：正文里的 #/##/#### 统一降到 ###，代码围栏内不动', () => {
   const text = [
     '# 一级标题',
@@ -985,10 +960,12 @@ test('demoteHeadings：正文里的 #/##/#### 统一降到 ###，代码围栏内
 
 test('task-parser：导出结构与签名形状正确', () => {
   const taskParser = require('../extractor/lib/task-parser');
+  // 答案的形状由 answer-format.js 定义，这里不再导出 normalizeAnswer / stringifyAnswer
+  // （曾经四处各有一套解析，改一处要四处一起改——现在只有一处）。
   assert.deepEqual(Object.keys(taskParser).sort(), [
     'KINDS',
     'answerDocumentSpec',
-    'answerFileName',
+    'answerRelativePath',
     'answerSpec',
     'classifyTask',
     'demoteHeadings',
@@ -999,10 +976,8 @@ test('task-parser：导出结构与签名形状正确', () => {
     'makeExperimentDocument',
     'makeLevelSection',
     'makeMarkdown',
-    'normalizeAnswer',
     'normalizeImageSource',
     'safeName',
-    'stringifyAnswer',
     'taskFromApi'
   ]);
   for (const [name, value] of Object.entries(taskParser)) {

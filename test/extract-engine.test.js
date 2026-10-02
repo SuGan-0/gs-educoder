@@ -13,6 +13,14 @@ const Module = require('node:module');
 
 const BASE64 = (value) => Buffer.from(value, 'utf8').toString('base64');
 
+/** 答案路径由 answer-format 决定（按班级分目录、班级码进目录名）。 */
+const fmt = require('../extractor/lib/answer-format');
+const answerPathFor = (exportRoot, classroomName, classroomCode, experimentName) => fmt.answerPathFor(
+  exportRoot,
+  { name: classroomName, code: classroomCode },
+  { name: experimentName }
+);
+
 // ---------------------------------------------------------------- 假数据
 
 const COURSE_A = {
@@ -1454,7 +1462,7 @@ test('引擎：重跑同一门课不再"重新抓一遍"——不重下图片、
   });
   const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');
   const archivePath = path.join(experimentDir, 'levels.jsonl');
-  const answerFile = path.join(exportRoot, 'answers', '示例课程B__CNN.answers.json');
+  const answerFile = answerPathFor(exportRoot, '示例课程B', 'DEMO0001', 'CNN');
   const lineCount = (file) => fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).length;
 
   // 第一轮：真抓真写
@@ -2166,18 +2174,30 @@ test('引擎：已通过测评的关卡自动导出答案（代码取文件内�
   const choiceSaved = await engine.captureAnswer(choiceTask, choicePayload, courseObj, experimentObj);
   assert.equal(choiceSaved.ok, true, JSON.stringify(choiceSaved));
 
-  const answerFile = path.join(exportRoot, 'answers', `${course}__${experiment}.answers.json`);
+  // v2：答案按班级分目录，两关写进同一份文件
+  const answerFile = answerPathFor(exportRoot, course, courseObj.classroomCode || '', experiment);
   assert.equal(codeSaved.answerPath, answerFile);
+  assert.equal(choiceSaved.answerPath, answerFile, '同一实验的答案必须落同一份文件');
   const document = JSON.parse(fs.readFileSync(answerFile, 'utf8'));
-  assert.equal(document.course, course);
-  assert.equal(document.experiment, experiment);
+  assert.equal(document.schema_version, 2);
+  assert.equal(document.classroom.name, course);
+  assert.equal(document.classroom.code, courseObj.classroomCode || '');
+  assert.equal(document.experiment.name, experiment);
   assert.deepEqual(
     document.answers.map((item) => [item.level_id, item.kind]),
     [['L001', 'code'], ['L002', 'choice']],
     '两关都要按顺序写入'
   );
-  assert.match(document.answers[0].answer, /public class MailService/, '编程题答案是提交的文件内容');
-  assert.equal(document.answers[1].answer, '1:A,C;2:B', '选择题答案按题号，多选字母升序');
+  assert.match(document.answers[0].answer.code, /public class MailService/, '编程题答案是提交的文件内容');
+  assert.deepEqual(
+    document.answers[1].answer.questions,
+    [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }],
+    '选择题答案按题号，多选字母升序'
+  );
+  // 平台关卡标识与来源要落进文件：油猴核对班级、按标识选关都要用
+  assert.equal(document.answers[0].task_identifier, 'zq044df30560', '取任务 URL 的最后一段');
+  assert.equal(document.answers[0].source, 'export');
+  assert.equal(document.answers[0].verified, true, '导出的是「已通过测评」的答案');
 
   const logs = events.filter((event) => event.type === 'log').map((event) => event.message).join('\n');
   assert.match(logs, /已导出答案（已通过测评）：L001/, '导出要留日志，用户要知道答案写哪去了');
@@ -2286,11 +2306,11 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
   await engine.run();
 
   // ① 答案文件照写：只有已通过的 conv（代码内容来自 rep_content，与「已提交的代码」同口径）
-  const answerPath = path.join(exportRoot, 'answers', '示例课程B__CNN.answers.json');
+  const answerPath = answerPathFor(exportRoot, '示例课程B', 'DEMO0001', 'CNN');
   const document = JSON.parse(fs.readFileSync(answerPath, 'utf8'));
   assert.deepEqual(document.answers.map((item) => item.level_id), ['L001']);
   assert.equal(document.answers[0].kind, 'code');
-  assert.match(String(document.answers[0].answer), /print\("starter"\)/);
+  assert.match(String(document.answers[0].answer.code), /print\("starter"\)/);
 
   // ② 题目存档一律不写：连实验目录都不该出现（levels.jsonl / 实验.md / assets 都在它下面）
   const experimentDir = path.join(exportRoot, '示例课程B', 'CNN');

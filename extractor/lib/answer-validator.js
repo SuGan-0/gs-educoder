@@ -7,9 +7,11 @@
  *   const report = validateAnswers({ levels, answers });
  *   report.ok        // 全部通过
  *   report.issues[]  // { level, kind, code, message }
+ *
+ * 答案的形状由 `answer-format.js` 定义（v2），这里只做**内容**层面的检查。
  */
 
-const { normalizeAnswer, KINDS } = require('./task-parser');
+const fmt = require('./answer-format');
 
 /** 代码答案的占位文本：AI 没真作答时会留下这些。 */
 const PLACEHOLDER = /完整代码|可直接放入|保留题目给的框架|TODO|待补充|\.\.\.\s*$/;
@@ -18,10 +20,27 @@ function codeLetters(count) {
   return Array.from({ length: count }, (_value, index) => String.fromCharCode(65 + index));
 }
 
+/** 从原始条目里取出「写出来的字母」，用于发现被规范化过滤掉的非法字母。 */
+function writtenLetters(raw) {
+  if (Array.isArray(raw?.questions)) {
+    const joined = raw.questions
+      .flatMap((item) => (Array.isArray(item.selected) ? item.selected : []))
+      .join(',');
+    return joined.match(/[A-Za-z]/g) || [];
+  }
+  if (Array.isArray(raw?.answers)) {
+    const joined = raw.answers
+      .map((item) => (item && item.answer ? [].concat(item.answer).join(',') : ''))
+      .join(';');
+    return joined.match(/[A-Za-z]/g) || [];
+  }
+  return String(raw?.answer ?? '').match(/[A-Za-z]/g) || [];
+}
+
 /**
  * @param {{levels: Array, answers: Object|Array}} input
  *   levels  — 关卡存档记录（含 taskIndex / type / choiceQuestions / codeLanguage）
- *   answers — { level_id: 答案 } 或 [{ level_id, ... }]
+ *   answers — `{ level_id: 答案 }` 或 `[{ level_id, ... }]`
  */
 function validateAnswers({ levels = [], answers = {} } = {}) {
   const map = new Map();
@@ -36,35 +55,33 @@ function validateAnswers({ levels = [], answers = {} } = {}) {
   const add = (level, kind, code, message) => issues.push({ level, kind, code, message });
 
   for (const level of levels) {
-    const id = `L${String(Number(level.taskIndex) || 0).padStart(3, '0')}`;
-    const kind = level.type === KINDS.CHOICE ? KINDS.CHOICE : KINDS.CODE;
+    const id = fmt.levelIdOf(level.taskIndex);
+    const kind = level.type === fmt.KINDS.CHOICE ? fmt.KINDS.CHOICE : fmt.KINDS.CODE;
     const raw = map.get(id);
     if (raw === undefined) {
       add(id, kind, 'missing', `缺少答案（${level.title || level.level || id}）`);
       continue;
     }
 
-    const normalized = normalizeAnswer(id, raw, { kind, language: level.codeLanguage, source: level.source });
+    const normalized = fmt.normalizeAnswer(id, raw, { kind, language: level.codeLanguage });
     if (normalized.kind !== kind) {
       add(id, kind, 'kind-mismatch', `题型不符：存档是 ${kind}，答案是 ${normalized.kind}`);
       continue;
     }
 
-    if (kind === KINDS.CHOICE) {
+    if (kind === fmt.KINDS.CHOICE) {
       const questions = level.choiceQuestions || [];
       // 字母必须真的出现在写法里：规范化会过滤非法字母，所以这里同时看原始文本。
-      const rawText = Array.isArray(raw.answers)
-        ? raw.answers.map((item) => (item && item.answer ? [].concat(item.answer).join(',') : '')).join(';')
-        : String(raw.answer ?? '');
-      const written = (rawText.match(/[A-Za-z]/g) || []).map((letter) => letter.toUpperCase());
-      if (!normalized.answers.length) {
+      const written = writtenLetters(raw).map((letter) => letter.toUpperCase());
+      if (!normalized.questions.length) {
         add(id, kind, 'empty', '选择题答案为空');
         continue;
       }
-      const byQuestion = new Map(normalized.answers.map((item) => [Number(item.question), item.answer]));
+      const byQuestion = new Map(normalized.questions.map((item) => [Number(item.number), item.selected]));
       for (let index = 0; index < Math.max(questions.length, 1); index += 1) {
         const questionNo = index + 1;
-        const letters = byQuestion.get(questionNo) || (questions.length <= 1 ? normalized.answers[0].answer : null);
+        const letters = byQuestion.get(questionNo)
+          || (questions.length <= 1 ? normalized.questions[0].selected : null);
         if (!letters || !letters.length) {
           add(id, kind, 'missing-question', `第 ${questionNo} 题没有答案`);
           continue;
@@ -77,7 +94,7 @@ function validateAnswers({ levels = [], answers = {} } = {}) {
         }
       }
       // 写法里出现的、根本没被识别成答案的字母（例如 "Z"、或超出 A-H 范围）也要点名。
-      const recognized = new Set(normalized.answers.flatMap((item) => item.answer));
+      const recognized = new Set(normalized.questions.flatMap((item) => item.selected));
       const unknown = [...new Set(written.filter((letter) => !recognized.has(letter)))];
       if (unknown.length) {
         add(id, kind, 'invalid-letter', `答案里出现了无法识别的选项字母：${unknown.join('、')}（有效范围 A–H）`);
@@ -86,7 +103,7 @@ function validateAnswers({ levels = [], answers = {} } = {}) {
         add(id, kind, 'extra-question', `答案里的题号多于题目小问数（题目 ${questions.length} 问，答案 ${byQuestion.size} 问）`);
       }
     } else {
-      const code = normalized.answer;
+      const code = normalized.code;
       if (!code) {
         add(id, kind, 'empty', '编程题答案为空');
         continue;
@@ -112,8 +129,10 @@ function validateAnswers({ levels = [], answers = {} } = {}) {
 }
 
 /**
- * 直接校验「答案文件里的答案数组」——序列化之后（最简写法）再校验，
- * 而不是校验规范化后的结构：规范化会把非法字母直接丢掉，那样就看不见「模型写了 Z」这类问题。
+ * 直接校验「答案文件里的答案数组」。
+ *
+ * 注意校验的是**文件里写着的结构**，不是规范化后的结果：
+ * 规范化会把非法字母直接丢掉，那样就看不见「模型写了 Z」这类问题。
  */
 function validateAnswerList(list, levels) {
   const map = {};

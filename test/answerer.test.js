@@ -80,12 +80,15 @@ test('listTargets：从关卡存档列课程/实验/关卡，并带上「已有�
   const exportRoot = tmpDir();
   t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
   seedExperiment(exportRoot, '课程A', '实验B', [CODE_LEVEL(), CHOICE_LEVEL()]);
-  fs.mkdirSync(path.join(exportRoot, 'answers'), { recursive: true });
-  fs.writeFileSync(
-    path.join(exportRoot, 'answers', '课程A__实验B.answers.json'),
-    JSON.stringify({ course: '课程A', experiment: '实验B', answers: [{ level_id: 'L001', kind: 'code', answer: 'x' }] }),
-    'utf8'
-  );
+  // v2 位置：answers/{班级}/{实验}.answers.json
+  const answerFile = path.join(exportRoot, 'answers', '课程A', '实验B.answers.json');
+  fs.mkdirSync(path.dirname(answerFile), { recursive: true });
+  fs.writeFileSync(answerFile, JSON.stringify({
+    schema_version: 2,
+    classroom: { name: '课程A', code: '' },
+    experiment: { name: '实验B', homework_id: 0 },
+    answers: [{ level_id: 'L001', kind: 'code', answer: { language: 'python', code: 'x' } }]
+  }), 'utf8');
 
   const courses = await listTargets(exportRoot);
   assert.equal(courses.length, 1);
@@ -130,16 +133,25 @@ test('answerExperiment：调模型 → 答案写到 exports/answers/课程__实�
 
   assert.equal(result.ok, true, JSON.stringify(result.issues));
   assert.equal(result.answered, 2);
-  assert.ok(result.answerPath.endsWith(path.join('answers', '课程A__实验B.answers.json')), result.answerPath);
+  assert.ok(
+    result.answerPath.endsWith(path.join('answers', '课程A', '实验B.answers.json')),
+    `答案要按班级分目录，实际：${result.answerPath}`
+  );
 
   const document = JSON.parse(fs.readFileSync(result.answerPath, 'utf8'));
-  assert.equal(document.course, '课程A');
-  assert.equal(document.experiment, '实验B');
+  assert.equal(document.schema_version, 2);
+  assert.equal(document.classroom.name, '课程A');
+  assert.equal(document.experiment.name, '实验B');
   assert.equal(document.model, 'fake-model');
   assert.equal(document.answers.length, 2);
-  assert.deepEqual(document.answers[1], { level_id: 'L002', kind: 'choice', answer: 'C' }, '文件里写最简写法');
+  // 模型输出最简写法（"C"），落盘是结构化小问——转换是确定性的代码，不交给模型
+  assert.deepEqual(document.answers[1].answer, { questions: [{ number: 1, selected: ['C'] }] });
+  assert.equal(document.answers[1].source, 'ai');
   assert.equal(document.answers[0].kind, 'code');
-  assert.equal(document.answers[0].language, 'python');
+  assert.deepEqual(document.answers[0].answer, {
+    language: 'python',
+    code: 'def f():\n    ########## begin ##########\n    return 1\n    ########## end ##########'
+  });
 
   // 提示词里必须带题目正文与关卡 id，模型才知道考什么
   assert.match(sawUser, /实现卷积|第1关/);

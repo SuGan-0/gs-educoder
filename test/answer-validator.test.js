@@ -143,45 +143,40 @@ test('tools/validate-answers.js：集中目录里的答案能通过，course/exp
     const missing = runFailing();
     assert.equal(missing.status, 1);
     assert.match(missing.out, /缺答案.*课程A \/ 实验B/);
-    assert.match(missing.out, /answers\/课程A__实验B\.answers\.json/, '要指出期望的文件名（带课程与实验）');
-
-    // ② 放一份正确答案 → 通过
-    fs.writeFileSync(
-      path.join(answerDir, '课程A__实验B.answers.json'),
-      JSON.stringify({
-        course: '课程A',
-        experiment: '实验B',
-        answers: [
-          {
-            level_id: 'L001',
-            kind: 'code',
-            language: 'python',
-            answer: 'def f():\n    ########## begin ##########\n    return 1\n    ########## end ##########'
-          }
-        ]
-      }),
-      'utf8'
+    assert.match(
+      missing.out,
+      /answers[\\/]课程A[\\/]实验B\.answers\.json/,
+      '要指出期望的路径（v2：按班级分目录）'
     );
+
+    // ② 放一份正确答案 → 通过。v2：班级是对象，答案是结构化对象。
+    const v2File = path.join(answerDir, '课程A', '实验B.answers.json');
+    fs.mkdirSync(path.dirname(v2File), { recursive: true });
+    const writeAnswer = (classroomName) => fs.writeFileSync(v2File, JSON.stringify({
+      schema_version: 2,
+      classroom: { name: classroomName, code: '' },
+      experiment: { name: '实验B', homework_id: 0 },
+      answers: [
+        {
+          level_id: 'L001',
+          task_identifier: 'abc',
+          title: 'conv',
+          kind: 'code',
+          source: 'ai',
+          answer: {
+            language: 'python',
+            code: 'def f():\n    ########## begin ##########\n    return 1\n    ########## end ##########'
+          }
+        }
+      ]
+    }), 'utf8');
+    writeAnswer('课程A');
+
     const ok = run();
-    assert.match(ok, /通过\s+课程A \/ 实验B：1\/1 关有答案（answers[\\/]课程A__实验B\.answers\.json）/);
+    assert.match(ok, /通过\s+课程A \/ 实验B：1\/1 关有答案（answers[\\/]课程A[\\/]实验B\.answers\.json）/);
 
-    // ③ course 写错 → 报不一致
-    fs.writeFileSync(
-      path.join(answerDir, '课程A__实验B.answers.json'),
-      JSON.stringify({
-        course: '别的课程',
-        experiment: '实验B',
-        answers: [
-          {
-            level_id: 'L001',
-            kind: 'code',
-            language: 'python',
-            answer: 'def f():\n    ########## begin ##########\n    return 1\n    ########## end ##########'
-          }
-        ]
-      }),
-      'utf8'
-    );
+    // ③ 班级名写错 → 报不一致
+    writeAnswer('别的课程');
     const mismatch = runFailing();
     assert.equal(mismatch.status, 1);
     assert.match(mismatch.out, /course-mismatch/);

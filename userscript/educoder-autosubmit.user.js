@@ -834,6 +834,53 @@
     return identifier;
   }
 
+  /**
+   * 取当前关卡的答案，并**核对班级**。
+   *
+   * ## 为什么必须核对
+   *
+   * 同一个实验（同名、同关卡名）可能同时存在于多个班级里。旧实现只按平台关卡标识、
+   * 或退一步按「实验名__关卡名」匹配——标识对不上时就会靠名字兜底，
+   * 于是可能把**别的班**的答案填进来。按名字兜底本身是必要的（平台重新发布实验会
+   * 换掉一整组标识），但兜底之后必须再确认「这份答案确实属于当前班级」。
+   *
+   * ## 班级从哪来
+   *
+   * 关卡页的 URL（`/tasks/{课程码}/{作业ID}/{关卡标识}`）里**没有班级码**，
+   * 只有关卡数据里有：`course_identifier` 就是课堂码（如 `HCEAP94S`）。
+   * 所以核对依赖 `observeTaskJson` 先把班级写进 `state.taskContext`。
+   *
+   * ## 判定
+   *
+   * | 情况 | 处置 |
+   * |---|---|
+   * | 关卡数据还没读到（拿不到班级） | 不拦，记提示——页面刚打开时还没发请求 |
+   * | 答案是老答案库、没有班级码 | 不拦，记提示 |
+   * | 两者都有且不一致 | **拒绝作答**，并说明两边分别是什么 |
+   */
+  function resolveAnswerForCurrentLevel() {
+    const answerKey = answerKeyForCurrentLevel();
+    const entry = state.answers[answerKey];
+    if (!entry) return { answerKey, entry: null, blocked: '' };
+
+    const pageCode = String((state.taskContext && state.taskContext.classroomCode) || '').trim();
+    const answerCode = String(entry.classroomCode || '').trim();
+    if (!pageCode) {
+      log('关卡数据里没有班级信息，本次跳过班级核对（答案可能来自别的班，请留意）。', 'warn');
+    } else if (!answerCode) {
+      log(`答案没有班级标记（老答案库），无法核对它是否属于课堂 ${pageCode}。`, 'warn');
+    } else if (answerCode !== pageCode) {
+      return {
+        answerKey,
+        entry,
+        blocked: `班级不一致：这份答案属于课堂 ${answerCode}`
+          + `${entry.classroomName ? `（${entry.classroomName}）` : ''}，而当前页面是课堂 ${pageCode}。`
+          + '为避免把别班的答案填进来，已拒绝作答。'
+      };
+    }
+    return { answerKey, entry, blocked: '' };
+  }
+
   /* --------------------------------------------------------- 网络录制（核心） */
 
   function remember(entry) {
@@ -922,6 +969,14 @@
     state.taskContext = {
       id: match[1],
       sizes,
+      // **班级身份**：关卡页的 URL（`/tasks/xxx`）里没有班级，只有关卡数据里有。
+      // `course_identifier` 就是课堂码（如 HCEAP94S），是「这一关属于哪个班」的权威依据。
+      // 作答前用它核对答案库里的答案是不是本班的——同名实验在多个班里都存在时，
+      // 旧实现只按关卡标识/关卡名匹配，会把别班的答案填进去。
+      classroomCode: String(payload.course_identifier || '').trim(),
+      classroomId: Number(payload.course_id) || 0,
+      homeworkId: Number(payload.homework_common_id) || 0,
+      experimentName: String(payload.homework_common_name || '').trim(),
       levelId: position > 0 ? `L${String(position).padStart(3, '0')}` : '',
       // 关卡标题：课堂流程没有教学课程队列的 levelHint，回传答案/导出标准答案时
       // 靠它按内容兜底匹配（平台重新发布实验会换掉一整组关卡标识）。
@@ -1475,39 +1530,56 @@
    * - 编程题：返回代码字符串
    * - 选择题：返回 { 题号: ['A'] }，交给 answerChoiceLevel
    *
-   * 支持最简格式：`answer: "A"` / `"A,C"` / `"1:A;2:B,D"`；
-   * 兼容详细格式：`answers: [{ question, answer: ['A'] }]`。
+   * 支持**当前 v2 结构**（与答案文件逐字段一致，见 `extractor/lib/answer-format.js`）：
+   * - 编程题 `answer: { language, code }`
+   * - 选择题 `answer: { questions: [{ number, selected: ['A'] }] }`
+   *
+   * 同时兼容历史写法，避免老答案库直接失效：
+   * - `answer: "A"` / `"A,C"` / `"1:A;2:B,D"`
+   * - `answers: [{ question, answer: ['A'] }]`
    */
   function readAnswer(levelAnswer) {
     if (!levelAnswer) return null;
-    if (String(levelAnswer.kind) === 'choice' || Array.isArray(levelAnswer.answers)) {
+    const payload = levelAnswer.answer && typeof levelAnswer.answer === 'object' ? levelAnswer.answer : null;
+    const isChoice = String(levelAnswer.kind) === 'choice'
+      || Array.isArray(payload && payload.questions)
+      || Array.isArray(levelAnswer.answers);
+
+    if (isChoice) {
       const map = {};
-      if (Array.isArray(levelAnswer.answers)) {
+      const pushLetters = (number, value) => {
+        const letters = (Array.isArray(value) ? value : String(value ?? '').split(/[,，、\s]+/))
+          .map((token) => String(token).trim().toUpperCase())
+          .flatMap((token) => (/^[A-H]+$/.test(token) ? token.split('') : []));
+        if (letters.length) map[String(number || Object.keys(map).length + 1)] = letters;
+      };
+
+      if (payload && Array.isArray(payload.questions)) {
+        // v2：结构化小问，直接用，不用再解析字符串
+        for (const item of payload.questions) pushLetters(item && item.number, item && item.selected);
+      } else if (Array.isArray(levelAnswer.answers)) {
         for (const item of levelAnswer.answers) {
-          if (item && item.answer) map[String(item.question || Object.keys(map).length + 1)] = [].concat(item.answer);
+          if (item && item.answer) pushLetters(item.question, item.answer);
         }
       } else {
         const text = String(levelAnswer.answer || '').trim();
         if (/[;；]/.test(text) || /^\d+\s*[:：]/.test(text)) {
           for (const part of text.split(/[;；]+/)) {
             const match = /^\s*(\d+)\s*[:：]\s*(.+)$/.exec(part);
-            if (match) {
-              map[match[1]] = match[2]
-                .split(/[,，、\s]+/)
-                .map((token) => token.trim().toUpperCase())
-                .flatMap((token) => (/^[A-H]+$/.test(token) ? token.split('') : []));
-            }
+            if (match) pushLetters(match[1], match[2]);
           }
         } else {
-          map['1'] = text
-            .split(/[,，、\s]+/)
-            .map((token) => token.trim().toUpperCase())
-            .flatMap((token) => (/^[A-H]+$/.test(token) ? token.split('') : []));
+          pushLetters(1, text);
         }
       }
       return { kind: 'choice', map };
     }
-    return { kind: 'code', code: String(levelAnswer.answer ?? levelAnswer.code ?? '') };
+
+    // v2 的编程题答案是 `{ language, code }`；历史写法是 `answer` 字符串。
+    const code = payload
+      ? payload.code
+      : (levelAnswer.answer ?? levelAnswer.code ?? '');
+    return { kind: 'code', code: String(code ?? '') };
   }
 
   /** 用录制到的模板重放一次提交（把答案替换进去）。 */
@@ -1750,11 +1822,17 @@
   /** 手动单关流程（面板「一键作答并提交」）：答当前这一关，通过后按设置进下一关。 */
   async function processCurrentLevel() {
     const levelId = currentLevelId();
-    const answerKey = answerKeyForCurrentLevel();
+    const resolved = resolveAnswerForCurrentLevel();
+    const answerKey = resolved.answerKey;
     log(`开始处理关卡 ${levelId || '(未知)'}${answerKey !== levelId ? `（答案编号 ${answerKey}）` : ''}`);
+    // 班级对不上就停在这里，绝不"先答了再说"——填错班的答案比不答更糟。
+    if (resolved.blocked) {
+      log(resolved.blocked, 'error');
+      return;
+    }
 
     const outcome = await answerCurrentLevel({
-      answer: readAnswer(state.answers[answerKey]),
+      answer: readAnswer(resolved.entry),
       allowEditorFallback: true,
       allowReplay: true
     });
@@ -2274,7 +2352,14 @@
     // 判定前先等一小会儿；真虚拟机题只多花这点时间，代价可接受。
     const editor = await waitForCodeEditor(2500);
     const hasChoice = Boolean(document.querySelector('input[type="radio"], input[type="checkbox"]'));
-    const parsedAnswer = readAnswer(state.answers[answerKeyForCurrentLevel()]);
+    // 队列路径同样要核对班级：对不上就停队，绝不给别班的关卡填答案。
+    const resolved = resolveAnswerForCurrentLevel();
+    if (resolved.blocked) {
+      log(resolved.blocked, 'error');
+      stopTeachQueue('班级不一致', 'error');
+      return;
+    }
+    const parsedAnswer = readAnswer(resolved.entry);
     const action = teachLevelAction({
       selected,
       hasEditor: Boolean(editor),
@@ -3062,7 +3147,10 @@
     const context = {
       experiment: hint.experimentName || '',
       // 课堂流程没有教学课程队列的 levelHint，退回关卡数据里的标题
-      levelName: hint.levelName || (state.taskContext && state.taskContext.levelTitle) || ''
+      levelName: hint.levelName || (state.taskContext && state.taskContext.levelTitle) || '',
+      // 班级码（`course_identifier`）：控制台拿它核对「这一关的存档属于哪个班」，
+      // 不一致就拒收——这是防止答案写进别的班的最后一道闸。
+      classroomCode: String((state.taskContext && state.taskContext.classroomCode) || '')
     };
     if (state.taskContext && state.taskContext.standardAnswer && state.taskContext.standardAnswer.length) {
       return {
@@ -3283,6 +3371,7 @@
       NEXT_LEVEL_PATTERNS,
       readAnswer,
       answerKeyForCurrentLevel,
+      resolveAnswerForCurrentLevel,
       consoleEndpoint,
       pageWindow,
       pickEditorModel,

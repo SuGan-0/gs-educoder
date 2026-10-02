@@ -718,8 +718,11 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   // 多个实验聚合到同一对象时会互相覆盖（曾出现两个实验的 L001 打架）。
   const keyL001 = '课程__实验A__L001';
   const keyL002 = '课程__实验A__L002';
-  assert.equal(payload.answers[keyL001].answer, 'print(1)', '答案按复合键汇总');
-  assert.deepEqual(payload.answers[keyL002].answers[0].answer, ['A'], '选择题答案原样带出');
+  // v2：编程题答案是对象、选择题是结构化小问；每条都带班级码供油猴核对
+  assert.equal(payload.answers[keyL001].answer.code, 'print(1)', '答案按复合键汇总');
+  assert.deepEqual(payload.answers[keyL002].answer.questions[0].selected, ['A'], '选择题答案原样带出');
+  assert.equal(payload.answers[keyL001].kind, 'code');
+  assert.ok('classroomCode' in payload.answers[keyL001], '每条答案都要带班级码');
   assert.equal(payload.blueprints.length, 1, '提交蓝图要一并返回');
   assert.equal(payload.blueprints[0].method, 'POST');
   assert.equal(payload.levelIds.conv, keyL001, '平台关卡标识必须折算成全局唯一键');
@@ -791,18 +794,23 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   assert.equal(answerResult.levelId, 'L002', '关卡号由控制台的映射表算出，而不是信脚本传的');
   assert.equal(answerResult.course, '课程');
   assert.equal(answerResult.experiment, '实验A');
-  assert.equal(answerResult.path, path.join('answers', '课程__实验A.answers.json'));
+  // v2：答案按班级分目录
+  assert.equal(answerResult.path, path.join('answers', '课程', '实验A.answers.json'));
 
   const storedAnswers = JSON.parse(
-    fs.readFileSync(path.join(exportRoot, 'answers', '课程__实验A.answers.json'), 'utf8')
+    fs.readFileSync(path.join(exportRoot, 'answers', '课程', '实验A.answers.json'), 'utf8')
   );
-  assert.equal(storedAnswers.course, '课程');
-  assert.equal(storedAnswers.experiment, '实验A');
+  assert.equal(storedAnswers.schema_version, 2);
+  assert.equal(storedAnswers.classroom.name, '课程');
+  assert.equal(storedAnswers.experiment.name, '实验A');
   assert.deepEqual(
-    storedAnswers.answers,
-    [{ level_id: 'L002', kind: 'choice', answer: '1:A;2:B' }],
-    '回传的答案要按规范格式落盘'
+    storedAnswers.answers.map((item) => [item.level_id, item.kind, item.answer.questions]),
+    [['L002', 'choice', [{ number: 1, selected: ['A'] }, { number: 2, selected: ['B'] }]]],
+    '回传的答案要按 v2 结构化落盘'
   );
+  assert.equal(storedAnswers.answers[0].task_identifier, 'zq94fa325', '平台关卡标识要落盘');
+  assert.equal(storedAnswers.answers[0].source, 'platform');
+  assert.equal(storedAnswers.answers[0].verified, true, '提交通过才回传，属于已验证');
 
   // 标识对不上时的兜底：平台重新发布实验会换掉一整组关卡标识（本地 kbfiscelzp9a、
   // 页面 v4nyrg6lex7q 这种）。此时脚本带上关卡名，控制台按内容匹配回正确的关卡。

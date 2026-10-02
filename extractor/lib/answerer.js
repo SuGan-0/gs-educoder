@@ -3,22 +3,36 @@
 /**
  * AI 自动作答：读关卡存档 → 让模型出答案 → 写进集中的答案目录。
  *
- * 关键约定（详见 docs/AI-ANSWER-FORMAT.md）：
- * - 输入：`exports/课程/实验/实验.md`（一个实验一个文件，含每关的「作答格式」）
- * - 输出：`exports/answers/{课程}__{实验}.answers.json`
- * - 答案格式最小化：编程题 `{level_id, kind:'code', language, answer}`，
- *   选择题 `{level_id, kind:'choice', answer:'B' | 'A,C' | '1:A;2:B,D'}`
+ * ## 契约（见 answer-format.js，那里是唯一事实来源）
  *
- * 模型调用通过 `callModel` 注入（默认走 OpenAI 兼容的 /chat/completions），
- * 因此离线测试可以直接塞一个假模型，不联网。
+ * - 输入：`exports/{班级}/{实验}/{实验}.md`（一个实验一个文件，含每关的「作答格式」）
+ * - 输出：`exports/answers/{班级}（{课堂码}）/{实验}.answers.json`
+ *
+ * ## 模型只需输出最简写法
+ *
+ * 落盘是结构化的 v2，但**提示词刻意只要求最简写法**——模型对短字符串最不容易出错，
+ * 而结构转换是确定性的代码，不该交给模型：
+ *
+ * ```json
+ * { "answers": [ { "level_id": "L001", "kind": "code", "language": "python", "answer": "完整代码" },
+ *                { "level_id": "L002", "kind": "choice", "answer": "B" } ],
+ *   "unanswered": [ { "level_id": "L005", "reason": "原因" } ] }
+ * ```
+ *
+ * ## 写入走合并，不是重写
+ *
+ * 旧实现直接重写整份实验答案文件——只重答一关也会把其它关卡（包括人工改过的）覆盖掉。
+ * 现在走 `mergeAnswers`：同一 `level_id` 覆盖，其它关卡原样保留，
+ * 与抓取端导出、篡改猴回传**共用同一条合并路径**。
  */
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const { readArchive, orderedLevels } = require('./level-store');
-const { answerFileName, normalizeAnswer, stringifyAnswer, KINDS } = require('./task-parser');
+const { mergeAnswers } = require('./answer-store');
 const { validateAnswerList } = require('./answer-validator');
+const fmt = require('./answer-format');
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com/v1';
 const DEFAULT_MODEL = 'deepseek-chat';
@@ -98,7 +112,30 @@ async function defaultCallModel({ baseUrl, apiKey, model, system, user, timeout 
   }
 }
 
-/** 列出「可以出答案」的课程/实验/关卡（来自 exports 下的关卡存档）。 */
+/** 从关卡存档的 `source`（任务页 URL）里取平台关卡标识：**永远是最后一段**。 */
+function identifierFromSource(source) {
+  const match = /\/tasks\/([^/?#]+(?:\/[^/?#]+)*)/.exec(String(source || ''));
+  if (!match) return '';
+  const segments = match[1].split('/').filter(Boolean);
+  return segments.length ? segments[segments.length - 1] : '';
+}
+
+/** 从关卡存档里取「班级 / 实验」的身份（名称会重名，课堂码不会）。 */
+function identityFromLevels(levels, fallbackCourse, fallbackExperiment) {
+  const first = levels.find(Boolean) || {};
+  return {
+    classroom: {
+      name: first.course || fallbackCourse || '',
+      code: first.classroomCode || ''
+    },
+    experiment: {
+      name: first.experiment || fallbackExperiment || '',
+      homeworkId: Number(first.experimentHomeworkId) || 0
+    }
+  };
+}
+
+/** 列出「可以出答案」的班级/实验/关卡（来自 exports 下的关卡存档）。 */
 async function listTargets(exportRoot) {
   const courses = [];
   let courseDirs = [];
@@ -121,12 +158,12 @@ async function listTargets(exportRoot) {
         continue;
       }
       if (!levels.length) continue;
-      const answerPath = path.join(exportRoot, 'answers', `${answerFileName(courseDir.name, experimentDir.name)}.answers.json`);
+      const identity = identityFromLevels(levels, courseDir.name, experimentDir.name);
+      const answerPath = fmt.answerPathFor(exportRoot, identity.classroom, identity.experiment);
       let answered = 0;
       try {
-        const parsed = JSON.parse(await fs.readFile(answerPath, 'utf8'));
-        const list = Array.isArray(parsed.answers) ? parsed.answers : Object.values(parsed.answers || {});
-        answered = list.filter((item) => item && item.level_id).length;
+        const parsed = fmt.normalizeDocument(JSON.parse(await fs.readFile(answerPath, 'utf8')), identity);
+        answered = parsed.answers.filter((item) => item.level_id).length;
       } catch {
         answered = 0;
       }
@@ -134,14 +171,17 @@ async function listTargets(exportRoot) {
         name: experimentDir.name,
         directory: dir,
         answerPath,
+        classroom: identity.classroom,
+        homeworkId: identity.experiment.homework_id,
         levelCount: levels.length,
         answered,
         levels: levels.map((level) => ({
           taskIndex: Number(level.taskIndex) || 0,
-          id: `L${String(Number(level.taskIndex) || 0).padStart(3, '0')}`,
+          id: fmt.levelIdOf(level.taskIndex),
           title: level.title || '',
           type: level.type || '',
-          language: level.codeLanguage || ''
+          language: level.codeLanguage || '',
+          taskIdentifier: level.source ? identifierFromSource(level.source) : ''
         }))
       });
     }
@@ -172,7 +212,8 @@ async function readExperimentMarkdown(experimentDirectory, experimentName, cours
 /**
  * 给一个实验出答案。
  *
- * @returns {Promise<{ok:boolean, answerPath:string, answered:number, total:number, issues:Array, unanswered:Array}>}
+ * @returns {Promise<{ok:boolean, answerPath:string, answered:number, total:number,
+ *   issues:Array, unanswered:Array, replaced:string[], skipped:Array}>}
  */
 async function answerExperiment({
   exportRoot,
@@ -188,9 +229,10 @@ async function answerExperiment({
   const directory = path.join(exportRoot, course, experiment);
   const levels = orderedLevels((await readArchive(path.join(directory, 'levels.jsonl'))).records);
   if (!levels.length) throw new Error(`实验「${experiment}」没有关卡存档（先抓取，或用 tools/build-exports.js 生成）`);
+  const identity = identityFromLevels(levels, course, experiment);
 
   const wanted = onlyLevelIds && onlyLevelIds.length
-    ? levels.filter((level) => onlyLevelIds.includes(`L${String(Number(level.taskIndex) || 0).padStart(3, '0')}`))
+    ? levels.filter((level) => onlyLevelIds.includes(fmt.levelIdOf(level.taskIndex)))
     : levels;
   const markdown = (await readExperimentMarkdown(directory, experiment, course))
     // 若开启了 EDUCODER_INLINE_IMAGES，md 里会有 `data:image/...;base64,...` 的图片；
@@ -203,53 +245,55 @@ async function answerExperiment({
     apiKey,
     model,
     system: SYSTEM_PROMPT,
-    user: `${USER_PROMPT_HEADER}\n\n（只作答以下关卡：${wanted.map((level) => `L${String(level.taskIndex).padStart(3, '0')}`).join('、')}）\n\n${markdown}`
+    user: `${USER_PROMPT_HEADER}\n\n（只作答以下关卡：${wanted.map((level) => fmt.levelIdOf(level.taskIndex)).join('、')}）\n\n${markdown}`
   });
   const parsed = parseModelJson(content);
 
   const rawList = Array.isArray(parsed.answers) ? parsed.answers : Object.values(parsed.answers || {});
-  const normalized = [];
+  const entries = [];
   for (const item of rawList) {
     if (!item || !item.level_id) continue;
-    const level = wanted.find((candidate) => `L${String(Number(candidate.taskIndex) || 0).padStart(3, '0')}` === String(item.level_id));
+    const level = wanted.find((candidate) => fmt.levelIdOf(candidate.taskIndex) === String(item.level_id));
     if (!level) continue; // 模型多答了不在范围内的关卡：丢弃
-    normalized.push(
-      normalizeAnswer(String(item.level_id), item, {
-        kind: level.type === KINDS.CHOICE ? KINDS.CHOICE : KINDS.CODE,
-        language: level.codeLanguage,
-        source: level.source
-      })
-    );
+    entries.push({
+      levelId: String(item.level_id),
+      kind: item.kind || (level.type === fmt.KINDS.CHOICE ? fmt.KINDS.CHOICE : fmt.KINDS.CODE),
+      language: item.language || level.codeLanguage,
+      answer: item.answer ?? item.code,
+      taskIdentifier: level.source ? identifierFromSource(level.source) : '',
+      title: level.title || '',
+      source: 'ai',
+      verified: false
+    });
   }
 
-  const answerPath = path.join(exportRoot, 'answers', `${answerFileName(course, experiment)}.answers.json`);
-  const document = {
-    course,
-    experiment,
-    generated_at: new Date().toISOString(),
-    model: model || DEFAULT_MODEL,
-    // 文件里写最简写法（`answer: "B"` / `"1:A;2:B,D"`）：人一眼能看懂，也方便人工修。
-    answers: normalized.map((item) => stringifyAnswer(item)),
-    unanswered: Array.isArray(parsed.unanswered) ? parsed.unanswered : []
-  };
-  await fs.mkdir(path.dirname(answerPath), { recursive: true });
-  await fs.writeFile(answerPath, JSON.stringify(document, null, 2), 'utf8');
+  const saved = await mergeAnswers({
+    exportRoot,
+    classroom: identity.classroom,
+    experiment: identity.experiment,
+    entries,
+    model: model || DEFAULT_MODEL
+  });
+  if (!saved.ok) throw new Error(`答案写入失败：${saved.error}`);
 
-  // 立刻自校验：覆盖度 / 题型 / 选项字母 / 占位代码（校验写进文件的最简写法）
-  const report = validateAnswerList(document.answers, wanted);
+  // 立刻自校验：覆盖度 / 题型 / 选项字母 / 占位代码（校验的就是刚写进去的结构）
+  const written = fmt.normalizeDocument(JSON.parse(await fs.readFile(saved.answerPath, 'utf8')), identity);
+  const report = validateAnswerList(written.answers, wanted);
   log(
     report.ok
-      ? `答案已写入：${answerPath}（${report.covered}/${report.total} 关）`
-      : `答案已写入但有 ${report.issues.length} 处问题：${answerPath}`,
+      ? `答案已写入：${saved.answerPath}（${report.covered}/${report.total} 关）`
+      : `答案已写入但有 ${report.issues.length} 处问题：${saved.answerPath}`,
     report.ok ? 'info' : 'warn'
   );
   return {
     ok: report.ok,
-    answerPath,
+    answerPath: saved.answerPath,
     answered: report.covered,
     total: report.total,
     issues: report.issues,
-    unanswered: document.unanswered
+    unanswered: written.unanswered,
+    replaced: saved.replaced,
+    skipped: saved.skipped || []
   };
 }
 
@@ -259,6 +303,7 @@ module.exports = {
   DEFAULT_MODEL,
   parseModelJson,
   defaultCallModel,
+  identifierFromSource,
   listTargets,
   answerExperiment
 };

@@ -20,8 +20,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
-const { normalizeAnswer } = require('../lib/task-parser');
 const { mergeAnswer } = require('../lib/answer-store');
+const fmt = require('../lib/answer-format');
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
@@ -1028,55 +1028,118 @@ async function collectAnswers() {
   const blueprints = [];
   const files = [];
 
+  /**
+   * 读一份答案文件并汇总进 `answers`。
+   *
+   * 两种位置都要认：
+   * - v2：`answers/{班级}（{课堂码}）/{实验}.answers.json`
+   * - v1：`answers/{班级}__{实验}.answers.json`（只读兼容，读到就按 v2 语义汇总）
+   *
+   * 每条答案都带上 `classroomCode`：**篡改猴靠它核对班级**，
+   * 拿不到码就只靠名称匹配——而名称会重名，这正是要修的坑。
+   */
   const readAnswerFile = async (full) => {
-    const parsed = JSON.parse(await fs.readFile(full, 'utf8'));
-    // course/experiment 优先从**文件路径**推导（`exports/{课程}/{实验}/...` 下的答案文件，
-    // 路径本身就有课程/实验，文件里可能没写这两个字段）；集中目录 `exports/answers/`
-    // 下的文件没有路径信息，才退回文件自带字段。
     const rel = path.relative(root, full).split(path.sep);
-    const fromPath = rel.length >= 3 && rel[0] !== 'answers';
-    const course = fromPath ? rel[0] : String(parsed.course || '');
-    const experiment = fromPath ? rel[1] : String(parsed.experiment || '');
-    // `answers` 既可能是数组（[{level_id, kind, answer}]），也可能是以关卡 id 为键的对象。
-    const raw = Array.isArray(parsed.answers)
-      ? parsed.answers
-      : parsed.answers && typeof parsed.answers === 'object'
-        ? parsed.answers
-        : parsed;
-    const entries = Array.isArray(raw)
-      ? raw.filter((item) => item && item.level_id).map((item) => [String(item.level_id), item])
-      : Object.entries(raw || {}).filter(([key]) => /^L/.test(key));
+    const inClassDir = rel.length >= 3 && rel[0] === 'answers';
+    const dirName = inClassDir ? rel[1] : '';
+    const fileBase = path.basename(full).replace(/\.answers\.json$/, '');
+    // 目录名形如 `软件工程导论2026年下半年（2i6ng7vp）`：括号里是课堂码。
+    const dirMatch = /^(.*)（([^（）]*)）$/.exec(dirName);
+    const fromDir = inClassDir
+      ? { classroom: { name: dirMatch ? dirMatch[1] : dirName, code: dirMatch ? dirMatch[2] : '' }, experiment: fileBase }
+      : {};
+    if (!inClassDir) {
+      // 早期产物：答案直接摆在实验目录下（`{班级}/{实验}/answers/…`），
+      // 班级与实验从**路径**取——那是最可靠的信息，文件里往往什么都没写。
+      if (rel.length >= 3) {
+        fromDir.classroom = { name: rel[0], code: '' };
+        fromDir.experiment = rel[1];
+      } else {
+        // 退一步：v1 的扁平文件名 `{班级}__{实验}`
+        const parts = fileBase.split('__');
+        if (parts.length >= 2) {
+          fromDir.classroom = { name: parts[0], code: '' };
+          fromDir.experiment = parts.slice(1).join('__');
+        }
+      }
+    }
+
+    let document = null;
+    try {
+      document = fmt.normalizeDocument(JSON.parse(await fs.readFile(full, 'utf8')), fromDir);
+    } catch {
+      return null; // 坏文件 / 版本太新：不影响其它文件
+    }
+    const classroom = document.classroom;
+    const experiment = document.experiment.name;
+
     let count = 0;
-    for (const [key, value] of entries) {
-      // 用「课程__实验__level_id」做键：level_id（L001）只在单个实验内唯一，
+    for (const entry of document.answers) {
+      const key = entry.level_id;
+      // 用「班级__实验__level_id」做键：level_id（L001）只在单个实验内唯一，
       // 多个实验聚合到同一个 answers 对象时会互相覆盖（实测两个实验的 L001 打架，
       // 后遍历的答案把先遍历的盖掉，用户在关卡页上会拿到别实验的答案）。
-      answers[compositeKey(course, experiment, key)] = { ...normalizeAnswer(key, value), course, experiment };
+      // 吐给篡改猴的形状**与磁盘上的 v2 结构完全一致**（`answer: {language, code}` /
+      // `answer: {questions: [...]}`），只额外补上班级上下文。少一层转换就少一处
+      // 「服务端与脚本理解不一致」的坑。
+      answers[compositeKey(classroom.name, experiment, key)] = {
+        ...fmt.toDocumentEntry(entry),
+        course: classroom.name,
+        classroomName: classroom.name,
+        classroomCode: classroom.code,
+        experiment
+      };
       count += 1;
     }
-    return { course, experiment, count };
+    return { course: classroom.name, classroomCode: classroom.code, experiment, count };
   };
 
-  // ① 规范位置：exports/answers/
+  // ① 规范位置：exports/answers/（含按班级分的子目录）
   const answerDir = path.join(root, 'answers');
-  let entries = [];
-  try {
-    entries = await fs.readdir(answerDir, { withFileTypes: true });
-  } catch {
-    entries = [];
-  }
   const seen = new Set();
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
+  const collectAnswerFile = async (full) => {
+    if (seen.has(full)) return;
+    seen.add(full);
+    files.push(path.relative(root, full));
+    try {
+      const result = await readAnswerFile(full);
+      if (result) experiments.push(result);
+    } catch {
+      /* 单个文件坏了不影响其它文件 */
+    }
+  };
+  let answerEntries = [];
+  try {
+    answerEntries = await fs.readdir(answerDir, { withFileTypes: true });
+  } catch {
+    answerEntries = [];
+  }
+  for (const entry of answerEntries) {
     const full = path.join(answerDir, entry.name);
+    if (entry.isDirectory()) {
+      // v2：班级子目录
+      let children = [];
+      try {
+        children = await fs.readdir(full, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const child of children) {
+        if (child.isFile() && /\.answers\.json$/.test(child.name)) {
+          await collectAnswerFile(path.join(full, child.name));
+        }
+      }
+      continue;
+    }
+    if (!entry.isFile()) continue;
     seen.add(full);
     files.push(path.relative(root, full));
     try {
       if (entry.name === 'submit.blueprint.json') {
         blueprints.push({ path: path.relative(root, full), ...JSON.parse(await fs.readFile(full, 'utf8')) });
       } else if (/\.answers\.json$/.test(entry.name)) {
-        // 兼容：answers/ 下若直接摆了答案文件（含 index.json 之类），course/experiment 可能为空。
-        experiments.push(await readAnswerFile(full));
+        const result = await readAnswerFile(full);
+        if (result) experiments.push(result);
       }
     } catch {
       /* 单个文件坏了不影响其它文件 */
@@ -1091,6 +1154,15 @@ async function collectAnswers() {
   const levelDirs = {};
   /** 复合键（课程__实验__L001）→ 实验目录。按内容兜底回传答案时要用。 */
   const levelDirsByKey = {};
+  /**
+   * 实验目录 → 课堂码。来自关卡存档的 `classroomCode` 字段。
+   *
+   * 用途：篡改猴回传答案时核对班级。**存档是「这一关属于哪个班」的事实来源**——
+   * 脚本所在的页面说自己是哪个班，两者不一致就拒绝写入，而不是把两个班的答案混在一起。
+   */
+  const classroomCodeByDir = {};
+  /** 实验目录 → 平台作业 ID（`homework_common_id`）。写进答案文档，便于跨端核对。 */
+  const homeworkIdByDir = {};
   /** level_id → 每道题的选项个数（选择题）。脚本靠它把页面上的选项按题切分。 */
   const optionCounts = {};
   /**
@@ -1137,6 +1209,8 @@ async function collectAnswers() {
       const key = compositeKey(course, experiment, levelId);
       levelIds[identifier] = key;
       levelDirs[identifier] = experimentDir;
+      if (record.classroomCode) classroomCodeByDir[experimentDir] = String(record.classroomCode);
+      if (Number(record.experimentHomeworkId) > 0) homeworkIdByDir[experimentDir] = Number(record.experimentHomeworkId);
       levelDirsByKey[key] = experimentDir;
       // 按「实验名__关卡名」建一张兜底表：平台换标识时靠它匹配
       const title = String(record.title || '').trim();
@@ -1219,6 +1293,9 @@ async function collectAnswers() {
     titleOnlyIds,
     levelDirs,
     levelDirsByKey,
+    // 班级核对用：实验目录 → 课堂码 / 作业 ID
+    classroomCodeByDir,
+    homeworkIdByDir,
     optionCounts,
     answerDir,
     exportRoot: root
@@ -1305,19 +1382,37 @@ async function saveAnswer(payload) {
     };
   }
 
-  // 复合键形如 `课程__实验__L001`：关卡号是最后一段（L 编号里没有下划线）。
+  // 复合键形如 `班级__实验__L001`：关卡号是最后一段（L 编号里没有下划线）。
   const levelId = key.split('__').pop() || String(payload.levelId || '');
   const rel = path.relative(maps.exportRoot, targetDir).split(path.sep);
   const course = rel[0] || '';
   const experiment = rel[1] || '';
+
+  // **班级核对**：存档说这一关属于哪个班，脚本所在的页面说自己是哪个班。
+  // 两边都有值且不一致 → 拒绝写入。这就是「答案串班」的根因所在：
+  // 旧实现只按关卡标识/关卡名匹配，同一份实验在多个班里存在时会把答案写错班。
+  const archivedCode = maps.classroomCodeByDir[targetDir] || '';
+  const pageCode = String(payload.classroomCode || '').trim();
+  if (archivedCode && pageCode && archivedCode !== pageCode) {
+    return {
+      ok: false,
+      error: `班级不一致：这一关属于课堂 ${archivedCode}，而当前页面是 ${pageCode}。`
+        + '为避免把答案写到别的班级，已拒绝保存。'
+    };
+  }
+
   const saved = await mergeAnswer({
     exportRoot: maps.exportRoot,
-    course,
-    experiment,
+    classroom: { name: course, code: archivedCode || pageCode },
+    experiment: { name: experiment, homeworkId: maps.homeworkIdByDir[targetDir] || 0 },
     levelId,
     kind: payload.kind,
     language: payload.language,
-    answer: payload.answer
+    answer: payload.answer,
+    taskIdentifier: String(payload.identifier || '').trim(),
+    title: String(payload.levelName || '').trim(),
+    source: 'platform',
+    verified: true
   });
   if (!saved.ok) return saved;
   return {
