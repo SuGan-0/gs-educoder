@@ -98,12 +98,20 @@ test('篡改猴脚本：语法可解析（不需要 GM_* 全局）', () => {
   assert.doesNotThrow(() => new vm.Script(USERSCRIPT), '脚本必须能通过语法编译');
 });
 
-test('篡改猴脚本：拼本地地址只能走 consoleEndpoint', () => {
+test('篡改猴脚本：所有控制台请求都要走 consoleRequest（地址拼接只在传输层里）', () => {
   // 直接 `base + '/api/xxx'` 会在使用者粘贴「带 ?token= 的完整地址」时
   // 拼成 `http://127.0.0.1:PORT/?token=xxx/api/xxx` 这种非法 URL（曾就是这么错的）。
-  assert.match(USERSCRIPT, /consoleEndpoint\('\/api\/answers'\)/, '拉答案必须走 consoleEndpoint');
-  assert.match(USERSCRIPT, /consoleEndpoint\('\/api\/blueprint'\)/, '回传蓝图必须走 consoleEndpoint');
+  // 现在更进一步：拼接与发送都收进 consoleRequest，各功能只给路径。
   assert.doesNotMatch(USERSCRIPT, /\$\{base\}\/api\//, '不允许再直接拼 base + path');
+  assert.equal(
+    (USERSCRIPT.match(/GM_xmlhttpRequest\(\{/g) || []).length,
+    1,
+    'GM_xmlhttpRequest 只应出现在传输层（consoleRequest）里，别处一律调它'
+  );
+  // 各功能点给的是路径，不是拼好的 URL
+  for (const path of ['/api/answers', '/api/blueprint', '/api/log', '/api/answer/save', '/api/signing-keys']) {
+    assert.match(USERSCRIPT, new RegExp(`consoleRequest\\('${path.replace(/\//g, '\\/')}'`), `${path} 应走 consoleRequest`);
+  }
 });
 
 test('篡改猴脚本：答案键必须经 levelIds 折算', () => {

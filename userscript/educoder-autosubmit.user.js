@@ -167,11 +167,7 @@
    */
   function syncSigningKeysFromConsole() {
     if (hasSigningKeys()) return;
-    const url = consoleEndpoint('/api/signing-keys');
-    if (!url) return;
-    GM_xmlhttpRequest({
-      method: 'GET',
-      url,
+    consoleRequest('/api/signing-keys', {
       onload: (response) => {
         let payload = null;
         try {
@@ -190,8 +186,16 @@
         GM_setValue(KEYS.signSk, String(payload.sk).trim());
         log(`签名常量已从控制台同步（版本 ${payload.version || '未知'}）`, 'ok');
       },
-      // 控制台没开：不打扰。真正要用签名时才会报缺常量，那时提示会指向控制台。
-      onerror: () => {}
+      // 控制台没开不算错，但**要留一句可查的提示**：真正要用签名时报的
+      // 「缺少签名常量」离原因太远——用户根本猜不到其实是「连不上控制台」。
+      onerror: (info) => {
+        if (info && info.reason === 'no-address') return; // 还没配地址，别在启动时刷屏
+        log(
+          '连不上本地控制台，签名常量没能同步。确认 `npm run ui` 在跑，'
+            + '并用面板的「连接本地控制台」核对地址（端口固定 43127）。',
+          'warn'
+        );
+      }
     });
   }
 
@@ -824,8 +828,9 @@
    * 粘完整地址时会拼成 `http://127.0.0.1:43127/?token=xxx/api/answers` 这种非法 URL。
    * 这里统一用 URL 解析：保留端口、取出 token、替换 path。
    */
-  function consoleEndpoint(pathname) {
-    const raw = String(state.local || '').trim();
+  function consoleEndpoint(pathname, base = null) {
+    // base 传了就用它（自动纠正过期地址时要拿默认地址试一次），否则用当前存的地址
+    const raw = String((base === null ? state.local : base) || '').trim();
     if (!raw) return '';
     let url = null;
     try {
@@ -843,6 +848,56 @@
     url.search = token ? `?token=${encodeURIComponent(token)}` : '';
     url.hash = '';
     return url.toString();
+  }
+
+  /**
+   * 向本地控制台发请求（**统一入口**）。
+   *
+   * ## 为什么要有这个入口
+   *
+   * 一是少写六遍一样的 GM_xmlhttpRequest；
+   * 二是**自动纠正过期的地址**——控制台端口曾经由系统随机分配，所以 GM 里可能存着
+   * `http://127.0.0.1:61238/?token=...` 这种指向早已不存在的端口的地址。请求必然连不上，
+   * 而症状是「签名常量同步不到 → 课程读取失败」这种毫不相干的报错，极难自查。
+   * 现在端口固定了，所以连不上时用默认地址再试一次；通了就换过去并说明。
+   */
+  function consoleRequest(pathname, options = {}) {
+    // body 收对象（自动序列化）；要发字符串就直接用 rawBody
+    const { method = 'GET', body, rawBody, onload, onerror } = options;
+    const payload = rawBody !== undefined ? rawBody : (body ? JSON.stringify(body) : undefined);
+    const first = consoleEndpoint(pathname);
+    if (!first) {
+      if (onerror) onerror({ reason: 'no-address' });
+      return;
+    }
+    const masked = first.replace(/token=[^&]+/, 'token=***');
+    const send = (url, isRetry) => {
+      GM_xmlhttpRequest({
+        method,
+        url,
+        headers: payload ? { 'Content-Type': 'application/json' } : undefined,
+        data: payload,
+        onload: (response) => {
+          if (isRetry) {
+            // 用默认地址试通了：换过去，免得下次又白试一遍
+            state.local = DEFAULT_LOCAL;
+            GM_setValue(KEYS.local, DEFAULT_LOCAL);
+            log(`控制台地址已更正为 ${DEFAULT_LOCAL}`, 'ok');
+          }
+          if (onload) onload(response);
+        },
+        onerror: () => {
+          const fallback = consoleEndpoint(pathname, DEFAULT_LOCAL);
+          if (!isRetry && fallback && fallback !== url) {
+            log(`连不上 ${masked}，改用默认地址再试一次`, 'warn');
+            send(fallback, true);
+            return;
+          }
+          if (onerror) onerror({ reason: 'unreachable' });
+        }
+      });
+    };
+    send(first, false);
   }
 
   /** 当前关卡的标识：URL 最后一段（三段式 /tasks/{课程码}/{作业ID}/{关卡标识}）。 */
@@ -944,19 +999,15 @@
    * 控制台按关卡标识把蓝图放进正确的实验目录（映射见 server.js 的 levelDirs）。
    */
   function pushBlueprint(record) {
-    const url = consoleEndpoint('/api/blueprint');
-    if (!url) return; // 没配本地地址就只留在本地，不影响录制
-    GM_xmlhttpRequest({
+    consoleRequest('/api/blueprint', {
       method: 'POST',
-      url,
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({
+      body: {
         levelId: currentLevelId(),
         key: record.key,
         url: record.url,
         method: record.method,
         body: record.body
-      }),
+      },
       onload: (response) => {
         try {
           const payload = JSON.parse(response.responseText || '{}');
@@ -2072,6 +2123,21 @@
       levelsBox.replaceChildren(...(rows.length ? rows : [el('div', { className: 'eas-row', textContent: '（勾选实验后点「读取关卡」）' })]));
     }
 
+    // 两个「读取」按钮的可用性：还没选课程/实验时它们点了只会弹提示，
+    // 那就直接禁用——亮着的按钮点下去什么都不发生，比灰着更让人困惑。
+    const pickedCount = Object.keys(teach.selectedExperiments || {})
+      .filter((key) => teach.selectedExperiments[key]).length;
+    const loadExperiments = document.getElementById('eas-teach-load-experiments');
+    if (loadExperiments) {
+      loadExperiments.disabled = teach.busy || !teach.courses.length || !teach.courseValue;
+      loadExperiments.title = loadExperiments.disabled ? '先选一门课程' : '读取这门课程的实验';
+    }
+    const loadLevels = document.getElementById('eas-teach-load-levels');
+    if (loadLevels) {
+      loadLevels.disabled = teach.busy || !pickedCount;
+      loadLevels.title = loadLevels.disabled ? '先勾选至少一个实验' : '读取所勾选实验的关卡';
+    }
+
     const status = document.getElementById('eas-teach-status');
     if (status) {
       status.textContent = `${teach.status}${teach.missingCount ? `｜缺答案 ${teach.missingCount}` : ''}`;
@@ -2192,18 +2258,18 @@
 
   /* -------------------------------------------------------- 缺答案清单（控制台） */
 
-  function consoleRequest(method, pathname, body) {
+  /**
+   * Promise 版的 JSON 请求：包在 `consoleRequest` 之上（所以同样享受「地址过期自动纠正」）。
+   *
+   * 只保留**一个**传输实现——之前这里也定义了一个叫 consoleRequest 的函数，
+   * 与新加的传输层同名；函数声明会提升，后定义的那个会悄悄赢掉，
+   * 于是新调用被旧签名解释（method 位置收到一个路径）。别再拆出第二个实现。
+   */
+  function consoleJson(method, pathname, body) {
     return new Promise((resolve, reject) => {
-      const url = consoleEndpoint(pathname);
-      if (!url) {
-        reject(new Error('还没设置本地控制台地址（点「设置本地地址」）'));
-        return;
-      }
-      GM_xmlhttpRequest({
+      consoleRequest(pathname, {
         method,
-        url,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        data: body ? JSON.stringify(body) : undefined,
+        body,
         onload: (response) => {
           let payload = null;
           try {
@@ -2227,13 +2293,13 @@
   }
 
   async function fetchTeachMissing() {
-    const payload = await consoleRequest('GET', '/api/missing');
+    const payload = await consoleJson('GET', '/api/missing');
     return Array.isArray(payload.items) ? payload.items : [];
   }
 
   async function postTeachMissing(body, okMessage) {
     try {
-      const payload = await consoleRequest('POST', '/api/missing', body);
+      const payload = await consoleJson('POST', '/api/missing', body);
       if (okMessage) log(okMessage, 'ok');
       return payload;
     } catch (error) {
@@ -2542,7 +2608,18 @@
     const button = document.getElementById('eas-teach-run');
     if (!button) return;
     const queue = readTeachQueue();
+    const running = Boolean(queue && queue.running);
     button.textContent = queue && queue.stoppedReason ? '继续答题（跳过已通过）' : '一键答题（选中）';
+
+    // 没选实验、也没有在跑的队列 → 点了只会弹一句「先点读取课程实验」。
+    // 能做的事才让点，别让按钮亮着骗人（截图里就是这样：课程都没选，它还是绿的）。
+    const teach = teachSelection();
+    const picked = Object.keys(teach.selectedExperiments || {})
+      .filter((key) => teach.selectedExperiments[key]).length;
+    button.disabled = !running && (state.busy || !picked);
+    button.title = button.disabled && !running
+      ? '先在上面选好实验（和关卡）'
+      : '按当前选择开始/继续答题';
   }
 
   async function startTeachRun() {
@@ -2674,6 +2751,11 @@
     #eas-panel { position: fixed; left: 14px; bottom: 14px; z-index: 2147483000; width: 380px; max-width: 92vw;
       font: 12px/1.5 "Microsoft YaHei", system-ui, sans-serif; color: #dde4ee; background: #11151c;
       border: 1px solid #2d3644; border-radius: 6px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+    /* **必须有这一条**：浏览器默认样式表里的 [hidden]{display:none} 是**作者样式
+       优先级的对手**——.eas-step-pane{display:flex} 会把它顶掉，于是三个步骤面板
+       同时显示，看起来就是「UI 重叠」。控制台那边一直有这条，篡改猴这边漏了。
+       （CSS 注释里不要写反引号：这一整块是模板字符串，反引号会把它截断。） */
+    #eas-panel [hidden] { display: none !important; }
     /* 标题栏兼作拖动把手：面板固定不动会盖住页面自己的控件
        （头歌的「提交」常在右下角），所以默认放左下角，并且必须能挪走。 */
     #eas-panel header { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -2744,7 +2826,11 @@
 
   function renderButtons() {
     const stopButton = document.getElementById('eas-stop');
-    if (stopButton) stopButton.disabled = !state.busy;
+    if (!stopButton) return;
+    // 「停止」要管**两条链路**（手动流程 + 教学队列），任一在跑就不能禁用。
+    // 原来只看 state.busy，于是队列跑起来时「停止」是灰的——最需要停的时候反而停不了。
+    const queue = readTeachQueue();
+    stopButton.disabled = !state.busy && !(queue && queue.running);
   }
 
   /** 一个开关：状态写进 GM 存储，刷新页面后保留。 */
@@ -2924,9 +3010,11 @@
         el('div', { id: 'eas-teach-status', className: 'eas-row', textContent: '未开始' }),
 
         el('div', { className: 'eas-mini' }, [
+          // 「连接本地控制台」必须留在面板上：第一次用最先要做的事就是它，
+          // 只放篡改猴菜单里等于没有（新用户不会去翻菜单）。
+          // 上一轮我按「一次性配置」把它撤了，是错的判断。
+          el('button', { id: 'eas-connect', textContent: '连接本地控制台', onclick: setLocalAddress }),
           el('button', { id: 'eas-pull', textContent: '从本地拉答案', onclick: pullFromLocal }),
-          // 「设置本地地址」从面板移走：端口已固定，这是**一次性**配置，
-          // 留在面板上只是每次都在那儿占位置。篡改猴菜单里仍有入口。
           el('button', { id: 'eas-export-answers', textContent: '导出本实验全部答案', onclick: exportExperimentAnswers }),
           el('button', { id: 'eas-export-logs', textContent: '导出日志到本地', onclick: exportLogs })
         ]),
@@ -3030,19 +3118,18 @@
    * `exports/课程/实验/answers/*.answers.json` 与 `submit.blueprint.json`。
    */
   function pullFromLocal() {
-    const url = consoleEndpoint('/api/answers');
-    if (!url) {
+    const shown = consoleEndpoint('/api/answers');
+    if (!shown) {
       log(
-        `还没配本地控制台：从篡改猴菜单点「设置本地控制台地址」，粘一次 token 即可`
+        '还没配本地控制台：点面板上的「连接本地控制台」粘一次 token 即可'
           + `（端口固定为 ${DEFAULT_LOCAL}，token 在 .env 里或控制台页面的「复制控制台地址」里）`,
         'warn'
       );
       return;
     }
-    log(`正在从本地控制台拉取：${url.replace(/token=[^&]+/, 'token=***')}`);
-    GM_xmlhttpRequest({
+    log(`正在从本地控制台拉取：${shown.replace(/token=[^&]+/, 'token=***')}`);
+    consoleRequest('/api/answers', {
       method: 'GET',
-      url,
       onload: (response) => {
         try {
           const payload = JSON.parse(response.responseText || '{}');
@@ -3221,17 +3308,14 @@
       return;
     }
     const lines = fresh.map((item) => `[${item.tone}] ${item.message}`);
-    const url = consoleEndpoint('/api/log');
-    if (!url) {
+    if (!consoleEndpoint('/api/log')) {
       log('没配本地控制台地址，日志只能留在面板里', 'warn');
       return;
     }
     const newest = Number(fresh[fresh.length - 1].time) || Date.now();
-    GM_xmlhttpRequest({
+    consoleRequest('/api/log', {
       method: 'POST',
-      url,
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ name: '篡改猴日志', lines }),
+      body: { name: '篡改猴日志', lines },
       onload: (response) => {
         let result = null;
         try {
@@ -3335,17 +3419,14 @@
    * 失败原因会原样打到日志里，不会静默吞掉。
    */
   function pushAnswerToConsole(payload) {
-    const url = consoleEndpoint('/api/answer/save');
-    if (!url) {
+    if (!consoleEndpoint('/api/answer/save')) {
       // 不要静默什么都不做：用户会以为答案存进去了，其实控制台地址都没配。
-      log('没配本地控制台地址，答案没能落盘到 exports/answers/（面板点「设置本地地址」）', 'warn');
+      log('没配本地控制台地址，答案没能落盘到 exports/answers/（面板点「连接本地控制台」）', 'warn');
       return;
     }
-    GM_xmlhttpRequest({
+    consoleRequest('/api/answer/save', {
       method: 'POST',
-      url,
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify(payload),
+      body: payload,
       onload: (response) => {
         let result = null;
         try {

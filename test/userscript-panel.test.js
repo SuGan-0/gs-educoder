@@ -279,3 +279,53 @@ test('面板：标题栏里的按钮不能被拖动逻辑吃掉（「收起没�
   press({ closest: () => null });
   assert.equal(captured, true, '点标题栏空白处应正常开始拖动');
 });
+
+test('面板：有「连接本地控制台」入口（第一次用最先要做的事）', () => {
+  const built = boot();
+  const button = built.created.find((node) => node.id === 'eas-connect');
+  assert.ok(button, '面板上必须有连接本地控制台的按钮——只放篡改猴菜单里，新用户根本找不到');
+  assert.match(button.textContent, /连接本地控制台/);
+});
+
+test('样式：必须显式声明 [hidden]，否则被 display:flex 顶掉（三个步骤面板会一起显示）', () => {
+  // [hidden]{display:none} 来自**浏览器默认样式表**，作者样式里的
+  // .eas-step-pane{display:flex} 优先级更高、会把它顶掉。
+  // 控制台那边一直有这条，篡改猴这边漏过一次，表现就是「UI 重叠」。
+  assert.match(
+    SOURCE,
+    /#eas-panel \[hidden\] \{ display: none !important; \}/,
+    '缺了这条，hidden 的步骤面板照样显示'
+  );
+});
+
+test('只应有一个控制台传输实现', () => {
+  // 曾经同时存在两个同名 consoleRequest（签名不同）；函数声明会提升，
+  // 后定义的那个悄悄赢掉，新调用被旧签名解释。这类重复必须为 0。
+  const definitions = (SOURCE.match(/^\s*function consoleRequest\(/gm) || []).length;
+  assert.equal(definitions, 1, `consoleRequest 只能有一个定义，实际 ${definitions} 个`);
+  const transports = (SOURCE.match(/GM_xmlhttpRequest\(\{/g) || []).length;
+  assert.equal(transports, 1, `GM_xmlhttpRequest 只应出现在传输层里，实际 ${transports} 处`);
+});
+
+test('传输层：连不上存的地址时自动改用默认地址重试并更正', () => {
+  // 控制台端口曾经随机分配，GM 里可能存着指向早已不存在的端口的地址；
+  // 症状却是「签名常量同步不到 → 课程读取失败」这种毫不相干的报错。
+  const built = boot({
+    gm: {
+      'educoder-local-console': 'http://127.0.0.1:61238',
+      'educoder-local-token': 't'.repeat(40)
+    }
+  });
+  const keyRequests = () => built.requests.filter((item) => String(item.url).includes('/api/signing-keys'));
+  assert.equal(keyRequests().length, 1, '先按存的地址试一次');
+  assert.match(String(keyRequests()[0].url), /:61238/, '第一次用的是存下来的（过期）地址');
+
+  keyRequests()[0].onerror();
+  assert.equal(keyRequests().length, 2, '连不上要自动改用默认地址重试一次');
+  assert.match(String(keyRequests()[1].url), /127\.0\.0\.1:43127/, '重试要用固定的默认端口');
+
+  // 重试成功 → 把地址更正过来并持久化，免得下次又白试一遍
+  keyRequests()[1].onload({ status: 200, responseText: JSON.stringify({ ok: true, ak: 'AK', sk: 'SK' }) });
+  assert.equal(built.store['educoder-local-console'], 'http://127.0.0.1:43127', '地址要更正');
+  assert.equal(built.store['educoder-sign-ak'], 'AK', '顺手把拿到的常量也存上');
+});
