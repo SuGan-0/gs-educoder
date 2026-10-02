@@ -467,7 +467,7 @@ test('run.js --ui：HTTP 驱动完整流程并落盘', async (t) => {
     fs.rmSync(exportRoot, { recursive: true, force: true });
   });
 
-  const { server, engine } = await runUi({ open: false, headless: true });
+  const { server, engine } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -559,7 +559,7 @@ test('run.js --ui：diagnose 必须在动作白名单里（否则「诊断」按
     fake.restore();
   });
 
-  const { server, engine } = await runUi({ open: false, headless: true });
+  const { server, engine } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -598,7 +598,7 @@ test('run.js --ui：停止之后再开始，不得把上一轮的停止标记带
     fake.restore();
   });
 
-  const { server } = await runUi({ open: false, headless: true });
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -657,7 +657,7 @@ test('run.js --ui：选多个实验时，关卡区必须一次拿到全部实验
     fake.restore();
   });
 
-  const { server } = await runUi({ open: false, headless: true });
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -758,7 +758,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
     fs.rmSync(exportRoot, { recursive: true, force: true });
   });
 
-  const { server } = await runUi({ open: false, headless: true });
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -1022,7 +1022,7 @@ test('run.js --ui：AI 作答接口（列出目标 / 启动 / 错误落进快照
     fs.rmSync(exportRoot, { recursive: true, force: true });
   });
 
-  const { server } = await runUi({ open: false, headless: true });
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });
@@ -1077,7 +1077,7 @@ test('run.js --ui：select-course 使用无效 id 时返回 4xx', async (t) => {
     fake.restore();
   });
 
-  const { server } = await runUi({ open: false, headless: true });
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
   t.after(async () => {
     await server.close().catch(() => {});
   });

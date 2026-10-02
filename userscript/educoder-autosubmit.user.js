@@ -48,11 +48,10 @@
     logSeq: 'educoder-log-seq',
     signAk: 'educoder-sign-ak',
     signSk: 'educoder-sign-sk',
-    autoNext: 'educoder-autonext',
-    strictAdvance: 'educoder-strict-advance',
     local: 'educoder-local-console',
     token: 'educoder-local-token',
     panelPos: 'educoder-panel-pos',
+    panelFolded: 'educoder-panel-folded',
     optionCounts: 'educoder-option-counts',
     titleIds: 'educoder-title-ids',
     titleOnlyIds: 'educoder-title-only-ids',
@@ -63,14 +62,15 @@
   };
 
   /**
-   * 本地控制台地址。
+   * 本地控制台地址（默认端口）。
    *
-   * **故意留空**：控制台用的是 `port: 0`（由系统分配空闲端口），端口每次都不同，
-   * 写死一个默认值只会误导——之前这里写的是 `43127`（那是更早的 writer-server 端口），
-   * 使用者照着填必然连不上。正确做法是从控制台面板上的「复制控制台地址」按钮
-   * 拿带 token 的完整地址，粘到「设置本地地址」里。
+   * 控制台的端口现在**固定**为 43127（见 `extractor/run.js` 的 `DEFAULT_UI_PORT`），
+   * 所以这里可以写死一个默认地址——用户只需要粘一次 token，不用连地址一起粘。
+   * token 仍然必须来自控制台（随机生成、存在 `.env`，不进仓库也不进脚本）。
+   *
+   * 端口被占用时控制台会回退到系统分配，此时终端会提示要重配地址。
    */
-  const DEFAULT_LOCAL = '';
+  const DEFAULT_LOCAL = 'http://127.0.0.1:43127';
 
   const state = {
     templates: GM_getValue(KEYS.templates, []),
@@ -91,10 +91,6 @@
     lastLogExportAt: Number(GM_getValue(KEYS.lastLogExportAt, 0)) || 0,
     // 本地日志文件里已写到第几次（控制台返回），面板上显示给用户看
     logSeq: Number(GM_getValue(KEYS.logSeq, 0)) || 0,
-    autoNext: GM_getValue(KEYS.autoNext, true),
-    // 连续作答：本关通过后自动进入并处理下一关，直到没有「下一关」或出错。
-    // 严格模式（默认开）：拿不到明确「通过」就不进入下一关，避免提交失败还往下跳。
-    strictAdvance: GM_getValue(KEYS.strictAdvance, true),
     stopRequested: false,
     // 页面自己的关卡数据（几道题、每题几个选项），运行时观察 /api/tasks/{id}.json 得到；
     // 这是选题分组最权威的来源，控制台的 optionCounts 只是兜底。
@@ -145,16 +141,58 @@
    * 抓 www-cdn.educoder.net/umi.<hash>.js，搜 setHeader / getKey，替换下面两个常量。
    */
   /**
-   * 签名常量（**不进脚本源码**）：存 GM 存储（浏览器本地），首次通过菜单
-   * 「设置签名常量」粘贴一次，脚本更新也不丢。
+   * 签名常量（**不进脚本源码**）：存 GM 存储（浏览器本地），脚本更新也不丢。
+   *
    * 为什么不硬编码：脚本是**要发布**的，平台常量不该随源码分发——
    * 与 extractor/lib/educoder-sign.js 的处理保持一致（那边存本地密钥文件）。
+   *
+   * 那怎么免去手动粘贴：见 `syncSigningKeysFromConsole`——控制台手上本来就有这份常量，
+   * 启动时拉一次即可。于是「零配置」和「常量不进源码」两件事同时成立。
    */
   function signingKeysRaw() {
     return {
       ak: String(GM_getValue(KEYS.signAk, '') || '').trim(),
       sk: String(GM_getValue(KEYS.signSk, '') || '').trim()
     };
+  }
+
+  /**
+   * 从本地控制台同步签名常量（一次即可，结果写进 GM 存储）。
+   *
+   * 为什么值得做：常量本来要自己配一次，而用户往往是先撞上「课程读取失败：缺少签名常量」
+   * 才知道有这么回事。控制台手上本来就有（`.env` 或 `.educoder-keys.json`），
+   * 拉过来就不用再手动粘——而且常量仍然不进脚本源码。
+   *
+   * 已经配过就什么都不做（手动粘贴的优先级更高，不会被覆盖）。
+   */
+  function syncSigningKeysFromConsole() {
+    if (hasSigningKeys()) return;
+    const url = consoleEndpoint('/api/signing-keys');
+    if (!url) return;
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      onload: (response) => {
+        let payload = null;
+        try {
+          payload = JSON.parse(response.responseText || '{}');
+        } catch (error) {
+          payload = null;
+        }
+        if (!payload || !payload.ok || !payload.ak || !payload.sk) {
+          log(
+            `没从控制台拿到签名常量：${(payload && payload.error) || `HTTP ${response.status}`}`,
+            'warn'
+          );
+          return;
+        }
+        GM_setValue(KEYS.signAk, String(payload.ak).trim());
+        GM_setValue(KEYS.signSk, String(payload.sk).trim());
+        log(`签名常量已从控制台同步（版本 ${payload.version || '未知'}）`, 'ok');
+      },
+      // 控制台没开：不打扰。真正要用签名时才会报缺常量，那时提示会指向控制台。
+      onerror: () => {}
+    });
   }
 
   /** 有没有可用的签名常量。 */
@@ -186,7 +224,8 @@
   }
 
   const MISSING_KEYS_HINT =
-    '缺少签名常量 AK/SK：请通过篡改猴菜单「设置签名常量」粘贴一次'
+    '缺少签名常量 AK/SK：先启动本地控制台（npm run ui）——脚本会自动把常量同步过来；'
+    + '也可以从篡改猴菜单「设置签名常量」手动粘贴一次'
     + '（双 base64 那串，来自头歌前端 umi JS 的 setHeader/getKey）。';
 
   /** base64 编/解码走页面上下文（脚本沙箱里不保证有 btoa/atob）。 */
@@ -1266,10 +1305,12 @@
    * 是不是**面板自己的**节点。
    *
    * 面板挂在页面 body 里，所以 `document.querySelectorAll('button')` 会把面板自己的按钮
-   * 一起查出来。而面板上有个「一键作答并**提交**」，正好被 SUBMIT_PATTERNS 的 `/提交/`
+   * 一起查出来。曾经面板上有个「一键作答并**提交**」，正好被 `SUBMIT_PATTERNS` 的 `/提交/`
    * 命中——页面上真正的「评测」不含"提交"二字，于是每个模式都漏掉它、反倒叼住我们自己的
-   * 按钮，点下去等于又触发一遍 `runOnce`（双重流程，互相抢同一个页面，最后必然卡住）。
-   * 所以凡是「找页面上的按钮」，都必须先把自己的面板排除掉。
+   * 按钮，点下去就变成自己点自己（双重流程抢同一个页面，最后必然卡住）。
+   *
+   * 那个按钮已经删了，但结论不变：凡是「找页面上的按钮」，都必须先把自己的面板排除掉——
+   * 面板上现在仍有「一键答题（选中）」这类含「答题」字样的按钮。
    */
   function isOwnPanelNode(node) {
     return Boolean(node && typeof node.closest === 'function' && node.closest('#eas-panel'));
@@ -1742,9 +1783,9 @@
   /**
    * 作答当前这一关的**共同内核**：填答案 → 点提交 → 等结论 →（通过就）回传答案。
    *
-   * 手动单关（processCurrentLevel）与教学队列（processTeachLevel）原本各写了一份，
-   * 逻辑 90% 相同，改一边忘一边——"点到自己的面板按钮"那个 bug 就是这么被放大成
-   * 「两条流程抢同一个页面」的。差异全部收进 options：
+   * 曾经「手动单关」与教学队列各写了一份，逻辑 90% 相同，改一边忘一边——
+   * "点到自己的面板按钮"那个 bug 就是这么被放大成「两条流程抢同一个页面」的。
+   * 现在只剩教学队列一条流程（手动单关已删），差异全部收进 options：
    *  - allowEditorFallback：没有本地答案时，是否拿编辑器当前内容兜底提交
    *  - allowReplay：找不到提交按钮时，是否重放录制到的接口
    *
@@ -1819,77 +1860,6 @@
     return outcome;
   }
 
-  /** 手动单关流程（面板「一键作答并提交」）：答当前这一关，通过后按设置进下一关。 */
-  async function processCurrentLevel() {
-    const levelId = currentLevelId();
-    const resolved = resolveAnswerForCurrentLevel();
-    const answerKey = resolved.answerKey;
-    log(`开始处理关卡 ${levelId || '(未知)'}${answerKey !== levelId ? `（答案编号 ${answerKey}）` : ''}`);
-    // 班级对不上就停在这里，绝不"先答了再说"——填错班的答案比不答更糟。
-    if (resolved.blocked) {
-      log(resolved.blocked, 'error');
-      return;
-    }
-
-    const outcome = await answerCurrentLevel({
-      answer: readAnswer(resolved.entry),
-      allowEditorFallback: true,
-      allowReplay: true
-    });
-
-    if (outcome.status === 'blocked') {
-      log(`停在本题：${outcome.text}`, 'error');
-      return;
-    }
-    if (outcome.status === 'failed') {
-      log(`提交未通过，停在本题：${snippet(outcome.text, 160)}`, 'error');
-      return;
-    }
-    if (outcome.status === 'passed') {
-      log(`提交成功${outcome.text ? `：${snippet(outcome.text, 80)}` : ''}`, 'ok');
-    } else {
-      log(
-        `没拿到明确的评测结论（${outcome.status}${outcome.text ? `：${snippet(outcome.text, 80)}` : ''}）。`
-        + '为安全起见不自动进入下一关；确认要跳就把「判定通过才进入下一关」的勾去掉。',
-        'warn'
-      );
-      if (state.strictAdvance) return;
-    }
-
-    // 进下一关。多关自动推进交给「一键答题（选中）」的教学队列（它会跳过已通过的、
-    // 能从中断处续跑），这里点完就结束。
-    const nextButton = findButton(NEXT_LEVEL_PATTERNS);
-    if (!state.autoNext || !nextButton) {
-      log(nextButton ? '已关闭自动进入下一关' : '未找到「下一关」按钮（可能已是最后一关）', 'warn');
-      return;
-    }
-    const beforePath = location.pathname;
-    log('进入下一关');
-    nextButton.click();
-    await waitForPathChange(beforePath);
-  }
-
-  async function runOnce() {
-    if (state.busy) return;
-    // 脚本现在全站注入（面板随时可用），但「一键作答并提交」只对关卡页有意义：
-    // 在别的页面点它只会扫不到编辑器/选项，报一堆看不懂的错，不如直接说清。
-    if (!/^\/tasks\//.test(location.pathname)) {
-      log('当前不是关卡页：「一键作答并提交」只在关卡页可用；教学课程跑队列请用上面的「教学课程」区', 'warn');
-      return;
-    }
-    state.busy = true;
-    state.stopRequested = false;
-    renderButtons();
-    try {
-      await processCurrentLevel();
-    } catch (error) {
-      log(`自动提交失败：${error.message}`, 'error');
-    } finally {
-      state.busy = false;
-      state.stopRequested = false;
-      renderButtons();
-    }
-  }
 
   /** 请求停止连续作答（当前这一关做完就停）。 */
   /**
@@ -1919,7 +1889,7 @@
   function teachSelection() {
     if (!state.teach) {
       state.teach = {
-        open: false,
+        // 课堂区常驻可见，不再有 open（折叠）状态
         courses: [],
         courseValue: '',
         experiments: [],
@@ -1970,12 +1940,8 @@
   function renderTeach() {
     renderTeachRunButton();
     const teach = teachSelection();
-    const host = document.getElementById('eas-teach-body');
-    if (!host) return;
-    host.hidden = !teach.open;
-    const fold = document.getElementById('eas-teach-fold');
-    if (fold) fold.textContent = teach.open ? '收起 ▾' : '展开 ▸';
-
+    // 课堂区**常驻可见**：它原来默认折叠着，而跑课堂队列是主要用法，
+    // 每次都要先点一下「展开」。收起来的职责交给面板整体的收起按钮。
     const courseSelect = document.getElementById('eas-teach-course');
     if (courseSelect) {
       const current = String(teach.courseValue || '');
@@ -2052,10 +2018,31 @@
     }
   }
 
-  function toggleTeachFold() {
-    const teach = teachSelection();
-    teach.open = !teach.open;
-    renderTeach();
+  /**
+   * 面板整体收起 / 展开（状态记 GM，刷新后保持）。
+   *
+   * 为什么需要：面板固定在页面上、还占着不小的高度，做题时一直挡着题目。
+   * 原来只有「课堂」那一小块能折，面板本身收不掉。
+   */
+  function togglePanelFold() {
+    const panel = document.getElementById('eas-panel');
+    if (!panel) return;
+    const folded = panel.getAttribute('data-folded') !== 'true';
+    applyPanelFold(folded);
+    GM_setValue(KEYS.panelFolded, folded);
+  }
+
+  /** 套用面板收起态（按钮文案与 aria 一起同步）。 */
+  function applyPanelFold(folded) {
+    const panel = document.getElementById('eas-panel');
+    const button = document.getElementById('eas-panel-fold');
+    if (!panel) return;
+    panel.setAttribute('data-folded', folded ? 'true' : 'false');
+    if (button) {
+      button.textContent = folded ? '展开 ▾' : '收起 ▴';
+      button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      button.title = folded ? '展开面板' : '收起面板（只留标题栏）';
+    }
   }
 
   /** 「刷新课程」：先拉「我的课堂」（courses.json，始终可用），再把当前页（若是 /paths/{id}）识别出的教学课程并入缓存，最后刷新下拉。 */
@@ -2628,6 +2615,10 @@
     #eas-panel header { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
       border-bottom: 1px solid #222833; cursor: move; user-select: none; touch-action: none; }
     #eas-panel header b { font-size: 12px; letter-spacing: .04em; }
+    /* 收起态：只留标题栏。面板固定在页面上，做题时一直挡着题目，
+       能收起来才不会碍事（收起状态记在 GM，刷新后保持）。 */
+    #eas-panel[data-folded="true"] .eas-body { display: none; }
+    #eas-panel header .eas-fold { font: 10px/1 inherit; padding: 4px 7px; cursor: pointer; }
     #eas-panel .eas-tag { font: 10px/1 monospace; padding: 3px 5px; border: 1px solid #2d3644; border-radius: 3px; color: #31d6a8; }
     #eas-panel .eas-body { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; max-height: min(78vh, 640px); overflow: auto; }
     #eas-panel button { font: 11px/1 inherit; color: #dde4ee; background: #151a22; border: 1px solid #2d3644;
@@ -2658,11 +2649,6 @@
   }
 
   function renderButtons() {
-    const runButton = document.getElementById('eas-run');
-    if (runButton) {
-      runButton.textContent = state.busy ? '执行中…' : '一键作答并提交';
-      runButton.disabled = state.busy;
-    }
     const stopButton = document.getElementById('eas-stop');
     if (stopButton) stopButton.disabled = !state.busy;
   }
@@ -2771,25 +2757,29 @@
       el('header', {}, [
         el('b', { textContent: '头歌自动作答' }),
         el('span', { className: 'eas-tag', textContent: '学习测试用' }),
-        el('span', { style: 'flex:1' })
+        el('span', { style: 'flex:1' }),
+        el('button', {
+          id: 'eas-panel-fold',
+          className: 'eas-fold',
+          textContent: '收起 ▴',
+          title: '收起面板（只留标题栏）',
+          onclick: togglePanelFold
+        })
       ]),
       el('div', { className: 'eas-body' }, [
         el('div', { className: 'eas-mini' }, [
-          el('button', { id: 'eas-run', className: 'eas-primary', textContent: '一键作答并提交', onclick: runOnce }),
           el('button', { id: 'eas-stop', textContent: '停止', onclick: requestStop }),
           el('button', { textContent: '从本地拉答案', onclick: pullFromLocal }),
-          el('button', { textContent: '设置本地地址', onclick: setLocalAddress }),
-          // 单个关卡的「导出标准答案」已从面板移除（被「导出本实验全部」覆盖，含当前关），
-          // 仍保留在篡改猴菜单里，功能没丢。
+          // 「设置本地地址」从面板移走：端口已固定，这是**一次性**配置，
+          // 留在面板上只是每次都在那儿占位置。篡改猴菜单里仍有入口。
+          // 单个关卡的「导出标准答案」同理（被「导出本实验全部」覆盖，含当前关）。
           el('button', { textContent: '导出本实验全部答案', onclick: exportExperimentAnswers })
         ]),
         el('div', { className: 'eas-teach' }, [
           el('div', { className: 'eas-teach-hd' }, [
-            el('b', { textContent: '课堂' }),
-            el('span', { style: 'flex:1' }),
-            el('button', { id: 'eas-teach-fold', textContent: '展开 ▸', onclick: toggleTeachFold })
+            el('b', { textContent: '课堂' })
           ]),
-          el('div', { id: 'eas-teach-body', hidden: true }, [
+          el('div', { id: 'eas-teach-body' }, [
             el('div', { className: 'eas-teach-row' }, [
               el('select', { id: 'eas-teach-course' }),
               el('button', { textContent: '刷新课程', onclick: refreshTeachCourses }),
@@ -2808,8 +2798,6 @@
           ])
         ]),
         el('div', { className: 'eas-opts' }, [
-          toggleOption('判定通过才进入下一关', 'strictAdvance'),
-          toggleOption('自动点「下一关」', 'autoNext'),
           numberOption('评测最多等（秒，页面读不到才用）', 'evalWaitSeconds', { min: 1, max: 300, fallback: 30 })
         ]),
         el('div', { className: 'eas-mini' }, [
@@ -2830,6 +2818,8 @@
       panel.style.bottom = 'auto';
     }
     makeDraggable(panel, panel.querySelector('header'));
+    // 恢复上次的收起状态：收起是「不想被挡」的表达，刷新后不该自己弹开
+    applyPanelFold(Boolean(GM_getValue(KEYS.panelFolded, false)));
     renderButtons();
     for (const item of state.logs.slice(-40)) {
       const row = el('div', { className: `eas-row eas-${item.tone}`, textContent: item.message });
@@ -2912,7 +2902,11 @@
   function pullFromLocal() {
     const url = consoleEndpoint('/api/answers');
     if (!url) {
-      log('还没填本地控制台地址：点「设置本地地址」，粘控制台页面上「复制控制台地址」按钮给的完整地址（含 token；端口每次都不一样，不要手打）', 'warn');
+      log(
+        `还没配本地控制台：从篡改猴菜单点「设置本地控制台地址」，粘一次 token 即可`
+          + `（端口固定为 ${DEFAULT_LOCAL}，token 在 .env 里或控制台页面的「复制控制台地址」里）`,
+        'warn'
+      );
       return;
     }
     log(`正在从本地控制台拉取：${url.replace(/token=[^&]+/, 'token=***')}`);
@@ -2981,11 +2975,28 @@
 
   function setLocalAddress() {
     const input = window.prompt(
-      '粘贴 `npm run ui` 打印的完整地址（形如 http://127.0.0.1:PORT/?token=xxx，带 token 才能通过校验）',
-      state.local
+      '粘贴控制台地址或只粘 token 都行。\n'
+        + `· 只粘 token（32 位以上十六进制）→ 端口用固定的 ${DEFAULT_LOCAL}，最省事；\n`
+        + '· 或粘 `npm run ui` 打印的完整地址（形如 http://127.0.0.1:43127/?token=xxx）。',
+      state.local || DEFAULT_LOCAL
     );
     if (input === null) return;
-    state.local = input.trim();
+    const value = input.trim();
+    if (!value) return;
+
+    // 只粘了一串 token：地址用固定的默认值，用户少粘一半。
+    // 控制台端口已固定（见 extractor/run.js 的 DEFAULT_UI_PORT），所以这里能这么省。
+    if (/^[0-9a-f]{32,}$/i.test(value)) {
+      state.local = DEFAULT_LOCAL;
+      state.token = value;
+      GM_setValue(KEYS.local, state.local);
+      GM_setValue(KEYS.token, value);
+      log('已保存 token，地址用默认的 ' + DEFAULT_LOCAL, 'ok');
+      pullFromLocal();
+      return;
+    }
+
+    state.local = value;
     GM_setValue(KEYS.local, state.local);
     // 顺手把 token 抽出来存一份：之后拼别的接口（如回传蓝图）时接着用。
     try {
@@ -3441,19 +3452,19 @@
 
   function boot() {
     buildPanel();
+    // 签名常量优先从本地控制台同步（用户就不用手动粘了）。
+    // 放在最前面：后面任何一次接口调用都可能需要它。
+    syncSigningKeysFromConsole();
     log('脚本已就绪：先在页面上手动作答并提交一次，脚本会记住提交接口。');
     if (state.templates.length && Object.keys(state.answers).length) {
-      log(`已有 ${state.templates.length} 个提交蓝图、${Object.keys(state.answers).length} 关答案，可直接「一键作答并提交」`, 'ok');
+      log(`已有 ${state.templates.length} 个提交蓝图、${Object.keys(state.answers).length} 关答案，可直接「一键答题」`, 'ok');
     } else if (!Object.keys(state.answers).length) {
       log('还没有答案库：点「从本地拉答案」（需 npm run ui 在跑）或「导入答案文件」', 'warn');
     }
     dumpStatus();
 
     restoreTeachSelection();
-    // 教学课程页、以及「我的课堂」列表页（用户到这两类页面就是为了跑队列）自动展开教学课程区。
-    if (/^\/paths\//.test(location.pathname) || /^\/users\/[^/]+\/classrooms/.test(location.pathname)) {
-      teachSelection().open = true;
-    }
+    // 课堂区现在是常驻可见的，不再需要「到教学课程页就自动展开」这套判断。
     renderTeach();
     refreshTeachMissingCount();
 
@@ -3475,7 +3486,6 @@
     GM_registerMenuCommand('导出本实验全部关卡的标准答案', exportExperimentAnswers);
     GM_registerMenuCommand('导入答案文件', importAnswers);
     GM_registerMenuCommand('面板回到左下角', resetPanelPosition);
-    GM_registerMenuCommand('一键作答并提交', runOnce);
     GM_registerMenuCommand('停止连续作答', requestStop);
     GM_registerMenuCommand('从本地控制台拉取答案与蓝图', pullFromLocal);
     GM_registerMenuCommand('设置本地控制台地址', setLocalAddress);

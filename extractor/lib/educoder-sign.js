@@ -73,25 +73,36 @@ const KEYS_FILE = path.join(__dirname, '..', '..', '.educoder-keys.json');
 let cachedKeys = null;
 
 /**
+ * 取**未解码**的常量（双 base64 原样）：env 优先，其次本地密钥文件；都没有返回 null。
+ *
+ * 单独留一个编码态的出口，是因为篡改猴存的就是编码态（手动粘贴那串）。
+ * 控制台把这份原样给它，脚本就不用为「来自控制台」和「手动粘贴」维护两种格式。
+ */
+function signingKeysEncoded() {
+  let ak = String(process.env.EDUCODER_AK || '').trim();
+  let sk = String(process.env.EDUCODER_SK || '').trim();
+  if (!ak || !sk) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8'));
+      ak = String((parsed && parsed.ak) || '').trim();
+      sk = String((parsed && parsed.sk) || '').trim();
+    } catch (error) {
+      /* 文件不存在/坏了：下面统一按"缺失"处理 */
+    }
+  }
+  return ak && sk ? { ak, sk } : null;
+}
+
+/**
  * 取签名常量（懒加载，已解码）：env 优先，其次本地密钥文件；都没有返回 null。
  * 懒加载是为了让测试/调用方有机会先设环境变量。
  */
 function signingKeys() {
   if (cachedKeys) return cachedKeys;
-  let encodedAk = String(process.env.EDUCODER_AK || '').trim();
-  let encodedSk = String(process.env.EDUCODER_SK || '').trim();
-  if (!encodedAk || !encodedSk) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8'));
-      encodedAk = String((parsed && parsed.ak) || '').trim();
-      encodedSk = String((parsed && parsed.sk) || '').trim();
-    } catch (error) {
-      /* 文件不存在/坏了：下面统一按"缺失"处理 */
-    }
-  }
-  if (!encodedAk || !encodedSk) return null;
+  const encoded = signingKeysEncoded();
+  if (!encoded) return null;
   try {
-    cachedKeys = { ak: decodeKey(encodedAk), sk: decodeKey(encodedSk) };
+    cachedKeys = { ak: decodeKey(encoded.ak), sk: decodeKey(encoded.sk) };
   } catch (error) {
     return null;
   }
@@ -195,7 +206,10 @@ function requestHeaders(options = {}) {
 module.exports = {
   SIGNING_VERSION,
   EDU_TYPE,
+  MISSING_KEYS_HINT,
   hasSigningKeys,
+  signingKeys,
+  signingKeysEncoded,
   decodeKey,
   signingText,
   sign,

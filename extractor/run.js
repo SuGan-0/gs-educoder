@@ -1,3 +1,5 @@
+const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
@@ -6,6 +8,9 @@ const { ExtractEngine, DEFAULT_EXPORT_ROOT, DEFAULT_PROFILE_DIR } = require('./l
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_NETWORK_LOG = path.join(ROOT, '.educoder-network.jsonl');
+
+/** 控制台默认端口。改这里要同步改篡改猴里的 DEFAULT_LOCAL。 */
+const DEFAULT_UI_PORT = 43127;
 
 /**
  * 网络日志路径。
@@ -29,6 +34,69 @@ function networkLogPath() {
 
 function outputRoot() {
   return process.env.EDUCODER_EXPORT_ROOT || DEFAULT_EXPORT_ROOT;
+}
+
+/**
+ * 控制台监听的端口。
+ *
+ * **固定下来**（默认 43127）而不是 `port: 0`。原来每次启动由系统随机分配，
+ * 端口一变，篡改猴里配好的控制台地址就失效，用户被迫每次重配一遍
+ * ——「为什么每次都要设置本地地址」就是这么来的。
+ *
+ * 端口是公开信息（不是凭据），固定它没有安全代价。被占用时回退到系统分配，
+ * 并在终端说明「地址变了、篡改猴要重配」，不静默换端口让用户对着报错猜。
+ */
+function resolveUiPort() {
+  const fromEnv = Number(process.env.EDUCODER_UI_PORT);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return DEFAULT_UI_PORT;
+}
+
+const ENV_FILE = path.join(ROOT, '.env');
+
+/**
+ * 加载 `.env`（Node 内置，零依赖；不做 shell 插值，密钥里的 `$` 不会被吃掉）。
+ *
+ * 与 `reminder.js` 同一套做法：**本地配置统一放 `.env`**，不再一个用途一个文件。
+ * 已存在的环境变量优先，`.env` 只补空缺——这样 `EDUCODER_UI_PORT=5000 npm run ui`
+ * 这种临时覆盖仍然有效。
+ */
+function loadEnvFile() {
+  try {
+    process.loadEnvFile(ENV_FILE);
+  } catch (error) {
+    /* 没有 .env 就只用真实环境变量 */
+  }
+}
+
+/**
+ * 控制台的访问 token。
+ *
+ * 取值顺序：环境变量 / `.env` → 生成一个并**写回 `.env`** → 实在写不了才用本次随机的。
+ *
+ * 为什么必须稳定：token 变了，篡改猴里存的带 token 的地址就作废，
+ * 用户被迫反复重配（「为什么每次都要设置本地地址」的另一半原因）。
+ *
+ * 为什么不能写死成源码常量：篡改猴用的那几个端点（`/api/answers` 等）**只校验 token**
+ * 且带 `Access-Control-Allow-Origin: *`——token 一旦公开，任何网站都能读你的答案库。
+ * 所以它只能「随机生成 + 存在本地」，不进仓库、不进日志。
+ */
+function resolveUiToken() {
+  const fromEnv = String(process.env.EDUCODER_UI_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  const token = crypto.randomBytes(24).toString('hex');
+  try {
+    const existing = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, 'utf8') : '';
+    const banner = existing.includes('EDUCODER_UI_TOKEN')
+      ? ''
+      : '\n# ---- 本地控制台（npm run ui）----\n'
+        + '# 访问 token：随机生成后写在这里，重启不变，篡改猴只需配一次地址。\n'
+        + '# 不要提交（.env 已 gitignore）；也不要贴给别人——它能读写你的答案库。\n';
+    fs.appendFileSync(ENV_FILE, `${banner}EDUCODER_UI_TOKEN=${token}\n`, { mode: 0o600 });
+  } catch (error) {
+    /* 写不了就退回本次随机：功能不受影响，只是下次启动地址会变 */
+  }
+  return token;
 }
 
 function describeTaskCount(value) {
@@ -74,6 +142,7 @@ function printEvent(event) {
 }
 
 async function runTerminal(options = {}) {
+  loadEnvFile(); // 与 runUi 同口径：本地配置统一放 .env
   const courseFromEnv = process.env.EDUCODER_COURSE;
   const experimentsFromEnv = process.env.EDUCODER_EXPERIMENTS;
 
@@ -162,6 +231,9 @@ async function runTerminal(options = {}) {
 }
 
 async function runUi(options = {}) {
+  // 本地配置统一放 .env（AK/SK、控制台端口与 token、导出目录…）。
+  // 必须在使用这些值之前加载。
+  loadEnvFile();
   const { startUiServer } = require('./ui/server');
   const pending = { course: null, experiments: null, levels: null, stop: null };
   let server = null;
@@ -304,7 +376,10 @@ async function runUi(options = {}) {
   }
 
   server = await startUiServer({
-    port: 0,
+    // 允许调用方指定端口：离线测试要并行起多个控制台，固定端口会互相抢。
+    // 生产入口（CLI）不传，走固定端口。
+    port: options.port === undefined ? resolveUiPort() : options.port,
+    token: options.token === undefined ? resolveUiToken() : options.token,
     onControl,
     // AI 作答：真正的模型调用放在外壳里，服务端只管进度与快照。
     // dispatch 参数（isStopped/report/log）都由服务端提供；缺省时退化成「不报进度」，不抛错。

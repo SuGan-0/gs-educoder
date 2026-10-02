@@ -22,6 +22,7 @@ const { spawn } = require('node:child_process');
 
 const { mergeAnswer } = require('../lib/answer-store');
 const fmt = require('../lib/answer-format');
+const { signingKeysEncoded, SIGNING_VERSION, MISSING_KEYS_HINT } = require('../lib/educoder-sign');
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
@@ -321,8 +322,11 @@ function errorStatus(error) {
  * @returns {Promise<{ url: string, port: number, close(): Promise<void>,
  *   emit(evt: object): number, getSnapshot(): object, setSnapshot(patch: object): object }>}
  */
-async function startUiServer({ port = 0, onControl, onAnswerRun, onAnswerStop, open = true } = {}) {
-  const token = crypto.randomBytes(24).toString('hex');
+async function startUiServer({ port = 0, token: tokenOption = '', onControl, onAnswerRun, onAnswerStop, open = true } = {}) {
+  // token 默认随机。调用方可以给一个**稳定值**（见 run.js 的持久化 token）：
+  // 地址每次重启都变的话，篡改猴里配好的地址就失效了，用户被迫反复重配。
+  // 稳定性不牺牲安全性——token 仍然不进仓库、不进日志。
+  const token = String(tokenOption || '').trim() || crypto.randomBytes(24).toString('hex');
   const snapshot = createSnapshot();
   const clients = new Set();
   const allowedOrigins = new Set();
@@ -734,6 +738,22 @@ async function startUiServer({ port = 0, onControl, onAnswerRun, onAnswerStop, o
       if (!tokenMatches(pickToken(req, requestUrl, null))) return deny(res);
       const answers = await collectAnswers();
       return sendJson(res, 200, { ok: true, ...answers });
+    }
+
+    if (pathname === '/api/signing-keys') {
+      if (method !== 'GET') return sendJson(res, 405, { ok: false, error: '方法不允许' });
+      // 与 /api/answers 同一鉴权口径（只校验 token，理由见上）。
+      //
+      // 为什么要有这个接口：篡改猴自己也要给请求签名，而它的常量存在浏览器本地，
+      // 用户被迫手粘一次（不粘就报「课程读取失败：缺少签名常量」）。
+      // 控制台手上本来就有这份常量（.env / .educoder-keys.json），给它即可——
+      // 于是「零配置」和「平台常量不进源码」两件事可以同时成立。
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (!tokenMatches(pickToken(req, requestUrl, null))) return deny(res);
+      const encoded = signingKeysEncoded();
+      if (!encoded) return sendJson(res, 404, { ok: false, error: MISSING_KEYS_HINT });
+      // 返回**编码态**（手动粘贴那串）：篡改猴的存储格式与它一致，不必维护两种。
+      return sendJson(res, 200, { ok: true, ak: encoded.ak, sk: encoded.sk, version: SIGNING_VERSION });
     }
 
     if (pathname === '/api/blueprint') {

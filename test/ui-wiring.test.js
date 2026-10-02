@@ -114,11 +114,17 @@ test('篡改猴脚本：答案键必须经 levelIds 折算', () => {
 });
 
 test('篡改猴脚本：安全默认——拿不到「通过」不得进入下一关', () => {
-  assert.match(USERSCRIPT, /state\.strictAdvance/, '必须有严格判定开关');
-  assert.match(USERSCRIPT, /if \(state\.strictAdvance\) return;/, '严格模式下必须停在本题');
+  // 原来靠 `strictAdvance` 开关控制；手动单关流程删除后，改由教学队列**无条件严格**把关：
+  // 只有明确「通过」才推进，failed / timeout / 拿不到结论一律停队。
+  assert.match(USERSCRIPT, /if \(outcome\.status !== 'passed'\)/, '非「通过」必须拦住');
+  assert.match(USERSCRIPT, /stopTeachQueue\(/, '拦住时要停队并说明原因');
   assert.match(USERSCRIPT, /status === 'failed'/, '必须识别「提交未通过」并停下');
   // 提交后不能再用固定 sleep 直接点下一关
   assert.doesNotMatch(USERSCRIPT, /await sleep\(3000\);/, '不得用固定等待代替结果判定');
+  // 推进必须发生在「提交成功」之后，不能提前
+  const passed = USERSCRIPT.indexOf("：提交成功`, 'ok'");
+  const advance = USERSCRIPT.indexOf('return advanceTeachQueue(queue);', passed);
+  assert.ok(passed > 0 && advance > passed, '推进必须紧跟「提交成功」之后');
 });
 
 test('篡改猴脚本：提交通过后必须把答案回传控制台落盘', () => {
@@ -176,11 +182,25 @@ test('篡改猴脚本：找不到提交按钮时必须把页面上的候选按�
   assert.match(USERSCRIPT, /SUBMIT_PATTERNS/, '提交按钮的匹配规则要集中定义');
 });
 
-test('篡改猴脚本：控制台地址不许写死端口', () => {
-  // 控制台用 `port: 0`（系统分配随机端口），端口每次启动都变。
-  // 原来默认值写的是 43127（更早的 writer-server 端口），照填必然连不上。
-  assert.match(USERSCRIPT, /const DEFAULT_LOCAL = '';/, '默认地址必须为空，逼用户用「复制控制台地址」');
-  assert.match(USERSCRIPT, /复制控制台地址/, '错误提示要指向「复制控制台地址」按钮');
+test('篡改猴脚本：端口固定，但 token 不许写死', () => {
+  // 端口**故意固定**（原来是 port:0，每次随机 → 配好的地址下次就失效）。
+  // 端口是公开信息，固定它没有安全代价；token 才是凭据。
+  assert.match(
+    USERSCRIPT,
+    /const DEFAULT_LOCAL = 'http:\/\/127\.0\.0\.1:43127';/,
+    '端口要固定，且与抓取端一致'
+  );
+  // 跨文件一致性：这个端口必须与 extractor/run.js 的 DEFAULT_UI_PORT 一致，
+  // 否则脚本按 43127 连、控制台却在别的端口上听，用户只会看到连不上。
+  const RUN_JS = fs.readFileSync(path.join(__dirname, '..', 'extractor', 'run.js'), 'utf8');
+  const runPort = /const DEFAULT_UI_PORT = (\d+);/.exec(RUN_JS);
+  const scriptPort = /127\.0\.0\.1:(\d+)/.exec(USERSCRIPT);
+  assert.ok(runPort && scriptPort, '两边都要能取到端口');
+  assert.equal(scriptPort[1], runPort[1], `脚本写的端口(${scriptPort[1]})必须等于控制台的(${runPort[1]})`);
+
+  // token 仍然只能来自控制台：不进仓库、不进脚本源码
+  assert.doesNotMatch(USERSCRIPT, /token=[0-9a-f]{32}/i, 'token 不许出现在源码里');
+  assert.match(USERSCRIPT, /function setLocalAddress/, '要能设置地址/token');
 });
 
 test('篡改猴脚本：面板必须能拖动，且默认不挡右下角', () => {
@@ -326,13 +346,14 @@ test('篡改猴脚本：落盘后清空面板日志要保留最后几行（否�
   assert.match(USERSCRIPT, /队列已完成/, '状态行要显示队列终态（课程区是折叠的，看不到）');
 });
 
-test('篡改猴脚本：两条作答流程必须共用同一个内核（不能再各写一份）', () => {
-  assert.match(USERSCRIPT, /async function answerCurrentLevel/, '要有共同内核');
-  const cur = USERSCRIPT.indexOf('async function processCurrentLevel');
+test('篡改猴脚本：作答内核只应有一份（勾选逻辑不得再分裂）', () => {
+  assert.match(USERSCRIPT, /async function answerCurrentLevel/, '要有作答内核');
   const teach = USERSCRIPT.indexOf('async function processTeachLevel');
-  assert.ok(cur > 0 && teach > 0, '两条流程都要在');
-  assert.match(USERSCRIPT.slice(cur, cur + 1200), /await answerCurrentLevel\(/, '单关流程要用内核');
-  assert.match(USERSCRIPT.slice(teach, teach + 3000), /await answerCurrentLevel\(/, '教学队列也要用内核');
+  assert.ok(teach > 0, '教学队列要在');
+  assert.match(USERSCRIPT.slice(teach, teach + 4000), /await answerCurrentLevel\(/, '教学队列要用内核');
+  // 手动单关流程（processCurrentLevel）已删除：多关推进统一交给队列，
+  // 它那套「自动点下一关 / 判定通过才下一关」的开关也一并消失（见上面的安全默认用例）。
+  assert.doesNotMatch(USERSCRIPT, /processCurrentLevel/, '不该再有第二套作答流程');
   // 勾选逻辑只应出现在内核里——再出现第二份实现就说明又分裂了
   const picks = (USERSCRIPT.match(/await answerChoiceLevel\(/g) || []).length;
   assert.equal(picks, 1, `answerChoiceLevel 只应在内核里被调用一次，实际 ${picks} 处`);
