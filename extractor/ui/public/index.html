@@ -36,6 +36,36 @@
     --sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
     --r: 5px;
   }
+  /* 语义色板：深色模式只需覆盖这一组，见文件末尾 */
+    --raise:               #ffffff;
+    --raise-2:             #fcfdff;
+    --sunken:              #fbfcff;
+    --head-b:              #f4f7fc;
+    --chip-bg:             #f3f6fc;
+    --hover:               #f2f6fd;
+    --hairline:            #eef2f9;
+    --line-3:              #bcc9de;
+    --line-hover:          #9fb2cf;
+    --dot-off:             #b6c2d6;
+    --btn-fg:              #31435f;
+    --btn-off-bg:          #eef2f8;
+    --btn-off-fg:          #93a2ba;
+    --ok-bg:               #effaf4;
+    --ok-line:             #b9e2cd;
+    --ok-fg:               #0c6a41;
+    --warn-bg:             #fff8ec;
+    --warn-line:           #eed3a8;
+    --warn-fg:             #8a5205;
+    --err-bg:              #fdf3f3;
+    --err-line:            #ecc3c5;
+    --err-fg:              #a92a31;
+    --purple-bg:           #f7f3ff;
+    --purple-line:         #ded0f8;
+    --purple-fg:           #6a34c8;
+    --ink-dim:             #5f7396;
+    --primary-hover:       #1f3fd0;
+    --primary-line-soft:   #d3dcff;
+
 
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -65,16 +95,16 @@
   }
   body[data-busy] { cursor: progress; }
 
-  ::selection { background: #d3dcff; }
-  * { scrollbar-width: thin; scrollbar-color: #bcc9de transparent; }
+  ::selection { background: var(--primary-line-soft); }
+  * { scrollbar-width: thin; scrollbar-color: var(--line-3) transparent; }
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb {
-    background: #bcc9de;
+    background: var(--line-3);
     border-radius: 2px;
     border: 2px solid transparent;
     background-clip: content-box;
   }
-  ::-webkit-scrollbar-thumb:hover { background: #9fb0c9; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--line-3); background-clip: content-box; }
   ::-webkit-scrollbar-track { background: transparent; }
 
   .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -116,13 +146,13 @@
   .brand-mark {
     font: 700 10.5px/1 var(--mono);
     letter-spacing: .18em;
-    color: #fff;
+    color: var(--raise);
     background: var(--primary);
     border-radius: 3px;
     padding: 8px 10px 7px;
     box-shadow: 2px 2px 0 var(--primary-line);
   }
-  .brand h1 { margin: 0; font-size: 17.5px; font-weight: 700; letter-spacing: .06em; color: #101d33; }
+  .brand h1 { margin: 0; font-size: 17.5px; font-weight: 700; letter-spacing: .06em; color: var(--fg); }
   .brand-sub { margin: 0; color: var(--fg-3); font-size: 11px; font-family: var(--mono); letter-spacing: .04em; }
 
   .chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -133,19 +163,19 @@
     font: 10.5px/1 var(--mono);
     letter-spacing: .08em;
     color: var(--fg-2);
-    background: #fff;
+    background: var(--raise);
     border: 1px solid var(--line-2);
     border-radius: 3px;
     padding: 7px 10px 6px;
     white-space: nowrap;
   }
   /* 方点而非圆点：和整体的"仪器刻度"语汇一致 */
-  .chip .dot { width: 6px; height: 6px; border-radius: 1px; background: #a9b6cc; flex: none; }
-  .chip[data-tone="ok"] { color: #0c6a41; background: #effaf4; border-color: #b9e2cd; }
+  .chip .dot { width: 6px; height: 6px; border-radius: 1px; background: var(--line-3); flex: none; }
+  .chip[data-tone="ok"] { color: var(--ok-fg); background: var(--ok-bg); border-color: var(--ok-line); }
   .chip[data-tone="ok"] .dot { background: var(--ok); }
-  .chip[data-tone="warn"] { color: #8a5205; background: #fff8ec; border-color: #eed3a8; }
+  .chip[data-tone="warn"] { color: var(--warn-fg); background: var(--warn-bg); border-color: var(--warn-line); }
   .chip[data-tone="warn"] .dot { background: var(--warn); }
-  .chip[data-tone="err"] { color: #a92a31; background: #fdf3f3; border-color: #eec2c4; }
+  .chip[data-tone="err"] { color: var(--err-fg); background: var(--err-bg); border-color: var(--err-line); }
   .chip[data-tone="err"] .dot { background: var(--err); }
   .chip[data-tone="run"] { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
   .chip[data-tone="run"] .dot { background: var(--primary); animation: pulse 1.2s ease-in-out infinite; }
@@ -165,8 +195,8 @@
   .btn {
     font: 12.5px/1 var(--sans);
     font-weight: 500;
-    color: #31435f;
-    background: #fff;
+    color: var(--btn-fg);
+    background: var(--raise);
     border: 1px solid var(--line-2);
     border-radius: 4px;
     padding: 8px 13px;
@@ -176,64 +206,69 @@
     box-shadow: 0 1px 0 rgba(19, 31, 54, .05);
     transition: background-color .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease, transform .08s ease;
   }
-  .btn:hover:not(:disabled) { background: #f2f6fd; border-color: #9fb2cf; }
+  .btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-hover); }
   .btn:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
   .btn:focus-visible, .row:focus-within, .list:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
-  .btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+  /* 禁用态：整颗按钮转灰。
+     原来只是 opacity: .4 —— 实心群青透出来仍然像"现在就该点它"，
+     而它恰恰是"还不能点"。灰底灰字才一眼看得出状态。 */
+  .btn:disabled {
+    opacity: 1;
+    cursor: not-allowed;
+    box-shadow: none;
+    color: var(--btn-off-fg);
+    background: var(--btn-off-bg);
+    border-color: var(--line);
+  }
   /* 主按钮 = 实体按键：底部 2px 深色，按下时收回 */
   .btn-primary {
     background: var(--primary);
     border-color: var(--primary-strong);
-    color: #fff;
+    color: var(--raise);
     font-weight: 600;
     box-shadow: 0 2px 0 var(--primary-strong);
   }
-  .btn-primary:hover:not(:disabled) { background: #1f3fd0; border-color: var(--primary-strong); }
+  .btn-primary:disabled { background: var(--btn-off-bg); border-color: var(--line-2); color: var(--btn-off-fg); }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-strong); }
   .btn-primary:active:not(:disabled) { box-shadow: 0 1px 0 var(--primary-strong); }
-  .btn-danger { color: #b3272f; border-color: #ecc3c5; background: #fff; }
-  .btn-danger:hover:not(:disabled) { background: #fdf3f3; border-color: #dda1a4; }
+  .btn-danger { color: var(--err-fg); border-color: var(--err-line); background: var(--raise); }
+  .btn-danger:hover:not(:disabled) { background: var(--err-bg); border-color: var(--err-line); }
   .btn-mini { font: 10.5px/1 var(--mono); letter-spacing: .05em; padding: 6px 8px; color: var(--fg-2); border-radius: 3px; }
   .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--fg-2); }
-  .btn-ghost:hover:not(:disabled) { background: #e8eefb; border-color: transparent; }
+  .btn-ghost:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
 
-  /* ---------- status strip ---------- */
-  .strip { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr) minmax(300px, 2fr); gap: 12px; }
-  .tile {
-    position: relative;
+  /* ---------- status bar ----------
+     原先这里是三张等高卡片（登录状态 / 当前阶段 / 状态说明），占掉首屏最贵的 ~90px，
+     说的却都是右上角徽章与日志里已有的信息。压成一行后一条信息不少，
+     省下来的高度还给了面板——「日志在 900px 高度下看不到」就是这么来的。 */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 13px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--r);
     box-shadow: var(--shadow);
-    padding: 11px 13px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
+    font-size: 12.5px;
   }
-  /* 左上角一小段群青刻度：仪表面板的"零位线" */
-  .tile::before {
-    content: '';
-    position: absolute;
-    left: -1px;
-    top: -1px;
-    width: 18px;
-    height: 3px;
-    background: var(--primary);
-    border-radius: var(--r) 0 3px 0;
-  }
-  .tile-k { font: 600 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--fg-3); }
-  .tile-v { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .tile-v .dot { width: 8px; height: 8px; border-radius: 1px; background: #b6c2d6; flex: none; }
-  .tile-s { font-size: 11px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tile-v[data-state="ok"] { color: #0c6a41; }
-  .tile-v[data-state="ok"] .dot { background: var(--ok); }
-  .tile-v[data-state="warn"] { color: #8a5205; }
-  .tile-v[data-state="warn"] .dot { background: var(--warn); }
-  .tile-v[data-state="err"] { color: #a92a31; }
-  .tile-v[data-state="err"] .dot { background: var(--err); }
+  .sb-item { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+  .sb-item .dot { width: 8px; height: 8px; border-radius: 1px; background: var(--dot-off); flex: none; }
+  .sb-item[data-state="ok"] { color: var(--ok-fg); }
+  .sb-item[data-state="ok"] .dot { background: var(--ok); }
+  .sb-item[data-state="warn"] { color: var(--warn-fg); }
+  .sb-item[data-state="warn"] .dot { background: var(--warn); }
+  .sb-item[data-state="err"] { color: var(--err-fg); }
+  .sb-item[data-state="err"] .dot { background: var(--err); }
+  .sb-k { font: 600 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--fg-3); }
+  .sb-sub { font-size: 11px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; }
+  .sb-sep { width: 1px; height: 14px; background: var(--line-2); flex: none; }
+  .sb-msg { flex: 1 1 200px; min-width: 0; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-logs { margin-left: auto; font-size: 11px; color: var(--fg-3); white-space: nowrap; }
 
   .banners { display: flex; flex-direction: column; gap: 8px; }
   .banner {
@@ -250,10 +285,10 @@
   }
   .banner strong { font-size: 13px; }
   .banner span { color: var(--fg-2); }
-  .banner-warn { border-color: #eed3a8; border-left-color: var(--warn); background: #fffcf6; }
-  .banner-warn strong { color: #8a5205; }
-  .banner-err { border-color: #eec2c4; border-left-color: var(--err); background: #fef9f9; }
-  .banner-err strong { color: #a92a31; }
+  .banner-warn { border-color: var(--warn-line); border-left-color: var(--warn); background: var(--warn-bg); }
+  .banner-warn strong { color: var(--warn-fg); }
+  .banner-err { border-color: var(--err-line); border-left-color: var(--err); background: var(--err-bg); }
+  .banner-err strong { color: var(--err-fg); }
 
   /* ---------- layout ---------- */
   .main { display: grid; grid-template-columns: minmax(430px, 1.1fr) minmax(360px, 1fr); gap: 14px; align-items: start; }
@@ -274,12 +309,12 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    padding: 10px 13px;
+    padding: 6px 13px;
     border-bottom: 1px solid var(--line);
-    background: linear-gradient(180deg, #fbfcff, #f4f7fc);
+    background: linear-gradient(180deg, var(--sunken), var(--head-b));
     flex-wrap: wrap;
   }
-  .panel-hd h2 { margin: 0; font: 600 13px/1.3 var(--sans); letter-spacing: .05em; color: #101d33; }
+  .panel-hd h2 { margin: 0; font: 600 13px/1.3 var(--sans); letter-spacing: .05em; color: var(--fg); }
   /* 序号 = 图纸上的索引标签：方角 + 1px 偏移描边 */
   .panel-hd .step {
     display: inline-flex;
@@ -291,7 +326,7 @@
     font: 700 10px/1 var(--mono);
     letter-spacing: .08em;
     color: var(--primary-strong);
-    background: #fff;
+    background: var(--raise);
     border: 1px solid var(--primary-line);
     border-radius: 3px;
     box-shadow: 1px 1px 0 var(--primary-line);
@@ -301,14 +336,14 @@
     font: 10.5px/1 var(--mono);
     letter-spacing: .04em;
     color: var(--fg-2);
-    background: #f3f6fc;
+    background: var(--chip-bg);
     border: 1px solid var(--line);
     border-radius: 3px;
     padding: 5px 8px;
     white-space: nowrap;
   }
   .badge[data-state="active"] { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
-  .badge[data-state="ok"] { color: #0c6a41; background: #effaf4; border-color: #b9e2cd; }
+  .badge[data-state="ok"] { color: var(--ok-fg); background: var(--ok-bg); border-color: var(--ok-line); }
   .mini-group { display: flex; gap: 5px; }
 
   .panel-ft {
@@ -316,9 +351,9 @@
     align-items: center;
     gap: 10px;
     justify-content: space-between;
-    padding: 10px 13px;
+    padding: 6px 13px;
     border-top: 1px solid var(--line);
-    background: #fcfdff;
+    background: var(--raise-2);
     flex-wrap: wrap;
   }
   .hint { margin: 0; font-size: 11.5px; color: var(--fg-3); min-width: 0; }
@@ -329,7 +364,7 @@
     font: 11px/1.4 var(--mono);
     color: var(--primary-strong);
     background: var(--primary-soft);
-    border: 1px solid #dfe5fb;
+    border: 1px solid var(--primary-line-soft);
     border-radius: 3px;
     padding: 0 4px;
   }
@@ -344,7 +379,9 @@
   .list[data-empty="true"]::after {
     content: attr(data-empty-text);
     display: block;
-    padding: 20px 12px;
+    /* 空占位别太高：三个选择面板同时空着时，多出来的高度会把「抓取进度」
+       整个顶到折叠线以下——而它的按钮恰恰是下一步要点的（实测差 40px）。 */
+    padding: 5px 12px;
     color: var(--fg-3);
     font-size: 12px;
     text-align: center;
@@ -363,7 +400,7 @@
     min-width: 0;
     transition: background-color .1s ease, border-color .1s ease;
   }
-  .row:hover { background: #f2f6fd; border-left-color: var(--line-2); }
+  .row:hover { background: var(--hover); border-left-color: var(--line-2); }
   .row input { flex: none; width: 15px; height: 15px; margin: 0; cursor: pointer; }
   .row input:disabled, .list.locked .row { cursor: not-allowed; }
   .row:has(input:checked), .row.is-active { background: var(--primary-soft); border-color: var(--primary-line); border-left-color: var(--primary); }
@@ -382,9 +419,9 @@
     flex: none;
   }
   .tag-code { color: var(--primary-strong); background: var(--primary-soft); border-color: var(--primary-line); }
-  .tag-choice { color: #6a34c8; background: #f7f3ff; border-color: #ded0f8; }
-  .tag-unknown { color: var(--fg-2); background: #f2f5fa; border-color: var(--line-2); }
-  .tag-end { color: var(--fg-3); background: #f6f8fb; border-color: var(--line); }
+  .tag-choice { color: var(--purple-fg); background: var(--purple-bg); border-color: var(--purple-line); }
+  .tag-unknown { color: var(--fg-2); background: var(--sunken); border-color: var(--line-2); }
+  .tag-end { color: var(--fg-3); background: var(--sunken); border-color: var(--line); }
 
   /* 多实验合并时的关卡列表：每条标出所属实验 */
   .row-exp {
@@ -409,7 +446,7 @@
   .bar {
     position: relative;
     height: 8px;
-    background: #e6ecf7;
+    background: var(--sunken);
     border: 1px solid var(--line);
     border-radius: 3px;
     overflow: hidden;
@@ -435,7 +472,7 @@
     border: 1px solid var(--line);
     border-radius: 4px;
     overflow: hidden;
-    background: #fff;
+    background: var(--raise);
   }
   .count {
     background: var(--panel-2);
@@ -459,25 +496,79 @@
   /* ---------- recent / logs ---------- */
   .saved-list { display: flex; flex-direction: column; max-height: 150px; overflow-y: auto; }
   .saved-list > * { flex: none; }
-  .saved-line { display: flex; align-items: center; gap: 9px; padding: 7px 13px; border-bottom: 1px solid #eef2f9; font-size: 11.5px; min-width: 0; }
+  .saved-line { display: flex; align-items: center; gap: 9px; padding: 7px 13px; border-bottom: 1px solid var(--hairline); font-size: 11.5px; min-width: 0; }
   .saved-line:last-child { border-bottom: 0; }
   .saved-line .row-title { flex: 1 1 auto; }
   .saved-line .saved-path { color: var(--fg-3); font-size: 10.5px; max-width: 44%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .saved-empty { padding: 14px 13px; color: var(--fg-3); font-size: 11.5px; }
 
-  /* 日志区是整页唯一的深色锚点：长时间盯日志时反色更省眼，也给页面一个视觉落点 */
-  .log-box {
-    max-height: 520px;
-    min-height: 280px;
+  /* ---------- 日志：贴底抽屉 ----------
+     原来日志是页面最底部的整块面板，900px 高度的屏幕上根本看不到——而它恰恰是
+     抓取时最需要盯的东西。改成贴在视口底部的抽屉：收起时一行显示最新一条，
+     展开后占 44vh 并内部滚动。深色仍是整页唯一的反色锚点。 */
+  .logdock {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: var(--ink);
+    border-top: 1px solid var(--ink-line);
+    box-shadow: 0 -10px 28px rgba(13, 23, 41, .2);
+  }
+  .logdock-hd {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 9px 14px;
+    background: transparent;
+    border: 0;
+    color: var(--ink-fg);
+    font: 700 10.5px/1.4 var(--mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: left;
+  }
+  .logdock-hd:hover { background: rgba(255, 255, 255, .06); }
+  .logdock-hd:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+  .logdock-hd .badge { background: rgba(255, 255, 255, .1); border-color: var(--ink-line); color: var(--ink-fg); }
+  /* 抽屉收起时靠这个点表达"最新一条是什么级别" */
+  .logdock-hd .dot { width: 8px; height: 8px; border-radius: 1px; background: #3a4761; flex: none; }
+  .logdock-hd .dot[data-level="info"] { background: #5b7cfa; }
+  .logdock-hd .dot[data-level="ok"] { background: #3fbf85; }
+  .logdock-hd .dot[data-level="warn"] { background: #e0a44c; }
+  .logdock-hd .dot[data-level="error"] { background: #f0757f; }
+  .logdock-hd .spacer { flex: 1 1 auto; }
+  .logdock-latest {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-dim);
+    font: 11px/1.4 var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .logdock-cue { flex: none; color: var(--ink-dim); font: 11px/1.4 var(--mono); letter-spacing: 0; text-transform: none; }
+  .logdock .log-box {
+    max-height: 44vh;
+    min-height: 0;
     overflow-y: auto;
-    padding: 11px 0 12px;
+    padding: 10px 0 12px;
     font: 11.5px/1.65 var(--mono);
     background: var(--ink);
     border-top: 1px solid var(--ink-line);
     color: var(--ink-fg);
   }
+  .logdock[data-open="false"] .log-box { display: none; }
+  /* 抽屉常驻底部，给内容留出它的高度 */
+  .app { padding-bottom: 68px; }
+  body[data-logopen="true"] .app { padding-bottom: 48vh; }
   .log-line { display: flex; gap: 10px; padding: 2px 14px; white-space: pre-wrap; word-break: break-word; }
-  .log-time { color: #5f7396; flex: none; }
+  .log-time { color: var(--ink-dim); flex: none; }
   .log-msg { color: var(--ink-fg); }
   .log-line[data-level="warn"] .log-msg { color: #f0b45e; }
   .log-line[data-level="error"] .log-msg { color: #ff9b9b; }
@@ -486,7 +577,7 @@
     content: '暂无日志。抓取开始后，这里会实时滚动输出。';
     display: block;
     padding: 0 14px;
-    color: #5f7396;
+    color: var(--ink-dim);
   }
 
   /* ---------- done ---------- */
@@ -514,7 +605,7 @@
   .extracted-actions .btn { flex: 1 1 200px; }
   .extracted-list { display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow: auto; padding: 1px; }
   .extracted-list > * { flex: none; }
-  .extracted-group { border: 1px solid var(--line); border-radius: 4px; background: #fcfdff; }
+  .extracted-group { border: 1px solid var(--line); border-radius: 4px; background: var(--raise-2); }
   .extracted-group-hd {
     display: flex;
     align-items: center;
@@ -526,8 +617,8 @@
     font-size: 12px;
     min-width: 0;
   }
-  .extracted-group-hd strong { color: #1c2c48; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .extracted-group-hd .extracted-sep { color: #b7c3d6; }
+  .extracted-group-hd strong { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .extracted-group-hd .extracted-sep { color: var(--line-3); }
   .extracted-group-hd .spacer { flex: 1 1 auto; }
   .extracted-item {
     display: flex;
@@ -535,7 +626,7 @@
     gap: 8px;
     padding: 6px 11px;
     font-size: 11.5px;
-    border-top: 1px solid #eef2f9;
+    border-top: 1px solid var(--hairline);
   }
   .extracted-group-hd + .extracted-item { border-top: none; }
   .extracted-item > .mono { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
@@ -548,16 +639,18 @@
     border-radius: 3px;
     border: 1px solid var(--line-2);
     color: var(--fg-2);
-    background: #f4f7fb;
+    background: var(--sunken);
   }
 
   /* ---------- toast ---------- */
-  .toast-wrap { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 9px; z-index: 20; max-width: min(440px, 92vw); }
+  /* 提示要浮在日志抽屉之上（z-index 30），否则会被抽屉盖住 */
+  .toast-wrap { position: fixed; right: 18px; bottom: 58px; display: flex; flex-direction: column; gap: 9px; z-index: 40; max-width: min(440px, 92vw); }
+  body[data-logopen="true"] .toast-wrap { bottom: calc(44vh + 58px); }
   .toast {
     border: 1px solid var(--line-2);
     border-left-width: 3px;
     border-radius: 4px;
-    background: #fff;
+    background: var(--raise);
     padding: 11px 13px;
     font-size: 12.5px;
     box-shadow: 0 12px 28px rgba(19, 31, 54, .14);
@@ -567,42 +660,30 @@
     color: var(--fg);
   }
   .toast[data-kind="error"] { border-left-color: var(--err); }
-  .toast[data-kind="error"] .toast-msg { color: #a92a31; }
+  .toast[data-kind="error"] .toast-msg { color: var(--err-fg); }
   .toast[data-kind="ok"] { border-left-color: var(--ok); }
-  .toast[data-kind="ok"] .toast-msg { color: #0c6a41; }
+  .toast[data-kind="ok"] .toast-msg { color: var(--ok-fg); }
   .toast[data-kind="info"] { border-left-color: var(--info); }
   .toast[data-kind="warn"] { border-left-color: var(--warn); }
-  .toast[data-kind="warn"] .toast-msg { color: #8a5205; }
+  .toast[data-kind="warn"] .toast-msg { color: var(--warn-fg); }
   .toast-msg { flex: 1 1 auto; word-break: break-word; }
   .toast-close { background: none; border: 0; color: var(--fg-3); cursor: pointer; font: 13px/1 var(--mono); padding: 0; }
   .toast-close:hover { color: var(--fg-2); }
 
-  footer.foot {
-    color: var(--fg-3);
-    font-size: 11px;
-    font-family: var(--mono);
-    letter-spacing: .03em;
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-    border-top: 1px solid var(--line-2);
-    padding-top: 12px;
-    margin-top: auto;
-  }
-
   @media (max-width: 980px) {
+    /* 窄屏不再分两列：**进度面板紧跟在选择区之后**（它本来就在左列里），
+       而不是像以前那样把整条右列挪到最后——那样「抓取进度」会被压到页面最底下。 */
     .main { grid-template-columns: 1fr; }
-    .strip { grid-template-columns: 1fr 1fr; }
-    .tile-wide { grid-column: 1 / -1; }
     .list { max-height: 210px; }
+    .answer-pickers { grid-template-columns: 1fr; }
   }
   @media (max-width: 560px) {
     .app { padding: 14px 14px 20px; }
-    .strip { grid-template-columns: 1fr; }
+    .app { padding-bottom: 68px; }
     .panel-ft { justify-content: stretch; }
     .panel-ft .btn { flex: 1 1 auto; }
     .brand h1 { font-size: 16px; }
+    .sb-msg { flex-basis: 100%; }
   }
 
   /* ---------- AI 作答面板 ---------- */
@@ -615,7 +696,7 @@
   .answer-input {
     font: 12px/1.4 var(--mono);
     color: var(--fg);
-    background: #fff;
+    background: var(--raise);
     border: 1px solid var(--line-2);
     border-radius: 3px;
     padding: 8px 10px;
@@ -633,13 +714,13 @@
     flex-direction: column;
     gap: 6px;
     min-width: 0;
-    background: #fbfcff;
+    background: var(--sunken);
     border: 1px solid var(--line);
     border-radius: 4px;
     padding: 9px;
   }
   .answer-col-hd { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-height: 26px; }
-  .answer-col .list { max-height: 212px; background: #fff; border: 1px solid var(--line); border-radius: 3px; }
+  .answer-col .list { max-height: 212px; background: var(--raise); border: 1px solid var(--line); border-radius: 3px; }
   .answer-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .answer-results { display: flex; flex-direction: column; gap: 6px; }
   .answer-result {
@@ -653,14 +734,86 @@
     padding: 8px 11px;
     font: 11.5px/1.55 var(--mono);
     color: var(--fg-2);
-    background: #fff;
+    background: var(--raise);
   }
-  .answer-result[data-state="ok"] { border-color: #b9e2cd; border-left-color: var(--ok); background: #f7fdf9; }
-  .answer-result[data-state="warn"] { border-color: #eed3a8; border-left-color: var(--warn); background: #fffcf6; }
-  .answer-result[data-state="err"] { border-color: #eec2c4; border-left-color: var(--err); background: #fef9f9; }
+  .answer-result[data-state="ok"] { border-color: var(--ok-line); border-left-color: var(--ok); background: var(--ok-bg); }
+  .answer-result[data-state="warn"] { border-color: var(--warn-line); border-left-color: var(--warn); background: var(--warn-bg); }
+  .answer-result[data-state="err"] { border-color: var(--err-line); border-left-color: var(--err); background: var(--err-bg); }
   .answer-result b { color: var(--fg); font-weight: 600; }
   @media (max-width: 1100px) {
     .answer-pickers { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- 深色模式：跟随系统 ----------
+     只覆盖色板，布局与组件样式完全复用（这也是前面把 55 个硬编码颜色收敛成
+     语义变量的原因——否则深色模式要逐个选择器打补丁，改一处漏一处）。 */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e131d;
+      --grid-line: rgba(122, 160, 255, .055);
+      --panel: #161d2b;
+      --panel-2: #131926;
+      --line: #28324a;
+      --line-2: #37425c;
+      --fg: #e7edf9;
+      --fg-2: #a6b4cc;
+      --fg-3: #7d8ba6;
+      /* 群青在深底上要提亮，否则对比度不足、读起来发闷 */
+      --primary: #5b7cfa;
+      --primary-strong: #7b95ff;
+      --primary-soft: #1b2540;
+      --primary-line: #31406a;
+      --ok: #3fbf85;
+      --warn: #e0a44c;
+      --err: #f0757f;
+      --info: #5b7cfa;
+      --ring: #7b95ff;
+      --shadow: 0 1px 0 rgba(0, 0, 0, .32);
+      /* 日志抽屉在深色下要明显比页面底色更暗，否则看不出是"贴上来的一层" */
+      --ink: #06090f;
+      --ink-line: #2b3750;
+      --ink-fg: #a9bad3;
+
+      --raise: #1b2333;
+      --raise-2: #1d2637;
+      --sunken: #131926;
+      --head-b: #1a2231;
+      --chip-bg: #212b3d;
+      --hover: #232e42;
+      --hairline: #212a3a;
+      --line-3: #3a4660;
+      --line-hover: #4a5878;
+      --dot-off: #4a5872;
+      --btn-fg: #cdd7e6;
+      --btn-off-bg: #202a3b;
+      --btn-off-fg: #5c6b85;
+      --ok-bg: #10261d;
+      --ok-line: #1f4a35;
+      --ok-fg: #57c795;
+      --warn-bg: #2a2011;
+      --warn-line: #5c4520;
+      --warn-fg: #e0a94f;
+      --err-bg: #2b1618;
+      --err-line: #5a2b2f;
+      --err-fg: #f08b8b;
+      --purple-bg: #241f38;
+      --purple-line: #3b3060;
+      --purple-fg: #b79bf5;
+      --ink-dim: #6b7f9e;
+      --primary-hover: #6f8cff;
+      --primary-line-soft: #31406a;
+    }
+    /* 面板头渐变在深色下要压暗，否则顶部会出现一条亮带 */
+    .panel-hd { background: linear-gradient(180deg, var(--raise-2), var(--head-b)); }
+    /* 「实体按键」的底部投影在深底上要更暗才看得出层次 */
+    .btn { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+    .btn-primary { box-shadow: 0 2px 0 #3d55c4; }
+    .btn-primary:active:not(:disabled) { box-shadow: 0 1px 0 #3d55c4; }
+    .answer-input:focus-visible { box-shadow: 0 0 0 3px rgba(122, 150, 255, .22); }
+    /* 纸面方格在深色下几乎看不见，稍提一点透明度保留质感 */
+    body { background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px); }
   }
 </style>
 </head>
@@ -680,22 +833,22 @@
     </div>
   </header>
 
-  <section class="strip" aria-label="运行状态">
-    <div class="tile">
-      <span class="tile-k">登录状态</span>
-      <span class="tile-v" id="st-login" data-state="warn"><i class="dot"></i><span id="st-login-text">检查中</span></span>
-      <span class="tile-s mono" id="st-user">—</span>
-    </div>
-    <div class="tile">
-      <span class="tile-k">当前阶段</span>
-      <span class="tile-v" id="st-phase"><span id="st-phase-text">等待连接</span></span>
-      <span class="tile-s mono" id="st-phase-raw">—</span>
-    </div>
-    <div class="tile tile-wide">
-      <span class="tile-k">状态说明</span>
-      <span class="tile-v" id="st-message" aria-live="polite">正在读取后端状态…</span>
-      <span class="tile-s mono" id="st-logs-count">日志 0 条</span>
-    </div>
+  <!-- 运行状态压成一行：原来这里是三张等高卡片，占掉首屏最贵的 ~90px，
+       说的却都是右上角徽章与日志里已有的信息。信息一条没少。 -->
+  <section class="statusbar" aria-label="运行状态">
+    <span class="sb-item" id="st-login" data-state="warn">
+      <i class="dot"></i><span id="st-login-text">检查中</span>
+      <span class="sb-sub mono" id="st-user">—</span>
+    </span>
+    <span class="sb-sep" aria-hidden="true"></span>
+    <span class="sb-item">
+      <span class="sb-k">阶段</span>
+      <span id="st-phase"><span id="st-phase-text">等待连接</span></span>
+      <span class="sb-sub mono" id="st-phase-raw">—</span>
+    </span>
+    <span class="sb-sep" aria-hidden="true"></span>
+    <span class="sb-msg" id="st-message" aria-live="polite">正在读取后端状态…</span>
+    <span class="sb-logs mono" id="st-logs-count">日志 0 条</span>
   </section>
 
   <div class="banners">
@@ -763,9 +916,7 @@
           <button class="btn btn-primary" id="btn-levels" type="button" disabled>开始抓取选中的关卡</button>
         </div>
       </section>
-    </div>
 
-    <div class="col">
       <section class="panel" id="panel-progress">
         <div class="panel-hd">
           <span class="step">04</span>
@@ -798,7 +949,9 @@
           </div>
         </div>
       </section>
+    </div>
 
+    <div class="col">
       <section class="panel" id="panel-extracted" hidden>
         <div class="panel-hd">
           <span class="step">▣</span>
@@ -946,20 +1099,19 @@
     </div>
   </div>
 
-  <section class="panel" id="panel-logs">
-    <div class="panel-hd">
-      <span class="step">·</span>
-      <h2>日志</h2>
-      <span class="spacer"></span>
+  <!-- 日志：贴底抽屉。原来它是页面最底部的整块面板，900px 高度的屏幕上根本看不到，
+       而它恰恰是抓取时最需要盯的东西。收起时一行显示最新一条，点标题栏展开。 -->
+  <section class="logdock" id="logdock" data-open="false" aria-label="日志">
+    <button class="logdock-hd" id="btn-logdock" type="button" aria-expanded="false" aria-controls="log-box">
+      <span class="dot" id="logdock-dot"></span>
+      <span>日志</span>
       <span class="badge mono" id="badge-logs">0</span>
-    </div>
+      <span class="logdock-latest" id="logdock-latest">暂无日志</span>
+      <span class="spacer"></span>
+      <span class="logdock-cue" id="logdock-cue">展开 ▴</span>
+    </button>
     <div class="log-box" id="log-box" role="log" aria-live="off"></div>
   </section>
-
-  <footer class="foot">
-    <span>契约：GET /api/state · GET /api/events?token= · POST /api/action</span>
-    <span class="mono" id="foot-token">token —</span>
-  </footer>
 </div>
 
 <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
@@ -1527,7 +1679,6 @@
       banner.hidden = true;
     }
 
-    $('foot-token').textContent = TOKEN ? 'token ' + TOKEN.slice(0, 8) + '…' : 'token 缺失';
   }
 
   function listEl(kind) { return $('list-' + kind); }
@@ -1831,9 +1982,13 @@
             : '请勾选关卡' + levelScopeHint() + '，可多选或使用「全选 / 反选」。')
         : '无关卡列表，开始后由引擎按关卡链自动遍历。';
     }
-    if (kind === 'course') return state.phase === 'waiting-course' ? '' : '当前阶段不可选择课程：' + (state.phase || '未知');
-    if (kind === 'experiments') return '当前阶段不可选择实验：' + (state.phase || '未知');
-    return '当前阶段不可选择关卡：' + (state.phase || '未知');
+    // 还不能选的时候，说人话 + 告诉用户「现在正在干什么」。
+    // 原来直接拼内部状态名（"当前阶段不可选择课程：starting"），用户既看不懂
+    // 也不知道该等还是该操作。
+    var note = '（当前正在：' + phaseInfo(state.phase).label + '）';
+    if (kind === 'course') return '现在还不能选课程' + note;
+    if (kind === 'experiments') return '现在还不能选实验' + note;
+    return '现在还不能选关卡' + note;
   }
 
   function pushSaved(data) {
@@ -1883,6 +2038,12 @@
   function renderLogs() {
     $('badge-logs').textContent = String(state.logs.length);
     $('st-logs-count').textContent = '日志 ' + state.logs.length + ' 条 · 阶段 ' + (state.phase || '未知');
+    // 抽屉收起时也要能看见最新一条——否则「日志看不到」等于没修。
+    var last = state.logs.length ? state.logs[state.logs.length - 1] : null;
+    var line = $('logdock-latest');
+    if (line) line.textContent = last && last.message != null ? String(last.message) : '暂无日志';
+    var dot = $('logdock-dot');
+    if (dot) dot.setAttribute('data-level', last ? (last.level || 'info') : 'idle');
   }
 
   function logLine(entry) {
@@ -2399,6 +2560,38 @@
     });
   }
 
+  /**
+   * 日志抽屉：贴底常驻，收起时一行显示最新一条，展开占 44vh。
+   *
+   * 为什么要做成抽屉而不是页面底部的普通面板：那个位置在 900px 高度的屏幕上
+   * 根本滚不到，而日志恰恰是抓取时最需要盯的东西。状态记在 localStorage，刷新后保持。
+   */
+  function setupLogDock() {
+    var dock = $('logdock');
+    var button = $('btn-logdock');
+    var cue = $('logdock-cue');
+    if (!dock || !button) return;
+    function apply(open) {
+      dock.setAttribute('data-open', open ? 'true' : 'false');
+      // body 上的标记用来给内容留出抽屉高度、并把提示浮到抽屉之上
+      document.body.setAttribute('data-logopen', open ? 'true' : 'false');
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (cue) cue.textContent = open ? '收起 ▾' : '展开 ▴';
+      if (open) {
+        var box = $('log-box');
+        if (box) box.scrollTop = box.scrollHeight; // 展开就直接给最新一条
+      }
+    }
+    var saved = '';
+    try { saved = localStorage.getItem('logOpen') || ''; } catch (error) { /* 无痕/禁存储时降级为不记忆 */ }
+    apply(saved === '1');
+    button.addEventListener('click', function () {
+      var open = dock.getAttribute('data-open') !== 'true';
+      apply(open);
+      try { localStorage.setItem('logOpen', open ? '1' : '0'); } catch (error) { /* 同上 */ }
+    });
+  }
+
   /* ------------------------------ 缺答案清单 ------------------------------ */
 
   /** 渲染清单：行结构复用「已提取内容」的既有样式类。 */
@@ -2465,6 +2658,7 @@
     $('btn-answer-stop').addEventListener('click', stopAnswerRun);
     $('btn-answer-copy').addEventListener('click', copyConsoleAddress);
     setupAnswerFold();
+    setupLogDock();
     document.querySelectorAll('[data-abulk]').forEach(function (button) {
       button.addEventListener('click', function () {
         var target = button.dataset.atarget;
