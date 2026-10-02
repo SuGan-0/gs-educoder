@@ -183,17 +183,31 @@ test('面板：上次收起过的话，刷新后保持收起（不自己弹开�
   assert.equal(foldButton.textContent, '展开 ▾');
 });
 
-test('课堂区：按钮常驻可见，不再默认折叠', () => {
+test('课堂区：主要控件都在，且没有多余的折叠层', () => {
+  // 课堂区改成了「步骤条 + 单步内容」（见 userscript-pipeline.test.js）。
+  // 这里只守住一件事：该有的控件一个不少，且不再有「课堂区自己的折叠按钮」——
+  // 收起来的职责统一交给面板整体的收起。
   const built = boot();
-  const teachBody = built.created.find((node) => node.id === 'eas-teach-body');
-  assert.ok(teachBody, '课堂区要在');
-  assert.notEqual(teachBody.hidden, true, '课堂区不该默认隐藏');
-  const fold = built.created.find((node) => node.id === 'eas-teach-fold');
-  assert.equal(fold, undefined, '课堂区自己的折叠按钮应已移除');
-  // 主要按钮都得在，否则「常驻」没意义
-  for (const id of ['eas-teach-course', 'eas-teach-run', 'eas-teach-missing']) {
-    assert.ok(built.created.some((node) => node.id === id), `缺按钮：${id}`);
+  for (const id of [
+    'eas-teach-course',
+    'eas-teach-experiments',
+    'eas-teach-levels',
+    'eas-teach-run',
+    'eas-teach-missing',
+    'eas-teach-status'
+  ]) {
+    assert.ok(built.created.some((node) => node.id === id), `缺控件：${id}`);
   }
+  assert.equal(
+    built.created.find((node) => node.id === 'eas-teach-fold'),
+    undefined,
+    '课堂区自己的折叠按钮应已移除'
+  );
+  assert.equal(
+    built.created.find((node) => node.id === 'eas-teach-body'),
+    undefined,
+    '旧的「一块折叠区」结构应已被流水线取代'
+  );
 });
 
 test('签名常量：已配置过就不再打扰控制台', () => {

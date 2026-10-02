@@ -1889,7 +1889,8 @@
   function teachSelection() {
     if (!state.teach) {
       state.teach = {
-        // 课堂区常驻可见，不再有 open（折叠）状态
+        // 流水线当前停在第几步：null = 自动跟随数据，数字 = 用户手动切过去的
+        viewStep: null,
         courses: [],
         courseValue: '',
         experiments: [],
@@ -1937,11 +1938,70 @@
     return parts.join(' ');
   }
 
+  /**
+   * 课堂流水线「自然」停在第几步。
+   *
+   * 顺序是死的：没读到实验 → 先选课程；读到实验但一个没选 → 选实验；选完 → 选关卡。
+   */
+  function naturalTeachStep(teach) {
+    if (!teach.experiments.length) return 0;
+    if (!Object.keys(teach.selectedExperiments || {}).length) return 1;
+    return 2;
+  }
+
+  /** 当前显示的步骤：用户点过步骤条就以他点的为准，否则自动跟随数据。 */
+  function teachStep(teach) {
+    const view = teach.viewStep;
+    if (view === null || view === undefined) return naturalTeachStep(teach);
+    return Math.max(0, Math.min(2, Number(view) || 0));
+  }
+
+  /**
+   * 点步骤条切步骤。
+   *
+   * 允许**往回**切（改课程、改实验选择），但不允许跳到还没走到的步骤——
+   * 那只会显示一个空列表，让人以为坏了。
+   */
+  function gotoTeachStep(index) {
+    const teach = teachSelection();
+    if (index > naturalTeachStep(teach)) {
+      log(`还没走到第 ${index + 1} 步：先把前面那一步做完`, 'warn');
+      return;
+    }
+    teach.viewStep = index;
+    renderTeach();
+  }
+
+  /** 把步骤条与「当前显示哪一步」同步到界面。 */
+  function renderTeachSteps(teach) {
+    const step = teachStep(teach);
+    const bar = document.getElementById('eas-steps');
+    if (bar) {
+      [...bar.children].forEach((item, index) => {
+        item.dataset.state = index < step ? 'done' : index === step ? 'active' : 'locked';
+      });
+    }
+    ['eas-pane-course', 'eas-pane-experiments', 'eas-pane-levels'].forEach((id, index) => {
+      const pane = document.getElementById(id);
+      if (pane) pane.hidden = index !== step;
+    });
+
+    // 步骤条上带一句摘要：不必切回去也知道前面选了什么
+    const courseName = (teach.courses.find((course) => courseValueOf(course) === String(teach.courseValue || '')) || {}).name;
+    const notes = [
+      [document.getElementById('eas-step-note-course'), courseName || ''],
+      [document.getElementById('eas-step-note-experiments'),
+        Object.keys(teach.selectedExperiments || {}).length ? `${Object.keys(teach.selectedExperiments).length} 个` : ''],
+      [document.getElementById('eas-step-note-levels'),
+        Object.keys(teach.selectedLevels || {}).length ? `${Object.keys(teach.selectedLevels).length} 关` : '']
+    ];
+    for (const [node, text] of notes) if (node) node.textContent = text;
+  }
+
   function renderTeach() {
     renderTeachRunButton();
     const teach = teachSelection();
-    // 课堂区**常驻可见**：它原来默认折叠着，而跑课堂队列是主要用法，
-    // 每次都要先点一下「展开」。收起来的职责交给面板整体的收起按钮。
+    renderTeachSteps(teach);
     const courseSelect = document.getElementById('eas-teach-course');
     if (courseSelect) {
       const current = String(teach.courseValue || '');
@@ -2078,6 +2138,8 @@
   /** 读课程实验：按课程 kind 分派（课堂走 homework_commons，教学课程走 stages）。 */
   async function loadTeachExperimentsPanel() {
     const teach = teachSelection();
+    // 用户点了「读取课程实验」：流水线交回自动跟随，读完自然落到第 2 步
+    teach.viewStep = null;
     const course = teach.courses.find((item) => courseValueOf(item) === teach.courseValue) || teach.courses[0];
     if (!course) {
       log('先点「刷新课程」', 'warn');
@@ -2106,6 +2168,8 @@
 
   async function loadTeachLevelsPanel() {
     const teach = teachSelection();
+    // 用户点了「读取关卡」：流水线交回自动跟随，读完自然落到第 3 步
+    teach.viewStep = null;
     teach.busy = true;
     teach.status = '读取关卡…';
     renderTeach();
@@ -2632,8 +2696,38 @@
     #eas-panel .eas-opts { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid #222833; padding-top: 6px; }
     #eas-panel .eas-opt { display: flex; align-items: center; gap: 6px; color: #a4b0c1; cursor: pointer; }
     #eas-panel .eas-opt input { margin: 0; }
-    #eas-panel .eas-teach { border-top: 1px solid #222833; padding-top: 6px; }
-    #eas-panel .eas-teach-hd { display: flex; align-items: center; gap: 6px; color: #dde4ee; }
+    /* 课堂流水线：步骤条 + 单步内容（与控制台的「提取」面板同构） */
+    #eas-panel .eas-steps {
+      display: flex; margin: 0 0 6px; padding: 0; list-style: none;
+      border: 1px solid #222833; border-radius: 4px; overflow: hidden;
+    }
+    #eas-panel .eas-steps li {
+      flex: 1 1 0; display: flex; align-items: center; gap: 5px;
+      padding: 6px 8px; min-width: 0; cursor: pointer;
+      color: #6d7a8c; font-size: 11px; border-right: 1px solid #222833;
+    }
+    #eas-panel .eas-steps li:last-child { border-right: 0; }
+    #eas-panel .eas-steps li:hover { background: #1b2029; }
+    #eas-panel .eas-steps li b {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; flex: none; border-radius: 50%;
+      font: 700 9px/1 monospace; border: 1px solid #2d3644; color: #6d7a8c;
+    }
+    #eas-panel .eas-steps li .eas-step-note {
+      font-style: normal; color: #6d7a8c; font-size: 10px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    }
+    /* 已走过：可以点回去改 */
+    #eas-panel .eas-steps li[data-state="done"] { color: #a4b0c1; }
+    #eas-panel .eas-steps li[data-state="done"] b { border-color: #2c6b4f; color: #45c07d; }
+    /* 进行中：唯一有强调色的一步 */
+    #eas-panel .eas-steps li[data-state="active"] { color: #dde4ee; font-weight: 600; background: #151a22; }
+    #eas-panel .eas-steps li[data-state="active"] b { background: #31d6a8; border-color: #31d6a8; color: #052b22; }
+    /* 还没轮到 */
+    #eas-panel .eas-steps li[data-state="locked"] b { background: #171c25; border-color: #2d3644; }
+    #eas-panel .eas-step-pane { display: flex; flex-direction: column; gap: 4px; }
+    /* 「一键答题」和「停止」是同一件事的两面：用一条分隔线把它们和选择区分开 */
+    #eas-panel .eas-run-row { margin-top: 8px; padding-top: 8px; border-top: 1px solid #222833; }
     #eas-panel .eas-teach-row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
     #eas-panel .eas-teach-row select { flex: 1; min-width: 0; background: #11151c; color: #dde4ee; border: 1px solid #2d3644; border-radius: 4px; padding: 2px 4px; }
     #eas-panel .eas-teach-list { max-height: 150px; overflow: auto; border: 1px solid #222833; border-radius: 4px; padding: 4px; }
@@ -2771,41 +2865,69 @@
         })
       ]),
       el('div', { className: 'eas-body' }, [
-        el('div', { className: 'eas-mini' }, [
+        // ---- 课堂：读课程 → 选实验 → 选关卡，**一条流水线** ----
+        // 三步是顺序的，同一时刻只有一步是活的。原来三块竖着堆，前两块做完就只剩占地方；
+        // 现在一条步骤指示 + 单步内容，与控制台的「提取」面板同构。
+        el('ol', { className: 'eas-steps', id: 'eas-steps' }, [
+          el('li', { dataset: { step: '0' }, onclick: () => gotoTeachStep(0) }, [
+            el('b', { textContent: '1' }), el('span', { textContent: '课程' }),
+            el('i', { className: 'eas-step-note', id: 'eas-step-note-course' })
+          ]),
+          el('li', { dataset: { step: '1' }, onclick: () => gotoTeachStep(1) }, [
+            el('b', { textContent: '2' }), el('span', { textContent: '实验' }),
+            el('i', { className: 'eas-step-note', id: 'eas-step-note-experiments' })
+          ]),
+          el('li', { dataset: { step: '2' }, onclick: () => gotoTeachStep(2) }, [
+            el('b', { textContent: '3' }), el('span', { textContent: '关卡' }),
+            el('i', { className: 'eas-step-note', id: 'eas-step-note-levels' })
+          ])
+        ]),
+        el('div', { className: 'eas-step-pane', id: 'eas-pane-course' }, [
+          el('div', { className: 'eas-teach-row' }, [
+            el('select', { id: 'eas-teach-course' }),
+            el('button', { textContent: '刷新课程', onclick: refreshTeachCourses })
+          ]),
+          el('div', { className: 'eas-teach-row' }, [
+            el('button', {
+              id: 'eas-teach-load-experiments',
+              className: 'eas-primary',
+              textContent: '读取课程实验 →',
+              onclick: loadTeachExperimentsPanel
+            })
+          ])
+        ]),
+        el('div', { className: 'eas-step-pane', id: 'eas-pane-experiments', hidden: true }, [
+          el('div', { id: 'eas-teach-experiments', className: 'eas-teach-list' }),
+          el('div', { className: 'eas-teach-row' }, [
+            el('button', {
+              id: 'eas-teach-load-levels',
+              className: 'eas-primary',
+              textContent: '读取关卡 →',
+              onclick: loadTeachLevelsPanel
+            })
+          ])
+        ]),
+        el('div', { className: 'eas-step-pane', id: 'eas-pane-levels', hidden: true }, [
+          el('div', { id: 'eas-teach-levels', className: 'eas-teach-list' })
+        ]),
+
+        // 「一键答题」和「停止」是同一件事的两面，放一起。
+        el('div', { className: 'eas-teach-row eas-run-row' }, [
+          el('button', { id: 'eas-teach-run', className: 'eas-primary', textContent: '一键答题（选中）', onclick: () => startTeachRun() }),
           el('button', { id: 'eas-stop', textContent: '停止', onclick: requestStop }),
-          el('button', { textContent: '从本地拉答案', onclick: pullFromLocal }),
+          el('button', { id: 'eas-teach-missing', textContent: '按清单再答', onclick: () => startMissingRun() })
+        ]),
+        el('div', { id: 'eas-teach-status', className: 'eas-row', textContent: '未开始' }),
+
+        el('div', { className: 'eas-mini' }, [
+          el('button', { id: 'eas-pull', textContent: '从本地拉答案', onclick: pullFromLocal }),
           // 「设置本地地址」从面板移走：端口已固定，这是**一次性**配置，
           // 留在面板上只是每次都在那儿占位置。篡改猴菜单里仍有入口。
-          // 单个关卡的「导出标准答案」同理（被「导出本实验全部」覆盖，含当前关）。
-          el('button', { textContent: '导出本实验全部答案', onclick: exportExperimentAnswers })
-        ]),
-        el('div', { className: 'eas-teach' }, [
-          el('div', { className: 'eas-teach-hd' }, [
-            el('b', { textContent: '课堂' })
-          ]),
-          el('div', { id: 'eas-teach-body' }, [
-            el('div', { className: 'eas-teach-row' }, [
-              el('select', { id: 'eas-teach-course' }),
-              el('button', { textContent: '刷新课程', onclick: refreshTeachCourses }),
-              el('button', { textContent: '读取课程实验', onclick: loadTeachExperimentsPanel })
-            ]),
-            el('div', { id: 'eas-teach-experiments', className: 'eas-teach-list' }),
-            el('div', { className: 'eas-teach-row' }, [
-              el('button', { textContent: '读取关卡', onclick: loadTeachLevelsPanel })
-            ]),
-            el('div', { id: 'eas-teach-levels', className: 'eas-teach-list' }),
-            el('div', { className: 'eas-teach-row' }, [
-              el('button', { id: 'eas-teach-run', className: 'eas-primary', textContent: '一键答题（选中）', onclick: () => startTeachRun() }),
-              el('button', { id: 'eas-teach-missing', textContent: '按清单再答', onclick: () => startMissingRun() })
-            ]),
-            el('div', { id: 'eas-teach-status', className: 'eas-row', textContent: '未开始' })
-          ])
+          el('button', { id: 'eas-export-answers', textContent: '导出本实验全部答案', onclick: exportExperimentAnswers }),
+          el('button', { id: 'eas-export-logs', textContent: '导出日志到本地', onclick: exportLogs })
         ]),
         el('div', { className: 'eas-opts' }, [
           numberOption('评测最多等（秒，页面读不到才用）', 'evalWaitSeconds', { min: 1, max: 300, fallback: 30 })
-        ]),
-        el('div', { className: 'eas-mini' }, [
-          el('button', { textContent: '导出日志到本地', onclick: exportLogs })
         ]),
         el('div', { id: 'eas-log-status', className: 'eas-row', style: 'color:#6d7a8c' }),
         el('div', { id: 'eas-log' })
