@@ -2869,15 +2869,19 @@
         // 三步是顺序的，同一时刻只有一步是活的。原来三块竖着堆，前两块做完就只剩占地方；
         // 现在一条步骤指示 + 单步内容，与控制台的「提取」面板同构。
         el('ol', { className: 'eas-steps', id: 'eas-steps' }, [
-          el('li', { dataset: { step: '0' }, onclick: () => gotoTeachStep(0) }, [
+          // 注意：**不要**往 el() 的 props 里塞 dataset。
+          // el() 是 Object.assign(node, props)，而真实 DOM 的 dataset 只有 getter，
+          // 严格模式下赋值会抛 TypeError，把 buildPanel 整条打断（面板直接不出现）。
+          // 步骤序号用闭包传（gotoTeachStep 的实参），状态由 renderTeachSteps 统一刷。
+          el('li', { onclick: () => gotoTeachStep(0) }, [
             el('b', { textContent: '1' }), el('span', { textContent: '课程' }),
             el('i', { className: 'eas-step-note', id: 'eas-step-note-course' })
           ]),
-          el('li', { dataset: { step: '1' }, onclick: () => gotoTeachStep(1) }, [
+          el('li', { onclick: () => gotoTeachStep(1) }, [
             el('b', { textContent: '2' }), el('span', { textContent: '实验' }),
             el('i', { className: 'eas-step-note', id: 'eas-step-note-experiments' })
           ]),
-          el('li', { dataset: { step: '2' }, onclick: () => gotoTeachStep(2) }, [
+          el('li', { onclick: () => gotoTeachStep(2) }, [
             el('b', { textContent: '3' }), el('span', { textContent: '关卡' }),
             el('i', { className: 'eas-step-note', id: 'eas-step-note-levels' })
           ])

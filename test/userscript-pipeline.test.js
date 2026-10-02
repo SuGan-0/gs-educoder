@@ -30,7 +30,6 @@ function boot() {
       className: '',
       children: [],
       attrs: {},
-      dataset: {},
       style: {},
       textContent: '',
       hidden: false,
@@ -63,6 +62,13 @@ function boot() {
       },
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 380, height: 600 })
     };
+    // dataset 必须是**只读**的（真实 DOM 里只有 getter）。
+    // 写成普通可写属性会掩盖「el(tag, { dataset: {...} }) 在严格模式下抛 TypeError」这类 bug——
+    // 那个 bug 曾让整个面板不出现，而测试全绿。
+    Object.defineProperty(node, 'dataset', {
+      enumerable: true,
+      get() { return (this.__dataset ||= {}); }
+    });
     created.push(node);
     return node;
   };
@@ -197,4 +203,66 @@ test('课堂流水线：跳不到还没走到的步骤', () => {
   third.onclick();
   assert.equal(third.dataset.state, 'locked', '跳不过去，仍停在第一步');
   assert.equal(bar.children[0].dataset.state, 'active');
+});
+
+/** 扫出所有 `el('tag', { ... })` 的顶层属性名。 */
+function elementPropNames(source) {
+  const names = new Set();
+  const opener = /el\(\s*'[a-z0-9]+'\s*,\s*\{/g;
+  let match;
+  while ((match = opener.exec(source))) {
+    let index = match.index + match[0].length - 1;
+    let depth = 0;
+    let end = index;
+    for (; end < source.length; end += 1) {
+      if (source[end] === '{') depth += 1;
+      else if (source[end] === '}') {
+        depth -= 1;
+        if (!depth) break;
+      }
+    }
+    const body = source.slice(index + 1, end);
+    let nest = 0;
+    let current = '';
+    for (const char of body) {
+      if ('{(['.includes(char)) nest += 1;
+      else if ('})]'.includes(char)) nest -= 1;
+      if (char === ',' && nest === 0) {
+        current = '';
+        continue;
+      }
+      current += char;
+    }
+    for (const part of body.split(/,(?![^(\[{]*[)\]}])/)) {
+      const key = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(part);
+      if (key) names.add(key[1]);
+    }
+  }
+  return names;
+}
+
+test('篡改猴脚本：el() 的 props 里不许出现只读的 DOM 属性（面板消失过一次）', () => {
+  // el() 是 `Object.assign(node, props)`。真实 DOM 上 dataset / classList 这类
+  // **只有 getter**，严格模式下赋值会抛 TypeError，把 buildPanel 整条打断——
+  // 表现就是「面板直接不出现」。这个 bug 真发生过一次，而当时的测试全绿
+  // （假 DOM 把 dataset 写成了普通可写属性）。
+  const readonly = [
+    'dataset', 'classList', 'attributes', 'children', 'parentNode', 'parentElement',
+    'ownerDocument', 'firstChild', 'lastChild', 'nextSibling', 'previousSibling',
+    'nodeName', 'nodeType', 'tagName', 'offsetParent'
+  ];
+  const used = elementPropNames(SOURCE);
+  const offenders = readonly.filter((name) => used.has(name));
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些属性只能创建后再赋（严格模式下赋值会抛错）：${offenders.join(', ')}`
+  );
+
+  // 上面那条断言成立的前提：el() 确实用 Object.assign 套 props
+  assert.match(
+    SOURCE,
+    /function el\(tag, props = \{\}, children = \[\]\) \{[\s\S]{0,80}?Object\.assign\(node, props\)/,
+    'el() 应当是 createElement + Object.assign'
+  );
 });

@@ -37,7 +37,6 @@ function boot({ pathname = '/tasks/HCEAP94S/3965745/vrtbzlmexi3f', gm = {}, requ
       children: [],
       attrs: {},
       style: {},
-      dataset: {},
       textContent: '',
       hidden: false,
       append(...items) { this.children.push(...items); return this; },
@@ -73,6 +72,12 @@ function boot({ pathname = '/tasks/HCEAP94S/3965745/vrtbzlmexi3f', gm = {}, requ
       },
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 380, height: 600 })
     };
+    // dataset 必须是**只读**的（真实 DOM 里只有 getter）。
+    // 写成普通可写属性会掩盖「el(tag, { dataset: {...} }) 在严格模式下抛 TypeError」这类 bug。
+    Object.defineProperty(node, 'dataset', {
+      enumerable: true,
+      get() { return (this.__dataset ||= {}); }
+    });
     created.push(node);
     return node;
   };
