@@ -2778,35 +2778,43 @@
     #eas-panel .eas-opts { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid #222833; padding-top: 6px; }
     #eas-panel .eas-opt { display: flex; align-items: center; gap: 6px; color: #a4b0c1; cursor: pointer; }
     #eas-panel .eas-opt input { margin: 0; }
-    /* 课堂流水线：步骤条 + 单步内容（与控制台的「提取」面板同构） */
+    /* 课堂流水线：步骤条 + 单步内容（与控制台的「提取」面板同构）
+       —— 三项**必须在一行**，且字不能被裁：给足内边距、nowrap + 省略号。 */
     #eas-panel .eas-steps {
-      display: flex; margin: 0 0 6px; padding: 0; list-style: none;
-      border: 1px solid #222833; border-radius: 4px; overflow: hidden;
+      display: flex; margin: 0 0 9px; padding: 0; list-style: none;
+      border: 1px solid #2d3644; border-radius: 4px; overflow: hidden;
+      background: #151a22;
     }
     #eas-panel .eas-steps li {
-      flex: 1 1 0; display: flex; align-items: center; gap: 5px;
-      padding: 6px 8px; min-width: 0; cursor: pointer;
-      color: #6d7a8c; font-size: 11px; border-right: 1px solid #222833;
+      flex: 1 1 0; display: flex; align-items: center; gap: 6px;
+      padding: 9px 10px; min-width: 0; cursor: pointer;
+      color: #8b98a9; font-size: 11px; border-right: 1px solid #222833;
+      white-space: nowrap;
     }
     #eas-panel .eas-steps li:last-child { border-right: 0; }
     #eas-panel .eas-steps li:hover { background: #1b2029; }
+    /* 标签本身也要能省略：否则长课程名会把「课程」两字挤出可视区，
+       看着就像这一项被「半隐藏」了。 */
+    #eas-panel .eas-steps li > span { overflow: hidden; text-overflow: ellipsis; }
     #eas-panel .eas-steps li b {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 16px; height: 16px; flex: none; border-radius: 50%;
-      font: 700 9px/1 monospace; border: 1px solid #2d3644; color: #6d7a8c;
+      width: 18px; height: 18px; flex: none; border-radius: 50%;
+      font: 700 10px/1 monospace; border: 1px solid #3a465a; color: #8b98a9;
     }
     #eas-panel .eas-steps li .eas-step-note {
-      font-style: normal; color: #6d7a8c; font-size: 10px;
+      font-style: normal; color: #7c8a9c; font-size: 10px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
     }
     /* 已走过：可以点回去改 */
-    #eas-panel .eas-steps li[data-state="done"] { color: #a4b0c1; }
+    #eas-panel .eas-steps li[data-state="done"] { color: #c3ccd9; }
     #eas-panel .eas-steps li[data-state="done"] b { border-color: #2c6b4f; color: #45c07d; }
     /* 进行中：唯一有强调色的一步 */
-    #eas-panel .eas-steps li[data-state="active"] { color: #dde4ee; font-weight: 600; background: #151a22; }
+    #eas-panel .eas-steps li[data-state="active"] { color: #f0f4fa; font-weight: 600; background: #1d2430; }
     #eas-panel .eas-steps li[data-state="active"] b { background: #31d6a8; border-color: #31d6a8; color: #052b22; }
-    /* 还没轮到 */
-    #eas-panel .eas-steps li[data-state="locked"] b { background: #171c25; border-color: #2d3644; }
+    #eas-panel .eas-steps li[data-state="active"] .eas-step-note { color: #31d6a8; }
+    /* 还没轮到：压暗但仍看得清（原来太暗，整条看着像被隐藏了） */
+    #eas-panel .eas-steps li[data-state="locked"] { color: #6d7a8c; }
+    #eas-panel .eas-steps li[data-state="locked"] b { background: #1b2029; border-color: #2d3644; color: #6d7a8c; }
     #eas-panel .eas-step-pane { display: flex; flex-direction: column; gap: 4px; }
     /* 「一键答题」和「停止」是同一件事的两面：用一条分隔线把它们和选择区分开 */
     #eas-panel .eas-run-row { margin-top: 8px; padding-top: 8px; border-top: 1px solid #222833; }

@@ -266,3 +266,22 @@ test('篡改猴脚本：el() 的 props 里不许出现只读的 DOM 属性（面
     'el() 应当是 createElement + Object.assign'
   );
 });
+
+test('步骤条：三项必须在一行、不许被裁、不许太暗', () => {
+  // 纯视觉问题只能用「关键属性」来守。曾经三项又矮又暗，看着像「半隐藏」。
+  const item = /#eas-panel \.eas-steps li \{([^}]*)\}/.exec(SOURCE);
+  assert.ok(item, '要有步骤条 li 的样式');
+  const body = item[1];
+  assert.match(body, /flex: 1 1 0;/, '三项等分，才能占满一行');
+  assert.match(body, /min-width: 0;/, '允许收缩，否则长文本会撑破容器');
+  assert.match(body, /white-space: nowrap;/, '不许换行——换行就不是一行了');
+  assert.doesNotMatch(body, /\bheight:/, '高度靠 padding 撑；写死高度就会裁字');
+
+  // 标签与摘要都要能省略，否则长课程名会把「课程」两字挤出可视区
+  assert.match(SOURCE, /#eas-panel \.eas-steps li > span \{ overflow: hidden; text-overflow: ellipsis; \}/, '标签要能省略');
+  assert.match(SOURCE, /\.eas-step-note \{[^}]*text-overflow: ellipsis;/, '摘要要能省略');
+
+  // 未轮到的那两步不能暗到看不见（原来的 #6d7a8c 太暗）
+  assert.match(SOURCE, /\.eas-steps li\[data-state="locked"\] \{ color: #6d7a8c; \}/, 'locked 用可读的灰');
+  assert.match(SOURCE, /\.eas-steps li\[data-state="active"\] \{[^}]*color: #f0f4fa;/, 'active 要高对比');
+});
