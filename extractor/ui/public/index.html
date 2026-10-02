@@ -757,24 +757,21 @@
   /* 折叠态：只留标题行，进度仍可从标题栏徽章（badge-answer）读出 */
   .panel.folded .answer-body { display: none; }
   .answer-body { padding: 12px 13px; display: flex; flex-direction: column; gap: 11px; }
-  .answer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .answer-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-  .answer-field-wide { grid-column: 1 / -1; }
-  .answer-input {
-    font: 12px/1.4 var(--mono);
-    color: var(--fg);
-    background: var(--raise);
-    border: 1px solid var(--line-2);
-    border-radius: 3px;
-    padding: 8px 10px;
-    min-width: 0;
-    transition: border-color .12s ease, box-shadow .12s ease;
+  /* 只读的「当前模型」一行：AI 配置在 .env 里，界面不收集、只显示。 */
+  .answer-model {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-size: 12px;
   }
-  .answer-input:focus-visible {
-    outline: none;
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(36, 71, 224, .14);
-  }
+  .answer-model[data-state="unset"] { background: var(--warn-bg); border-color: var(--warn-line); }
+  .answer-model[data-state="unset"] .mono { color: var(--warn-fg); }
+
   .answer-pickers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .answer-col {
     display: flex;
@@ -876,7 +873,6 @@
     .btn { box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
     .btn-primary { box-shadow: 0 2px 0 #3d55c4; }
     .btn-primary:active:not(:disabled) { box-shadow: 0 1px 0 #3d55c4; }
-    .answer-input:focus-visible { box-shadow: 0 0 0 3px rgba(122, 150, 255, .22); }
     /* 纸面方格在深色下几乎看不见，稍提一点透明度保留质感 */
     body { background-image:
       linear-gradient(var(--grid-line) 1px, transparent 1px),
@@ -1086,19 +1082,12 @@
             <br><b>真正的自动答题与提交，在头歌关卡页上的篡改猴面板里点「一键答题（选中）」</b>——控制台这边没有也不会有提交按钮。
           </p>
 
-          <div class="answer-grid">
-            <div class="answer-field">
-              <label class="hint" for="answer-base">模型接口（OpenAI 兼容）</label>
-              <input class="answer-input mono" id="answer-base" type="text" placeholder="https://api.deepseek.com/v1" autocomplete="off">
-            </div>
-            <div class="answer-field">
-              <label class="hint" for="answer-model">模型</label>
-              <input class="answer-input mono" id="answer-model" type="text" placeholder="deepseek-chat" autocomplete="off">
-            </div>
-            <div class="answer-field answer-field-wide">
-              <label class="hint" for="answer-key">API Key（只存在本进程内存里，不落盘、不进日志）</label>
-              <input class="answer-input mono" id="answer-key" type="password" placeholder="sk-..." autocomplete="off">
-            </div>
+          <!-- 模型与 Key 都在 .env 里配（EDUCODER_AI_*），界面上只显示当前用的是哪个模型。
+               界面上填的凭据只活在进程内存里、关掉就没了，每次都要重填——那才是真的烦。 -->
+          <div class="answer-model" id="answer-model-line">
+            <span class="sb-k">模型</span>
+            <span class="mono" id="answer-model-name">读取中…</span>
+            <span class="hint" id="answer-model-note"></span>
           </div>
 
           <div class="answer-pickers">
@@ -2565,6 +2554,18 @@
         ? '已完成：' + done + ' / ' + total + ' 个实验' + (answer.message ? '｜' + answer.message : '')
         : '尚未开始';
 
+    // 当前用的是哪个模型：服务端从 .env 读出来给界面（**不含 Key**）。
+    // 界面只显示、不收集——配置在 .env 里改一次就够。
+    var ai = state.ai || {};
+    var modelLine = $('answer-model-line');
+    if (modelLine) {
+      modelLine.dataset.state = ai.configured ? '' : 'unset';
+      $('answer-model-name').textContent = ai.configured ? (ai.model || '—') : '未配置';
+      $('answer-model-note').textContent = ai.configured
+        ? '接口 ' + (ai.baseUrl || '—') + '｜改模型：.env 的 EDUCODER_AI_MODEL'
+        : '在仓库根的 .env 里加一行 EDUCODER_AI_KEY=sk-... 即可（模板见 .env.example）';
+    }
+
     // 提示按状态给「下一步该做什么」。原来两种状态写的是同一句话，等于没提示。
     $('answer-note').textContent = running
       ? '答案逐实验写入 exports/answers/，等全部结束再去篡改猴拉取，避免拉到一半。'
@@ -2604,8 +2605,8 @@
     if (!course) { toast('请先选择课程', 'error'); return; }
     var experiments = Array.from(answerSel.experiments);
     if (!experiments.length) { toast('请至少选择一个实验', 'error'); return; }
-    var apiKey = $('answer-key').value.trim();
-    if (!apiKey) { toast('请填写 API Key', 'error'); return; }
+    // Key 与模型都在 .env 里（EDUCODER_AI_*），界面不收集。
+    // 没配的话服务端会明确报「还没配 API Key」，不用在这里预判。
     // 关卡：只在「选了部分关卡」时才限定；全不选 = 该实验全部关卡
     var levels = null;
     var merged = [];
@@ -2624,10 +2625,7 @@
           token: TOKEN,
           course: course.name,
           experiments: experiments,
-          levels: levels,
-          apiKey: apiKey,
-          baseUrl: $('answer-base').value.trim() || undefined,
-          model: $('answer-model').value.trim() || undefined
+          levels: levels
         })
       });
       var payload = await response.json();
@@ -2670,7 +2668,9 @@
     }
     var saved = '';
     try { saved = localStorage.getItem('answerFolded') || ''; } catch (error) { /* 无痕/禁存储时降级为不记忆 */ }
-    apply(saved === '1');
+    // **默认收起**：AI 作答是「偶尔跑一次」的操作，展开着白占半屏、把别的面板顶下去。
+    // 用户手动展开过（存了 '0'）才展开——即「没存过」和「存了 1」都收起。
+    apply(saved !== '0');
     button.addEventListener('click', function () {
       var folded = !panel.classList.contains('folded');
       apply(folded);

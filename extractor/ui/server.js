@@ -23,6 +23,7 @@ const { spawn } = require('node:child_process');
 const { mergeAnswer } = require('../lib/answer-store');
 const fmt = require('../lib/answer-format');
 const { signingKeysEncoded, SIGNING_VERSION, MISSING_KEYS_HINT } = require('../lib/educoder-sign');
+const { describeAiConfig, MISSING_KEY_HINT: AI_MISSING_KEY_HINT } = require('../lib/ai-config');
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
@@ -322,7 +323,16 @@ function errorStatus(error) {
  * @returns {Promise<{ url: string, port: number, close(): Promise<void>,
  *   emit(evt: object): number, getSnapshot(): object, setSnapshot(patch: object): object }>}
  */
-async function startUiServer({ port = 0, token: tokenOption = '', onControl, onAnswerRun, onAnswerStop, open = true } = {}) {
+async function startUiServer({
+  port = 0,
+  token: tokenOption = '',
+  onControl,
+  onAnswerRun,
+  onAnswerStop,
+  /** 取「当前 AI 配置」的函数：只用于显示模型名与判断配没配，不含 Key。 */
+  aiConfig,
+  open = true
+} = {}) {
   // token 默认随机。调用方可以给一个**稳定值**（见 run.js 的持久化 token）：
   // 地址每次重启都变的话，篡改猴里配好的地址就失效了，用户被迫反复重配。
   // 稳定性不牺牲安全性——token 仍然不进仓库、不进日志。
@@ -660,7 +670,10 @@ async function startUiServer({ port = 0, token: tokenOption = '', onControl, onA
     if (pathname === '/api/state') {
       if (method !== 'GET') return sendJson(res, 405, { ok: false, error: '方法不允许' });
       if (!isAuthorized(req, requestUrl, null)) return deny(res);
-      return sendJson(res, 200, cloneSnapshot(snapshot));
+      // 带上「当前用的是哪个 AI 模型」——界面只显示模型与「配没配」，
+      // 不含 Key（describeAiConfig 保证）。AI 配置本身在 .env 里，界面不收集。
+      const ai = typeof aiConfig === 'function' ? aiConfig() : describeAiConfig();
+      return sendJson(res, 200, { ...cloneSnapshot(snapshot), ai });
     }
 
     if (pathname === '/api/events') {
@@ -697,17 +710,13 @@ async function startUiServer({ port = 0, token: tokenOption = '', onControl, onA
       const experiments = Array.isArray(payload.experiments) ? payload.experiments.map(String).filter(Boolean) : [];
       const levels = Array.isArray(payload.levels) ? payload.levels.map(String).filter(Boolean) : null;
       if (!course || !experiments.length) return sendJson(res, 400, { ok: false, error: '请指定课程与至少一个实验' });
-      if (!payload.apiKey) return sendJson(res, 400, { ok: false, error: '缺少 API Key（在「AI 作答」面板里填一次即可）' });
-      runAnswerJob(() =>
-        onAnswerRun({
-          course,
-          experiments,
-          levels,
-          apiKey: payload.apiKey,
-          baseUrl: payload.baseUrl,
-          model: payload.model
-        })
-      ).catch(() => {});
+      // 接口/模型/Key 一律由外壳从 .env 读（见 run.js 的 resolveAiConfig）。
+      // 这里**不再接收**客户端传来的凭据——界面上填的只活在内存里，关掉就没了。
+      const ai = typeof aiConfig === 'function' ? aiConfig() : describeAiConfig();
+      if (ai && ai.configured === false) {
+        return sendJson(res, 400, { ok: false, error: AI_MISSING_KEY_HINT });
+      }
+      runAnswerJob(() => onAnswerRun({ course, experiments, levels })).catch(() => {});
       return sendJson(res, 200, { ok: true, started: true, course, experiments });
     }
 

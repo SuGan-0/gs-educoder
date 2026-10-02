@@ -1040,20 +1040,29 @@ test('run.js --ui：AI 作答接口（列出目标 / 启动 / 错误落进快照
   assert.equal(targets.courses[0].experiments[0].name, '实验B');
   assert.deepEqual(targets.courses[0].experiments[0].levels.map((level) => level.id), ['L001']);
 
+  // AI 的 Key 现在只从 .env / 环境变量读，请求体里带什么都不算数。
   const missingKey = await fetch(`${base}/api/answer/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, course: '课程A', experiments: ['实验B'] })
   });
-  assert.equal(missingKey.status, 400, '缺 API Key 要 400');
+  assert.equal(missingKey.status, 400, '没配 Key 要 400');
   assert.match((await missingKey.json()).error, /API Key/);
 
-  // 启动一次（会因为没有存档而失败，但整条链路要跑通并把错误落进快照）
+  // 配上一个假 Key 再启动（会因为没有存档而失败，但整条链路要跑通并把错误落进快照）
+  const savedAiKey = process.env.EDUCODER_AI_KEY;
+  process.env.EDUCODER_AI_KEY = 'test-key';
+  t.after(() => {
+    if (savedAiKey === undefined) delete process.env.EDUCODER_AI_KEY;
+    else process.env.EDUCODER_AI_KEY = savedAiKey;
+  });
+
   const started = await fetch(`${base}/api/answer/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, course: '课程A', experiments: ['不存在的实验'], apiKey: 'test-key' })
-  });  assert.equal(started.status, 200);
+    body: JSON.stringify({ token, course: '课程A', experiments: ['不存在的实验'] })
+  });
+  assert.equal(started.status, 200);
   assert.equal((await started.json()).started, true);
 
   const deadline = Date.now() + 10000;
@@ -1095,4 +1104,80 @@ test('run.js --ui：select-course 使用无效 id 时返回 4xx', async (t) => {
   const payload = await response.json();
   assert.equal(payload.ok, false);
   assert.ok(payload.error);
+});
+
+test('run.js --ui：AI 配置只显示模型，绝不回显 Key', async (t) => {
+  // 临时给一份「假的 Key」，验证它只用于判断「配没配」，不会流到界面上。
+  const savedKey = process.env.EDUCODER_AI_KEY;
+  const savedModel = process.env.EDUCODER_AI_MODEL;
+  process.env.EDUCODER_AI_KEY = 'sk-probe-secret-value';
+  process.env.EDUCODER_AI_MODEL = 'probe-model';
+  t.after(() => {
+    if (savedKey === undefined) delete process.env.EDUCODER_AI_KEY; else process.env.EDUCODER_AI_KEY = savedKey;
+    if (savedModel === undefined) delete process.env.EDUCODER_AI_MODEL; else process.env.EDUCODER_AI_MODEL = savedModel;
+  });
+
+  const fake = createFakePlaywright();
+  const restoreApi = installFakeApi();
+  const { runUi } = freshRunModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
+  t.after(async () => {
+    await server.close().catch(() => {});
+  });
+
+  const url = new URL(server.url);
+  const token = url.searchParams.get('token');
+  const base = `${url.protocol}//${url.host}`;
+
+  const response = await fetch(`${base}/api/state?token=${token}`);
+  const state = await response.json();
+  assert.ok(state.ai, '/api/state 要带上当前 AI 配置');
+  assert.equal(state.ai.model, 'probe-model', '要能显示当前用的模型');
+  assert.equal(state.ai.configured, true, '配了 Key 就是已配置');
+
+  const text = JSON.stringify(state);
+  assert.ok(!text.includes('sk-probe-secret-value'), '状态里绝不能出现 Key');
+  assert.ok(!/sk-/.test(text), '连 sk- 前缀都不该出现');
+});
+
+test('run.js --ui：没配 AI Key 时明确报错，而不是含糊失败', async (t) => {
+  const savedKey = process.env.EDUCODER_AI_KEY;
+  delete process.env.EDUCODER_AI_KEY;
+  t.after(() => {
+    if (savedKey !== undefined) process.env.EDUCODER_AI_KEY = savedKey;
+  });
+
+  const fake = createFakePlaywright();
+  const restoreApi = installFakeApi();
+  const { runUi } = freshRunModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
+  t.after(async () => {
+    await server.close().catch(() => {});
+  });
+
+  const url = new URL(server.url);
+  const token = url.searchParams.get('token');
+  const base = `${url.protocol}//${url.host}`;
+
+  const state = await (await fetch(`${base}/api/state?token=${token}`)).json();
+  assert.equal(state.ai.configured, false, '没 Key 就该是未配置');
+
+  const response = await fetch(`${base}/api/answer/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, course: '示例课程A', experiments: ['CNN'] })
+  });
+  assert.equal(response.status, 400);
+  const payload = await response.json();
+  assert.match(payload.error, /EDUCODER_AI_KEY/, '要指出该去 .env 里填哪个键');
 });

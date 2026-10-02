@@ -5,6 +5,11 @@ const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
 
 const { ExtractEngine, DEFAULT_EXPORT_ROOT, DEFAULT_PROFILE_DIR } = require('./lib/extract-engine');
+const {
+  resolveAiConfig,
+  describeAiConfig,
+  MISSING_KEY_HINT: AI_MISSING_KEY_HINT
+} = require('./lib/ai-config');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_NETWORK_LOG = path.join(ROOT, '.educoder-network.jsonl');
@@ -35,6 +40,7 @@ function networkLogPath() {
 function outputRoot() {
   return process.env.EDUCODER_EXPORT_ROOT || DEFAULT_EXPORT_ROOT;
 }
+
 
 /**
  * 控制台监听的端口。
@@ -383,13 +389,18 @@ async function runUi(options = {}) {
     onControl,
     // AI 作答：真正的模型调用放在外壳里，服务端只管进度与快照。
     // dispatch 参数（isStopped/report/log）都由服务端提供；缺省时退化成「不报进度」，不抛错。
-    onAnswerRun: async ({ course, experiments, levels, apiKey, baseUrl, model, isStopped, report, log } = {}) => {
+    // AI 配置（接口 / 模型 / Key）一律来自 .env，不接界面传值——
+    // 界面上填的只活在进程内存里、关掉就没了，每次都要重填。
+    aiConfig: () => describeAiConfig(),
+    onAnswerRun: async ({ course, experiments, levels, isStopped, report, log } = {}) => {
       const { answerExperiment } = require('./lib/answerer');
+      const ai = resolveAiConfig();
+      if (!ai.apiKey) throw new Error(AI_MISSING_KEY_HINT);
       const stopped = typeof isStopped === 'function' ? isStopped : () => false;
       const report2 = typeof report === 'function' ? report : () => {};
       const log2 = typeof log === 'function' ? log : (message) => console.log(message);
       report2({ course, total: experiments.length });
-      log2(`开始 AI 作答：${course}（${experiments.length} 个实验）`);
+      log2(`开始 AI 作答：${course}（${experiments.length} 个实验），模型 ${ai.model}`);
       const results = [];
       let done = 0;
       for (const experiment of experiments) {
@@ -400,9 +411,9 @@ async function runUi(options = {}) {
             exportRoot: outputRoot(),
             course,
             experiment,
-            apiKey,
-            baseUrl,
-            model,
+            apiKey: ai.apiKey,
+            baseUrl: ai.baseUrl,
+            model: ai.model,
             onlyLevelIds: levels,
             log: log2
           });

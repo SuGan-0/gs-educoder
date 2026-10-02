@@ -266,7 +266,7 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 | 控件 | 作用 |
 | --- | --- |
 | **刷新产物** | 重扫 `exports/`，列出可作答的课程/实验/关卡，并显示每个实验「已有答案几关」 |
-| 模型接口 / 模型 / API Key | 任何 OpenAI 兼容的 `/chat/completions`；默认 `https://api.deepseek.com/v1` + `deepseek-chat` |
+| 当前模型（只读） | 显示用的是哪个模型。**接口与 API Key 在 `.env` 里配**（`EDUCODER_AI_*`），界面上不填——界面上填的只活在内存里、关掉就没了 |
 | **开始 AI 作答** | 逐实验把 `实验.md` 交给模型，答案写进 `exports/answers/`，并在面板里显示覆盖度与待修问题 |
 | 停止 | 停掉正在跑的 AI 作答任务 |
 
@@ -289,11 +289,12 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 
 ### 路 A：AI 生成
 
-控制台「AI 作答」面板：选课程/实验/关卡 → 填模型接口、模型名、API Key → 开始。
+先在 `.env` 里配好模型（`EDUCODER_AI_BASE_URL` / `EDUCODER_AI_MODEL` / `EDUCODER_AI_KEY`，见 [.env.example](.env.example)），
+然后在控制台「AI 作答」面板：选课程/实验/关卡 → 开始。
 逐实验把 `实验.md` 交给 OpenAI 兼容的 `/chat/completions`（默认
 `https://api.deepseek.com/v1` + `deepseek-chat`，任何兼容接口都行），答案写到
 `exports/answers/{班级}（{课堂码}）/{实验}.answers.json`，并立刻自校验（覆盖度、题型、
-选项字母越界、占位代码）。API Key 只存在控制台进程内存里，不落盘不进日志。
+选项字母越界、占位代码）。API Key 只从 `.env` 读，不进仓库、不进日志，控制台界面也从不回显它。
 
 写入走**合并**而不是重写：同一 `level_id` 覆盖，其它关卡原样保留，
 所以只重答一关不会把人工改过的答案抹掉。
