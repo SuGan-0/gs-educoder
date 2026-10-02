@@ -812,6 +812,21 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   assert.equal(storedAnswers.answers[0].source, 'platform');
   assert.equal(storedAnswers.answers[0].verified, true, '提交通过才回传，属于已验证');
 
+  // 升级到 v2 之后，旧位置的扁平/实验目录答案文件**不会自动消失**。
+  // 两份都读进来时 v2 必须优先——否则旧快照会把刚写进去的新答案盖回去。
+  // 这里旧文件里 L002 只有第 1 问（['A']），v2 里是两问，正好能区分。
+  const afterSave = await (await fetch(`${base}/api/answers?token=${token}`)).json();
+  assert.deepEqual(
+    afterSave.answers['课程__实验A__L002'].answer.questions,
+    [{ number: 1, selected: ['A'] }, { number: 2, selected: ['B'] }],
+    'L002 必须取 v2 里的新版，而不是旧文件里的快照'
+  );
+  assert.equal(
+    afterSave.answers['课程__实验A__L001'].answer.code,
+    'print(1)',
+    '只存在于旧文件里的关卡仍要能读到（兼容不能丢）'
+  );
+
   // 标识对不上时的兜底：平台重新发布实验会换掉一整组关卡标识（本地 kbfiscelzp9a、
   // 页面 v4nyrg6lex7q 这种）。此时脚本带上关卡名，控制台按内容匹配回正确的关卡。
   const byTitle = await fetch(`${base}/api/answer/save?token=${token}`, {

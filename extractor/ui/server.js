@@ -1038,7 +1038,15 @@ async function collectAnswers() {
    * 每条答案都带上 `classroomCode`：**篡改猴靠它核对班级**，
    * 拿不到码就只靠名称匹配——而名称会重名，这正是要修的坑。
    */
-  const readAnswerFile = async (full) => {
+  /**
+   * 已经由 **v2 位置**供过答案的复合键。
+   *
+   * 升级到「按班级分目录」之后，旧位置的扁平文件不会自动消失。若两份都读进来，
+   * 旧的会把已经改过的答案又盖回去（旧文件里是升级前的快照）。所以 v2 一律优先。
+   */
+  const servedByV2 = new Set();
+
+  const readAnswerFile = async (full, { legacy = false } = {}) => {
     const rel = path.relative(root, full).split(path.sep);
     const inClassDir = rel.length >= 3 && rel[0] === 'answers';
     const dirName = inClassDir ? rel[1] : '';
@@ -1079,10 +1087,14 @@ async function collectAnswers() {
       // 用「班级__实验__level_id」做键：level_id（L001）只在单个实验内唯一，
       // 多个实验聚合到同一个 answers 对象时会互相覆盖（实测两个实验的 L001 打架，
       // 后遍历的答案把先遍历的盖掉，用户在关卡页上会拿到别实验的答案）。
+      const composite = compositeKey(classroom.name, experiment, key);
+      // v2 位置优先：旧位置残留的文件里是升级前的快照，不能反过来盖掉新答案。
+      if (servedByV2.has(composite) && legacy) continue;
+      if (!legacy) servedByV2.add(composite);
       // 吐给篡改猴的形状**与磁盘上的 v2 结构完全一致**（`answer: {language, code}` /
       // `answer: {questions: [...]}`），只额外补上班级上下文。少一层转换就少一处
       // 「服务端与脚本理解不一致」的坑。
-      answers[compositeKey(classroom.name, experiment, key)] = {
+      answers[composite] = {
         ...fmt.toDocumentEntry(entry),
         course: classroom.name,
         classroomName: classroom.name,
@@ -1097,12 +1109,12 @@ async function collectAnswers() {
   // ① 规范位置：exports/answers/（含按班级分的子目录）
   const answerDir = path.join(root, 'answers');
   const seen = new Set();
-  const collectAnswerFile = async (full) => {
+  const collectAnswerFile = async (full, { legacy = false } = {}) => {
     if (seen.has(full)) return;
     seen.add(full);
     files.push(path.relative(root, full));
     try {
-      const result = await readAnswerFile(full);
+      const result = await readAnswerFile(full, { legacy });
       if (result) experiments.push(result);
     } catch {
       /* 单个文件坏了不影响其它文件 */
@@ -1138,7 +1150,8 @@ async function collectAnswers() {
       if (entry.name === 'submit.blueprint.json') {
         blueprints.push({ path: path.relative(root, full), ...JSON.parse(await fs.readFile(full, 'utf8')) });
       } else if (/\.answers\.json$/.test(entry.name)) {
-        const result = await readAnswerFile(full);
+        // 直接摆在 answers/ 下的扁平文件属于旧位置 → 让位于 v2
+        const result = await readAnswerFile(full, { legacy: true });
         if (result) experiments.push(result);
       }
     } catch {
@@ -1269,7 +1282,8 @@ async function collectAnswers() {
         if (child.name === 'submit.blueprint.json') {
           blueprints.push({ path: path.relative(root, full), ...JSON.parse(await fs.readFile(full, 'utf8')) });
         } else {
-          experiments.push(await readAnswerFile(full));
+          // 早期产物（答案直接摆在实验目录下）同样让位于 v2
+          experiments.push(await readAnswerFile(full, { legacy: true }));
         }
       } catch {
         /* 忽略坏文件 */
