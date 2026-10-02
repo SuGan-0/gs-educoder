@@ -1828,8 +1828,12 @@ class ExtractEngine {
     this.status('levels', `正在读取所选 ${experiments.length} 个实验的关卡列表…`);
     const plans = [];
     const merged = [];
+    let stoppedEarly = false;
     for (const experiment of experiments) {
-      if (await this.stopping()) break;
+      if (await this.stopping()) {
+        stoppedEarly = true;
+        break;
+      }
       let levels = [];
       try {
         // 关键：不要在这里一个个发 levels 事件（会让界面只剩最后一个实验的关卡）。
@@ -1842,6 +1846,16 @@ class ExtractEngine {
       for (const level of levels) {
         merged.push({ ...level, experimentName: experiment.name, experimentIndex: planIndex });
       }
+    }
+
+    if (stoppedEarly) {
+      // **被停止 ≠ 实验没有关卡列表**。原来两种情况共用同一句
+      // 「所选实验都没有返回关卡列表，将按关卡链抓取全部关卡」，于是用户按了停止之后
+      // 会看到一句与事实相反的话，还以为实验数据出了问题——真正的原因是他自己按了停止。
+      this.log('收到停止请求，已中断关卡列表读取。', 'warn');
+      this.mergedLevels = [];
+      this.emit({ type: 'levels', levels: [], multi: experiments.length > 1 });
+      return null;
     }
 
     const reachable = plans.filter((plan) => plan.levels.length).length;
@@ -2277,8 +2291,13 @@ class ExtractEngine {
       // 再逐个实验执行。逐个询问会让界面只显示「当前实验」的关卡。
       const plans = await this.selectLevelsForAll(selectedExperiments);
       if (plans === null) {
-        // 用户一个关卡都没选
-        this.status('done', '未选择任何关卡，已结束。', { user: this.user, loggedIn: true });
+        // null 有两个来源：用户一个关卡都没选，或中途收到停止请求。
+        // 这两种收场必须说清是哪一种，否则用户会把「自己按了停止」当成工具出了故障。
+        this.status(
+          'done',
+          this.stopRequested ? '已停止（未读取关卡列表）。' : '未选择任何关卡，已结束。',
+          { user: this.user, loggedIn: true }
+        );
         this.emit({
           type: 'done',
           saved: this.stats.saved,
@@ -2335,7 +2354,19 @@ class ExtractEngine {
       });
     } catch (error) {
       this.stats.failed += 1;
-      this.log(`提取中断：${error.message}`, 'error');
+      // 签名被拒是最容易被误判的一类：接口文案写「服务器时间与您的设备时间不匹配」，
+      // 但它与系统时间无关。必须把「改哪个文件、怎么自证」直接写进日志，
+      // 否则用户会去调系统时间、换账号、重装浏览器，永远查不到真正的原因。
+      if (error && error.name === 'SignatureRejectedError') {
+        this.log(
+          `提取中断：${error.message}\n`
+            + `请检查 extractor/lib/educoder-sign.js 的 AK/SK 常量与 SIGNING_VERSION`
+            + `（当前 ${SIGNING_VERSION}），然后用 node tools/probe-signature.js 自证签名是否有效。`,
+          'error'
+        );
+      } else {
+        this.log(`提取中断：${error.message}`, 'error');
+      }
       this.status('error', `提取失败：${error.message}`);
       this.emit({ type: 'error', message: error.message });
     } finally {

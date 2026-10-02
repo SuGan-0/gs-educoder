@@ -542,18 +542,34 @@ test('listChallenges：index 回退 homework_challenge_index → index → 0，�
   assert.deepEqual(challenges.map((item) => [item.identifier, item.index]), [['a', 0], ['b', 3], ['c', 0]]);
 });
 
-test('listChallenges：接口失败一律返回 []（不抛出）', async () => {
+test('listChallenges：网络类失败退化为 []，签名/会话问题必须抛出', async () => {
+  // 网络抖动 / 空响应 / 形状怪异：退化为 []，交给关卡链兜底。
+  // 一个实验的一次失败不该拖垮整轮，这是「兜底」的本意。
   const networkError = stubPage(() => new Error('net::ERR_CONNECTION_RESET'));
   assert.deepEqual(await api.listChallenges(networkError, experiment), []);
 
   const emptyBody = stubPage(() => ({ status: 500, body: '' }));
   assert.deepEqual(await api.listChallenges(emptyBody, experiment), []);
 
-  const deviceTime = stubPage(() => ok('{"status":-102,"message":"服务器时间与您的设备时间不匹配"}'));
-  assert.deepEqual(await api.listChallenges(deviceTime, experiment), []);
-
   const weird = stubPage(() => ok('"just a string"'));
   assert.deepEqual(await api.listChallenges(weird, experiment), []);
+
+  // 但 -102（签名被拒）与会话失效**必须抛出**。
+  // 静默返回 [] 会把「签名坏了」伪装成「这个实验没有关卡列表」——用户会去查实验、
+  // 查网络、查账号，永远查不到真正的原因（本项目已经踩过一次同样的坑）。
+  const deviceTime = stubPage(() => ok('{"status":-102,"message":"服务器时间与您的设备时间不匹配"}'));
+  await assert.rejects(
+    () => api.listChallenges(deviceTime, experiment),
+    (error) => error.name === 'SignatureRejectedError' && /签名被拒/.test(error.message),
+    '签名被拒必须抛出，而不是伪装成「没有关卡」'
+  );
+
+  const unauthorized = stubPage(() => ({ status: 401, body: '{"message":"请登录后再操作"}' }));
+  await assert.rejects(
+    () => api.listChallenges(unauthorized, experiment),
+    (error) => error.name === 'AuthExpiredError',
+    '会话失效必须抛出'
+  );
 
   // 只有 homework_id（子标签实验）时改为按作业主键问一次；两样都没有才不发请求
   const noMyshixun = stubPage(() => ok('{"data":[]}'));

@@ -286,6 +286,11 @@ async function runUi(options = {}) {
     if (action === 'start') {
       // 支持多次提取：一次任务结束后浏览器保持打开，可直接再选课程/实验继续抓。
       if (engine.running) throw new Error('已有提取任务正在运行，请先等待结束或点击「停止」。');
+      // **必须清掉上一次的停止标记**。`shouldStop()` 读的就是它，而它此前一旦被
+      // 「停止」置为 true 就再没人复位——于是下一次任务会在第一个停止检查点
+      // （读关卡列表）静默中断，报出「所选实验都没有返回关卡列表」这种
+      // 与事实相反的话，然后卡在那里。这就是「抓取实验时卡住」的真凶。
+      pending.stop = false;
       // 默认跳过本地已存在的关卡；界面上勾选「重新下载」时改为覆盖。
       engine.skipExisting = payload.skipExisting !== false;
       engine.answersOnly = payload.answersOnly === true;

@@ -587,12 +587,27 @@ async function listChallengeNames(page, experiment, opts = {}) {
   const user = normalizeText(opts.user) || AUTH_USER;
   const url = `${DATA_ORIGIN}/api/shixuns/${encodeURIComponent(shixunIdentifier)}/challenges.json`
     + `?id=${encodeURIComponent(shixunIdentifier)}&zzud=${encodeURIComponent(user)}`;
-  let payload;
+  let response;
   try {
-    payload = (await apiGet(page, url)).json();
+    response = await apiGet(page, url);
   } catch (error) {
+    return []; // 与 listChallenges 同口径：网络类失败退化为 []，签名/会话问题在下面抛
+  }
+  const verdict = classifyResponse(response.status, response.text);
+  if (!verdict.ok) {
+    // 与 listChallenges 同口径：签名/会话问题必须浮上来，别伪装成「没有关卡」。
+    if (verdict.kind === 'signature') {
+      throw new SignatureRejectedError(verdict.reason, {
+        status: response.status,
+        details: { preview: verdict.preview }
+      });
+    }
+    if (verdict.kind === 'auth') {
+      throw new AuthExpiredError(verdict.reason, { status: response.status });
+    }
     return [];
   }
+  const payload = response.json();
   const items = Array.isArray(payload)
     ? payload
     : payload && Array.isArray(payload.challenge_list)
@@ -636,12 +651,32 @@ async function listChallenges(page, experiment, opts = {}) {
       + `&zzud=${encodeURIComponent(user)}`
     : `${DATA_ORIGIN}/api/homework_commons/${encodeURIComponent(homeworkId)}/shixun_challenge_data.json`
       + `?categoryId=${encodeURIComponent(homeworkId)}&zzud=${encodeURIComponent(user)}`;
-  let payload;
+  let response;
   try {
-    payload = (await apiGet(page, url)).json();
+    response = await apiGet(page, url);
   } catch (error) {
+    // 网络抖动 / 超时 / 空响应：退化为 []，交给关卡链兜底——一个实验的一次失败
+    // 不该拖垮整轮。**但签名与会话问题不在此列**，它们在下面单独抛出。
     return [];
   }
+  const verdict = classifyResponse(response.status, response.text);
+  if (!verdict.ok) {
+    // **签名被拒与会话失效必须往上抛**，不能退化成 []。
+    // 返回 [] 会把「签名坏了」伪装成「这个实验没有关卡列表」——用户会去查实验、
+    // 查网络、查账号，永远查不到真正的原因（本项目已经踩过一次同样的坑）。
+    // 其余失败（500 等）仍退化为 []，交给关卡链兜底。
+    if (verdict.kind === 'signature') {
+      throw new SignatureRejectedError(verdict.reason, {
+        status: response.status,
+        details: { preview: verdict.preview }
+      });
+    }
+    if (verdict.kind === 'auth') {
+      throw new AuthExpiredError(verdict.reason, { status: response.status });
+    }
+    return [];
+  }
+  const payload = response.json();
   const items = Array.isArray(payload)
     ? payload
     : payload && Array.isArray(payload.data)

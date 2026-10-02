@@ -589,6 +589,65 @@ test('run.js --ui：diagnose 必须在动作白名单里（否则「诊断」按
   assert.deepEqual(payload.lines, ['诊断开始。当前页面：https://www.educoder.net/'], '诊断结论必须回传');
 });
 
+test('run.js --ui：停止之后再开始，不得把上一轮的停止标记带进新一轮（回归）', async (t) => {
+  const fake = createFakePlaywright({ withSecondExperiment: true });
+  const restoreApi = installFakeApi();
+  const { runUi } = freshRunModule();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+  });
+
+  const { server } = await runUi({ open: false, headless: true });
+  t.after(async () => {
+    await server.close().catch(() => {});
+  });
+
+  const url = new URL(server.url);
+  const token = url.searchParams.get('token');
+  const base = `${url.protocol}//${url.host}`;
+
+  // 第一轮：起来之后立刻按「停止」
+  await post(base, token, { action: 'start' });
+  await waitForPhase(base, token, (item) => item.phase === 'waiting-course', 30000);
+  await post(base, token, { action: 'stop' });
+  // 等这一轮真正收场（停止后的终态是 stopping），否则第二轮会撞上
+  // 「已有提取任务正在运行」。
+  await waitForPhase(
+    base,
+    token,
+    (item) => ['stopping', 'done', 'error'].includes(item.phase),
+    30000
+  );
+
+  // 第二轮：必须能照常走完「选课程 → 选实验 → 读到关卡」。
+  // 修复前 `pending.stop` 是**一次性的粘滞标记**：按过一次停止之后，
+  // 下一轮会在读关卡列表的第一个停止检查点静默中断，报出
+  // 「所选实验都没有返回关卡列表」——与事实相反，然后卡在那里。
+  await post(base, token, { action: 'start' });
+  await waitForPhase(base, token, (item) => item.phase === 'waiting-course', 30000);
+  await post(base, token, { action: 'select-course', courseId: COURSE.id });
+  await waitForPhase(base, token, (item) => item.phase === 'waiting-experiments', 30000);
+  await post(base, token, { action: 'select-experiments', indices: [0, 1] });
+
+  const levelsState = await waitForPhase(
+    base,
+    token,
+    (item) => item.phase === 'waiting-levels',
+    60000
+  );
+  assert.ok(
+    levelsState.levels.length > 0,
+    `第二轮必须真的读到关卡，而不是被上一轮的停止标记卡死（实际 ${levelsState.levels.length} 关）`
+  );
+  assert.ok(
+    !/都没有返回关卡列表/.test(levelsState.message || ''),
+    '不得报出「所选实验都没有返回关卡列表」这种与事实相反的结论'
+  );
+
+  await post(base, token, { action: 'stop' });
+});
+
 test('run.js --ui：选多个实验时，关卡区必须一次拿到全部实验的关卡（回归）', async (t) => {
   const fake = createFakePlaywright({ withSecondExperiment: true });
   const restoreApi = installFakeApi();
