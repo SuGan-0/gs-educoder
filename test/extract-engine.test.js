@@ -2326,3 +2326,29 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
   assert.equal(done.saved, 1, '已通过关卡应计「已保存」（答案已导出）');
   assert.equal(done.skipped, 1, '未通过关卡应计「跳过」');
 });
+
+test('引擎：收掉多余的标签页，只留工作页', async () => {
+  // 平台自己的「进入关卡」「查看实战」是**新标签页**打开的，点一次就多一页。
+  // 入口有好几条（openExperiment / clickEntryButton / enterFirstLevel…），
+  // 漏一条就会累积——用户实测「每打开一个课程就多一个标签页」。
+  const { ExtractEngine } = freshEngineModule();
+  const engine = new ExtractEngine({ exportRoot: withTempExportRoot() });
+
+  const closed = [];
+  const work = { isClosed: () => false };
+  const alive = { isClosed: () => false, close: async () => closed.push('alive') };
+  const alreadyClosed = { isClosed: () => true, close: async () => closed.push('already') };
+  engine.context = { pages: () => [work, alive, alreadyClosed] };
+  engine.page = work;
+
+  const count = await engine.closeStrayPages();
+  assert.equal(count, 1, '只关「还开着的、且不是工作页」的那些');
+  assert.deepEqual(closed, ['alive'], '已关闭的页不该再关一次，工作页更不能碰');
+
+  // 没有 context / page 时（还没起浏览器）要安静地返回 0，不能抛
+  engine.context = null;
+  assert.equal(await engine.closeStrayPages(), 0);
+  engine.context = { pages: () => [work] };
+  engine.page = null;
+  assert.equal(await engine.closeStrayPages(), 0);
+});

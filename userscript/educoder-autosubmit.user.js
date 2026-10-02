@@ -2706,6 +2706,10 @@
     };
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
+      // 标题栏里放了按钮（收起面板）。按钮必须自己收到 click，所以**不能**把它也当成拖动起点：
+      // 一旦 setPointerCapture，后续的 click 会派发到捕获元素（标题栏）而不是按钮，
+      // 按钮就永远点不动——「收起没效果」就是这么来的。
+      if (event.target && typeof event.target.closest === 'function' && event.target.closest('button')) return;
       const rect = host.getBoundingClientRect();
       moved = false;
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };

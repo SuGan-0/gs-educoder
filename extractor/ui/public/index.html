@@ -270,6 +270,73 @@
   .sb-msg { flex: 1 1 200px; min-width: 0; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sb-logs { margin-left: auto; font-size: 11px; color: var(--fg-3); white-space: nowrap; }
 
+  /* ---------- 提取面板：步骤指示 ----------
+     提取是**顺序流程**（课程 → 实验 → 关卡），同一时刻只有一步是活的。
+     原来拆成三个等高面板，两个永远是锁着的、白占半屏；现在一条步骤指示 + 单步内容。 */
+  .steps {
+    display: flex;
+    align-items: stretch;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .steps li {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 11px;
+    min-width: 0;
+    color: var(--fg-3);
+    border-right: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .steps li:last-child { border-right: 0; }
+  .steps li b {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    font: 700 10px/1 var(--mono);
+    border-radius: 50%;
+    border: 1px solid var(--line-2);
+    background: var(--raise);
+    color: var(--fg-3);
+  }
+  .steps li .step-note {
+    font-style: normal;
+    font-size: 11px;
+    color: var(--fg-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  /* 已走过：打勾色，方便回看前面选了什么 */
+  .steps li[data-state="done"] { color: var(--fg-2); }
+  .steps li[data-state="done"] b { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok-fg); }
+  /* 进行中：唯一有强调色的一步 */
+  .steps li[data-state="active"] { color: var(--fg); font-weight: 600; background: var(--raise); }
+  .steps li[data-state="active"] b { background: var(--primary); border-color: var(--primary-strong); color: #fff; }
+  /* 还没轮到：压暗，一眼看出还不能操作 */
+  .steps li[data-state="locked"] b { background: var(--btn-off-bg); border-color: var(--line); color: var(--btn-off-fg); }
+
+  .step-pane { display: flex; flex-direction: column; min-width: 0; }
+  .step-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 13px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+    flex-wrap: wrap;
+  }
+  .step-tools .spacer { flex: 1 1 auto; }
+
   .banners { display: flex; flex-direction: column; gap: 8px; }
   .banner {
     display: flex;
@@ -864,59 +931,71 @@
 
   <div class="main">
     <div class="col">
-      <section class="panel" id="panel-courses">
+      <!-- 提取是一个**顺序流程**（课程 → 实验 → 关卡），同一时刻只有一步是活的。
+           原来拆成三个等高面板，两个永远是锁着的，白占半屏；现在一个面板装下三步，
+           顶部一条步骤指示，下面只显示当前这一步。 -->
+      <section class="panel" id="panel-extract">
         <div class="panel-hd">
-          <span class="step">01</span>
-          <h2>课程</h2>
+          <span class="step">提取</span>
+          <h2>选择要抓取的范围</h2>
           <span class="spacer"></span>
-          <span class="badge mono" id="badge-courses">已选 0 / 0</span>
+          <span class="badge mono" id="badge-step">第 1 步</span>
         </div>
-        <div class="list locked" id="list-courses" role="radiogroup" aria-label="课程列表" data-empty="true" data-empty-text="等待课程列表…"></div>
-        <div class="panel-ft">
-          <p class="hint" id="hint-courses">等待进入选择课程阶段。</p>
-          <button class="btn btn-primary" id="btn-course" type="button" disabled>确认课程并继续</button>
-        </div>
-      </section>
 
-      <section class="panel" id="panel-experiments">
-        <div class="panel-hd">
-          <span class="step">02</span>
-          <h2>实验</h2>
-          <span class="spacer"></span>
-          <div class="mini-group">
-            <button class="btn btn-mini" type="button" data-bulk="all" data-target="experiments" disabled>全选</button>
-            <button class="btn btn-mini" type="button" data-bulk="invert" data-target="experiments" disabled>反选</button>
-            <button class="btn btn-mini" type="button" data-bulk="none" data-target="experiments" disabled>清空</button>
+        <ol class="steps" id="step-bar">
+          <li data-step="course" data-state="active"><b>1</b><span>课程</span><i class="step-note" id="step-note-course"></i></li>
+          <li data-step="experiments" data-state="locked"><b>2</b><span>实验</span><i class="step-note" id="step-note-experiments"></i></li>
+          <li data-step="levels" data-state="locked"><b>3</b><span>关卡</span><i class="step-note" id="step-note-levels"></i></li>
+        </ol>
+
+        <div class="step-pane" id="pane-course">
+          <div class="step-tools">
+            <span class="badge mono" id="badge-courses">已选 0 / 0</span>
+            <span class="spacer"></span>
+            <span class="hint">课程是单选</span>
           </div>
-          <span class="badge mono" id="badge-experiments">已选 0 / 0</span>
-        </div>
-        <div class="list locked" id="list-experiments" role="group" aria-label="实验列表" data-empty="true" data-empty-text="等待实验列表…"></div>
-        <div class="panel-ft">
-          <p class="hint" id="hint-experiments">等待进入选择实验阶段。</p>
-          <button class="btn btn-primary" id="btn-experiments" type="button" disabled>提取选中的实验</button>
-        </div>
-      </section>
-
-      <section class="panel" id="panel-levels">
-        <div class="panel-hd">
-          <span class="step">03</span>
-          <h2>关卡</h2>
-          <span class="spacer"></span>
-          <div class="mini-group">
-            <button class="btn btn-mini" type="button" data-bulk="all" data-target="levels" disabled>全选</button>
-            <button class="btn btn-mini" type="button" data-bulk="invert" data-target="levels" disabled>反选</button>
-            <button class="btn btn-mini" type="button" data-bulk="none" data-target="levels" disabled>清空</button>
+          <div class="list locked" id="list-courses" role="radiogroup" aria-label="课程列表" data-empty="true" data-empty-text="等待课程列表…"></div>
+          <div class="panel-ft">
+            <p class="hint" id="hint-courses">等待进入选择课程阶段。</p>
+            <button class="btn btn-primary" id="btn-course" type="button" disabled>确认课程并继续</button>
           </div>
-          <span class="badge mono" id="badge-levels">已选 0 / 0</span>
         </div>
-        <div class="list locked" id="list-levels" role="group" aria-label="关卡列表" data-empty="true" data-empty-text="等待关卡列表…"></div>
-        <p class="hint mono" id="hint-level-groups" hidden></p>
-        <div class="panel-ft">
-          <p class="hint" id="hint-levels">等待进入选择关卡阶段。</p>
-          <button class="btn btn-primary" id="btn-levels" type="button" disabled>开始抓取选中的关卡</button>
+
+        <div class="step-pane" id="pane-experiments" hidden>
+          <div class="step-tools">
+            <span class="badge mono" id="badge-experiments">已选 0 / 0</span>
+            <span class="spacer"></span>
+            <div class="mini-group">
+              <button class="btn btn-mini" type="button" data-bulk="all" data-target="experiments" disabled>全选</button>
+              <button class="btn btn-mini" type="button" data-bulk="invert" data-target="experiments" disabled>反选</button>
+              <button class="btn btn-mini" type="button" data-bulk="none" data-target="experiments" disabled>清空</button>
+            </div>
+          </div>
+          <div class="list locked" id="list-experiments" role="group" aria-label="实验列表" data-empty="true" data-empty-text="等待实验列表…"></div>
+          <div class="panel-ft">
+            <p class="hint" id="hint-experiments">等待进入选择实验阶段。</p>
+            <button class="btn btn-primary" id="btn-experiments" type="button" disabled>提取选中的实验</button>
+          </div>
+        </div>
+
+        <div class="step-pane" id="pane-levels" hidden>
+          <div class="step-tools">
+            <span class="badge mono" id="badge-levels">已选 0 / 0</span>
+            <span class="spacer"></span>
+            <div class="mini-group">
+              <button class="btn btn-mini" type="button" data-bulk="all" data-target="levels" disabled>全选</button>
+              <button class="btn btn-mini" type="button" data-bulk="invert" data-target="levels" disabled>反选</button>
+              <button class="btn btn-mini" type="button" data-bulk="none" data-target="levels" disabled>清空</button>
+            </div>
+          </div>
+          <div class="list locked" id="list-levels" role="group" aria-label="关卡列表" data-empty="true" data-empty-text="等待关卡列表…"></div>
+          <p class="hint mono" id="hint-level-groups" hidden></p>
+          <div class="panel-ft">
+            <p class="hint" id="hint-levels">等待进入选择关卡阶段。</p>
+            <button class="btn btn-primary" id="btn-levels" type="button" disabled>开始抓取选中的关卡</button>
+          </div>
         </div>
       </section>
-
       <section class="panel" id="panel-progress">
         <div class="panel-hd">
           <span class="step">04</span>
@@ -1004,7 +1083,7 @@
         <div class="answer-body" id="answer-body">
           <p class="hint" id="answer-hint">
             <b>这一步只出答案，不会替你提交。</b>选课程 / 实验 / 关卡（<b>关卡全不选＝该实验的全部关卡</b>）→ 点「开始 AI 作答」→ 答案写到 <code>exports/answers/</code>。
-            <br><b>真正的自动答题与提交，在头歌关卡页上的篡改猴面板里点「一键作答并提交」</b>——控制台这边没有也不会有提交按钮。
+            <br><b>真正的自动答题与提交，在头歌关卡页上的篡改猴面板里点「一键答题（选中）」</b>——控制台这边没有也不会有提交按钮。
           </p>
 
           <div class="answer-grid">
@@ -1935,6 +2014,45 @@
       : (started ? '引擎已启动' : '当前阶段不可启动：' + (state.phase || '未知'));
     $('btn-stop').disabled = !stopOn;
     $('btn-stop').title = stopOn ? '请求停止当前任务' : '当前阶段不可停止';
+
+    renderSteps();
+  }
+
+  /**
+   * 步骤指示：决定哪一步是活的，并只显示那一步的内容。
+   *
+   * 为什么值得这么改：提取是**顺序流程**（课程 → 实验 → 关卡），同一时刻只有一步能用。
+   * 原来拆成三个等高面板，两个永远是锁着的、白占半屏，而「抓取进度」被挤到折叠线以下。
+   *
+   * 「活的那一步」直接取 `can()` 的第一个为真的项——和按钮的可用性同源，
+   * 不会出现「步骤条说能选、按钮却是灰的」这种自相矛盾。
+   */
+  function renderSteps() {
+    var active = can('course') ? 0 : can('experiments') ? 1 : can('levels') ? 2
+      // 都不在可选阶段（启动中/抓取中/已结束）：停在做完的那一步，
+      // 用已有的数据判断走到哪了，而不是硬跳到第一步。
+      : state.levels.length ? 2 : state.experiments.length ? 1 : 0;
+
+    var bar = $('step-bar');
+    if (bar) {
+      var items = bar.querySelectorAll('li');
+      for (var i = 0; i < items.length; i += 1) {
+        items[i].dataset.state = i < active ? 'done' : i === active ? 'active' : 'locked';
+      }
+    }
+    var panes = ['pane-course', 'pane-experiments', 'pane-levels'];
+    for (var j = 0; j < panes.length; j += 1) {
+      var pane = $(panes[j]);
+      if (pane) pane.hidden = j !== active;
+    }
+    var badge = $('badge-step');
+    if (badge) badge.textContent = '第 ' + (active + 1) + ' 步 / 3';
+
+    // 步骤条上带一句摘要：不必点回去也知道前面选了什么
+    var notes = [$('step-note-course'), $('step-note-experiments'), $('step-note-levels')];
+    if (notes[0]) notes[0].textContent = sel.courseId != null ? '已选' : '';
+    if (notes[1]) notes[1].textContent = sel.experiments.size ? sel.experiments.size + ' 个' : '';
+    if (notes[2]) notes[2].textContent = sel.levels.size ? sel.levels.size + ' 关' : '';
   }
 
   /**
@@ -2451,7 +2569,7 @@
     $('answer-note').textContent = running
       ? '答案逐实验写入 exports/answers/，等全部结束再去篡改猴拉取，避免拉到一半。'
       : finished
-        ? '下一步：打开任意关卡页 → 篡改猴面板「设置本地地址」粘贴上面复制的地址 →「从本地拉答案」→「一键作答并提交」。'
+        ? '下一步：打开任意关卡页 → 篡改猴菜单「设置本地控制台地址」粘一次 token → 面板「从本地拉答案」→「一键答题（选中）」。'
         : '答案写到 exports/answers/，篡改猴读它自动提交。需要先有抓取产物（exports 下的 levels.jsonl）。';
 
     var results = toArray(answer.results);

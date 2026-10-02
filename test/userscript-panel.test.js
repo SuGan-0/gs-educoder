@@ -229,3 +229,34 @@ test('签名常量：没配过地址时也按固定端口试一次（零配置�
   assert.equal(built.store['educoder-sign-ak'], undefined, '失败时不该写入常量');
   assert.equal(built.store['educoder-sign-sk'], undefined);
 });
+
+test('面板：标题栏里的按钮不能被拖动逻辑吃掉（「收起没效果」的根因）', () => {
+  const built = boot();
+  const header = built.created.find((node) => node.tagName === 'HEADER');
+  const button = built.created.find((node) => node.id === 'eas-panel-fold');
+  assert.ok(header && button, '标题栏与收起按钮都要在');
+
+  const handler = header.listeners && header.listeners.pointerdown;
+  assert.ok(handler, '标题栏应挂了 pointerdown（拖动）');
+
+  let captured = false;
+  header.setPointerCapture = () => { captured = true; };
+  const press = (target) => handler({
+    button: 0,
+    pointerId: 1,
+    clientX: 10,
+    clientY: 10,
+    target,
+    preventDefault() {}
+  });
+
+  // 点在按钮上：绝不能抢指针捕获。
+  // 一旦 setPointerCapture，后续 click 会派发到捕获元素（标题栏）而不是按钮，
+  // 按钮就永远点不动——「收起没效果」就是这么来的。
+  press({ closest: () => button });
+  assert.equal(captured, false, '点按钮时不该抢指针捕获，否则按钮收不到 click');
+
+  // 点在标题栏空白处：拖动要照常工作
+  press({ closest: () => null });
+  assert.equal(captured, true, '点标题栏空白处应正常开始拖动');
+});

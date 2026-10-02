@@ -2148,6 +2148,33 @@ class ExtractEngine {
     }
 
     if (experimentPage !== this.page) await experimentPage.close().catch(() => {});
+    // 兜底：把这一轮顺手开出来的标签页全收掉。见 closeStrayPages 的说明。
+    await this.closeStrayPages();
+  }
+
+  /**
+   * 关掉所有「顺手开出来的」标签页，只留工作页（`this.page`）。
+   *
+   * 为什么必须收：平台自己的「进入关卡」「查看实战」是**新标签页**打开的，
+   * 点一次就在 `context` 里多一页。各处虽然各有关闭，但入口有好几条
+   * （openExperiment / clickEntryButton / enterFirstLevel …），漏一条就会累积——
+   * 用户实测「每打开一个课程就多一个标签页」就是这么来的。
+   *
+   * 只在**一轮实验结束**这种没有在途导航的时刻调用，所以关掉非工作页是安全的。
+   *
+   * @returns {Promise<number>} 关掉的页数
+   */
+  async closeStrayPages() {
+    if (!this.context || !this.page) return 0;
+    let closed = 0;
+    for (const page of this.context.pages()) {
+      if (page === this.page) continue;
+      if (typeof page.isClosed === 'function' && page.isClosed()) continue;
+      await page.close().catch(() => {});
+      closed += 1;
+    }
+    if (closed) this.log(`已收掉 ${closed} 个多余的标签页（只保留工作页）。`);
+    return closed;
   }
 
   /** 启动浏览器（已启动则复用，不重复开窗口）。 */
@@ -2375,6 +2402,8 @@ class ExtractEngine {
       // 只有用户主动「停止」或关闭控制台进程时才关闭（见 stop()）。
       // 视图（实验.md / metadata）在整轮结束时统一生成一次——抓取过程中只追加 levels.jsonl。
       await this.flushExperimentViews().catch(() => {});
+      // 整轮结束时再收一次：中途退出（停止/出错）的路径不走 runExperiment 的收尾。
+      await this.closeStrayPages().catch(() => {});
       this.running = false;
     }
   }
