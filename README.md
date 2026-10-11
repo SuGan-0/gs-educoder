@@ -389,6 +389,8 @@ X-EDU-Type:      pc          ← 必须精确是 pc，写成 web 会被拒
 
 ## 篡改猴脚本
 
+> **两种版本**：完整版（下面讲）连控制台用；**简易版** [educoder-lite.user.js](userscript/educoder-lite.user.js) 只吃「班级答案文件」——完全不需要控制台与签名常量：导入文件 → 打开关卡页 → 一键答题（判通过才进下一关）。想把答案分发给同学，用简易版最省事（见「答案从哪来」的班级文件导出）。
+
 | 步骤 | 操作 |
 | --- | --- |
 | 1 | 装 Tampermonkey，新建脚本粘贴 [userscript/educoder-autosubmit.user.js](userscript/educoder-autosubmit.user.js) |
