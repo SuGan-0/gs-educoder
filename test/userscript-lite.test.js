@@ -36,7 +36,7 @@ const CLASS_DOC = {
   stats: { classrooms: 1, experiments: 1, levels: 2, answered: 1, missing: 1 }
 };
 
-function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] } = {}) {
+async function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] } = {}) {
   const hooks = {};
   hooks.__location = { pathname: '/tasks/x', href: 'https://www.educoder.net/tasks/x', search: '' };
   const fakeDocument = {
@@ -67,15 +67,18 @@ function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] }
   sandbox.window.location = hooks.__location;
   vm.createContext(sandbox);
   new vm.Script(SOURCE).runInContext(sandbox);
+  // boot 现在是 async 的（先取登录再载答案）——等它完成，测试才能拿到稳定状态
+  await new Promise((resolve) => setTimeout(resolve, 30));
   return hooks;
 }
 
-test('简易版：脚本能在沙箱里加载（boot 不抛错）', () => {
-  assert.doesNotThrow(() => loadSandbox());
+test('简易版：脚本能在沙箱里加载（boot 不抛错）', async () => {
+  const hooks = await loadSandbox();
+  assert.ok(hooks.state, 'boot 完成后应能拿到状态');
 });
 
-test('简易版：导入校验拒绝非班级文件，接受合法班级文件', () => {
-  const hooks = loadSandbox();
+test('简易版：导入校验拒绝非班级文件，接受合法班级文件', async () => {
+  const hooks = await loadSandbox();
   assert.equal(hooks.validateImported({ foo: 1 }).ok, false, '非班级文件要拒绝');
   const verdict = hooks.validateImported(CLASS_DOC);
   assert.equal(verdict.ok, true);
@@ -83,10 +86,10 @@ test('简易版：导入校验拒绝非班级文件，接受合法班级文件',
   assert.equal(verdict.stats.answered, 1);
 });
 
-test('简易版：按关卡标识找答案（identifiers 优先），没有标识的关卡不排进队列', () => {
+test('简易版：按关卡标识找答案（identifiers 优先），没有标识的关卡不排进队列', async () => {
   const stored = JSON.parse(JSON.stringify(CLASS_DOC));
   stored.classrooms[0].experiments[0].levels[0].identifiers = [];
-  const hooks = loadSandbox({ storedAnswers: stored });
+  const hooks = await loadSandbox({ storedAnswers: stored });
   // L002 有标识 → 能按标识找到
   const hit = hooks.findLevel({ gameId: 'efbt5uy9cgwj', subject: '类图题目初体验', position: 2 });
   assert.equal(hit.level.level_id, 'L002');
@@ -98,8 +101,8 @@ test('简易版：按关卡标识找答案（identifiers 优先），没有标�
   assert.equal(missingIdentifier, 0);
 });
 
-test('简易版：observeTaskPayload 能从 payload 建立关卡上下文', () => {
-  const hooks = loadSandbox({ storedAnswers: CLASS_DOC });
+test('简易版：observeTaskPayload 能从 payload 建立关卡上下文', async () => {
+  const hooks = await loadSandbox({ storedAnswers: CLASS_DOC });
   hooks.observeTaskPayload({
     challenge: { id: 777, subject: '类图题目初体验', homework_challenge_index: 2, score: 50 },
     game: { identifier: 'efbt5uy9cgwj', final_score: 50 },
@@ -109,8 +112,8 @@ test('简易版：observeTaskPayload 能从 payload 建立关卡上下文', () =
   assert.equal(hooks.findLevel({ gameId: 'efbt5uy9cgwj' }).level.level_id, 'L002');
 });
 
-test('简易版：gameIdFromUrl 两种任务 URL 形态都取到关卡标识（10-11 卡死防护）', () => {
-  const hooks = loadSandbox({ storedAnswers: CLASS_DOC });
+test('简易版：gameIdFromUrl 两种任务 URL 形态都取到关卡标识（10-11 卡死防护）', async () => {
+  const hooks = await loadSandbox({ storedAnswers: CLASS_DOC });
   // 旧式单段
   assert.equal(
     hooks.gameIdFromUrl('https://www.educoder.net/tasks/vrtbzlmexi3f?homework_common_id=4200911&zzud=x'),
@@ -127,7 +130,7 @@ test('简易版：gameIdFromUrl 两种任务 URL 形态都取到关卡标识（1
 test('简易版：startAuto 持久化开关并导航到第一个有答案的关卡（修复"点一下走一步"）', async () => {
   const stored = JSON.parse(JSON.stringify(CLASS_DOC));
   const gmWrites = [];
-  const hooks = loadSandbox({ storedAnswers: stored, gmWrites });
+  const hooks = await loadSandbox({ storedAnswers: stored, gmWrites });
   // 当前页面（/tasks/x）不是任何目标关卡 → startAuto 应导航到第一个有答案的关卡
   await hooks.startAuto();
   const autoWrites = gmWrites.filter((w) => w.key === 'lite-auto');
@@ -140,7 +143,7 @@ test('简易版：startAuto 持久化开关并导航到第一个有答案的关�
 });
 
 test('简易版：submitAndWait 在没有提交按钮时返回 blocked（函数必须存在——曾漏定义导致运行时才炸）', async () => {
-  const hooks = loadSandbox({ storedAnswers: CLASS_DOC });
+  const hooks = await loadSandbox({ storedAnswers: CLASS_DOC });
   assert.equal(typeof hooks.submitAndWait, 'function', 'submitAndWait 必须有定义');
   const outcome = await hooks.submitAndWait(); // 假页面没有任何按钮
   assert.equal(outcome.status, 'blocked');
