@@ -133,7 +133,8 @@ test('简易版：startAuto 持久化开关并导航到第一个有答案的关�
   const hooks = await loadSandbox({ storedAnswers: stored, gmWrites });
   // 当前页面（/tasks/x）不是任何目标关卡 → startAuto 应导航到第一个有答案的关卡
   await hooks.startAuto();
-  const autoWrites = gmWrites.filter((w) => w.key === 'lite-auto');
+  // 一键开关现在按账号隔离（lite-auto:{login}）——断言用前缀匹配
+  const autoWrites = gmWrites.filter((w) => String(w.key).startsWith('lite-auto'));
   assert.ok(autoWrites.length && autoWrites[autoWrites.length - 1].value === true, '一键开关必须持久化（跨页面续答的命门）');
   assert.match(
     String(hooks.__location.href),
