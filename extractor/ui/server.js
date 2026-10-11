@@ -27,6 +27,27 @@ const { describeAiConfig, MISSING_KEY_HINT: AI_MISSING_KEY_HINT } = require('../
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
+
+// 控制台日志落盘：内存只留 MAX_LOGS 条，故障复盘需要全量
+// （10-11 的入口串台就是因为控制台日志没落盘、截图又是残片，无法定位）。
+const { appendFileSync, mkdirSync, statSync, renameSync } = require('node:fs');
+const consoleLogFile = () => path.join(exportRootDir(), 'logs', '控制台日志.log');
+let consoleLogReady = false;
+function persistLog(entry) {
+  try {
+    const file = consoleLogFile();
+    mkdirSync(path.dirname(file), { recursive: true });
+    if (!consoleLogReady) {
+      consoleLogReady = true;
+      try {
+        // 超过 8MB 轮转一次，避免单文件无限膨胀
+        if (statSync(file).size > 8 * 1024 * 1024) renameSync(file, file.replace(/\.log$/, '.old.log'));
+      } catch { /* 首次不存在 */ }
+      appendFileSync(file, `\n===== 控制台启动 ${new Date().toISOString()} =====\n`, 'utf8');
+    }
+    appendFileSync(file, `[${entry.time}] [${entry.level}] ${entry.message}\n`, 'utf8');
+  } catch { /* 日志写盘失败绝不影响主流程 */ }
+}
 const MAX_BODY_BYTES = 64 * 1024; // POST /api/action 请求体上限（字节）
 const HARD_BODY_BYTES = MAX_BODY_BYTES * 16; // 超限后继续 drain 的硬上限，防御性
 const HEARTBEAT_MS = 15_000; // SSE 心跳，防代理/浏览器判定空闲断连
@@ -107,6 +128,7 @@ function appendLog(snapshot, level, message) {
   if (snapshot.logs.length > MAX_LOGS) {
     snapshot.logs.splice(0, snapshot.logs.length - MAX_LOGS);
   }
+  persistLog(snapshot.logs[snapshot.logs.length - 1]);
 }
 
 /**
