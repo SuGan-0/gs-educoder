@@ -240,7 +240,8 @@ function validateClassDocument(doc) {
     classrooms: ((doc && doc.classrooms) || []).length,
     experiments: ((doc && doc.classrooms) || []).reduce((sum, c) => sum + (c.experiments || []).length, 0),
     levels,
-    answered
+    answered,
+    missing: levels - answered
   };
   return { ok: errors.length === 0, errors, warnings, stats };
 }
