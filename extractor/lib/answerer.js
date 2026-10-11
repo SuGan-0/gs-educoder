@@ -178,16 +178,24 @@ async function listTargets(exportRoot) {
         // 作业号也在 source 的查询串里：班级答案文件按它拼任务 URL（/tasks/{关卡}?homework_common_id={作业号}）
         homeworkCommonId: level.source
           ? (String(level.source).match(/[?&]homework_common_id=(\d+)/)?.[1] || '')
+          : '',
+        // 课堂码在三段式 source 的第一段（/tasks/{课堂码}/{作业号}/{关卡标识}）——
+        // 存档记录本身没有这个字段，班级文件的课堂码只能从这里来（10-11 实测）
+        classroomCode: level.source
+          ? (String(level.source).match(/\/tasks\/([^/?#]+)\/\d+\//)?.[1] || '')
           : ''
       }));
       const homeworkFromLevels = mappedLevels
         .map((level) => Number(level.homeworkCommonId) || 0)
         .find((value) => value > 0) || 0;
+      const classroomCodeFromLevels = identity.classroom.code
+        || mappedLevels.map((level) => level.classroomCode).find(Boolean)
+        || '';
       experiments.push({
         name: experimentDir.name,
         directory: dir,
         answerPath,
-        classroom: identity.classroom,
+        classroom: { name: identity.classroom.name, code: classroomCodeFromLevels },
         homeworkId: identity.experiment.homework_id || homeworkFromLevels,
         levelCount: mappedLevels.length,
         answered,
