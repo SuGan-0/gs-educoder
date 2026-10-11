@@ -38,7 +38,8 @@ const CLASS_DOC = {
 
 async function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] } = {}) {
   const hooks = {};
-  hooks.__location = { pathname: '/tasks/x', href: 'https://www.educoder.net/tasks/x', search: '' };
+  // 初始页放在「课堂列表页」（既不是任务页也不是详情页）——任务页现在会走'等关卡数据'分支
+  hooks.__location = { pathname: '/users/x/classrooms', href: 'https://www.educoder.net/users/x/classrooms', search: '' };
   // 运行态现在存 sessionStorage（按标签页隔离）——沙箱里给一个可断言的实现
   const sessionStore = new Map();
   hooks.__session = sessionStore;
