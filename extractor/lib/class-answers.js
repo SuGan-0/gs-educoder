@@ -170,6 +170,8 @@ function mergeClassDocuments(previous, next) {
     const code = key(classroom.code) || key(classroom.name);
     const prevClassroom = prevByCode.get(code);
     if (!prevClassroom) continue;
+    // 课堂码在旧存档/旧答案文件里可能缺失——旧文件里有的就保留（10-11 实测）
+    if (!classroom.code && prevClassroom.code) classroom.code = prevClassroom.code;
     const prevByExp = new Map((prevClassroom.experiments || []).map((e) => [key(e.name), e]));
     for (const experiment of classroom.experiments || []) {
       const prevExp = prevByExp.get(key(experiment.name));
