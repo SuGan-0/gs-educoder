@@ -105,6 +105,8 @@ function buildClassDocument({ grade, className, classrooms }) {
       block.experiments.push({
         name: String((experiment && experiment.name) || '').trim(),
         chapter: String((experiment && experiment.chapter) || '').trim(),
+        // homework_id：简易版按答案导航时要拼任务 URL（/tasks/{关卡}?homework_common_id={作业号}）
+        homework_id: Number((experiment && experiment.homeworkId) || 0) || 0,
         levels
       });
     }
