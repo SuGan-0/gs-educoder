@@ -106,3 +106,17 @@ test('简易版：observeTaskPayload 能从 payload 建立关卡上下文', () =
   }, 'https://www.educoder.net/tasks/2i6ng7vp/4200882/efbt5uy9cgwj');
   assert.equal(hooks.findLevel({ gameId: 'efbt5uy9cgwj' }).level.level_id, 'L002');
 });
+
+test('简易版：gameIdFromUrl 两种任务 URL 形态都取到关卡标识（10-11 卡死防护）', () => {
+  const hooks = loadSandbox({ storedAnswers: CLASS_DOC });
+  // 旧式单段
+  assert.equal(
+    hooks.gameIdFromUrl('https://www.educoder.net/tasks/vrtbzlmexi3f?homework_common_id=4200911&zzud=x'),
+    'vrtbzlmexi3f'
+  );
+  // 三段式（CNN 实测形态：/tasks/{课程码}/{作业号}/{关卡标识}）——前缀比对会在这里误判
+  assert.equal(
+    hooks.gameIdFromUrl('https://www.educoder.net/tasks/2xxxxxx/4200911/vrtbzlmexi3f?coursesId=x'),
+    'vrtbzlmexi3f'
+  );
+});
