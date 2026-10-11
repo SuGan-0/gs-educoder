@@ -167,7 +167,20 @@ async function listTargets(exportRoot) {
       } catch {
         answered = 0;
       }
-      const homeworkFromLevels = levels
+      // 先映射（含作业号提取），再算实验级 homeworkId——顺序反了会拿到 0（10-11 实测）
+      const mappedLevels = levels.map((level) => ({
+        taskIndex: Number(level.taskIndex) || 0,
+        id: fmt.levelIdOf(level.taskIndex),
+        title: level.title || '',
+        type: level.type || '',
+        language: level.codeLanguage || '',
+        taskIdentifier: level.source ? identifierFromSource(level.source) : '',
+        // 作业号也在 source 的查询串里：班级答案文件按它拼任务 URL（/tasks/{关卡}?homework_common_id={作业号}）
+        homeworkCommonId: level.source
+          ? (String(level.source).match(/[?&]homework_common_id=(\d+)/)?.[1] || '')
+          : ''
+      }));
+      const homeworkFromLevels = mappedLevels
         .map((level) => Number(level.homeworkCommonId) || 0)
         .find((value) => value > 0) || 0;
       experiments.push({
@@ -176,20 +189,9 @@ async function listTargets(exportRoot) {
         answerPath,
         classroom: identity.classroom,
         homeworkId: identity.experiment.homework_id || homeworkFromLevels,
-        levelCount: levels.length,
+        levelCount: mappedLevels.length,
         answered,
-        levels: levels.map((level) => ({
-          taskIndex: Number(level.taskIndex) || 0,
-          id: fmt.levelIdOf(level.taskIndex),
-          title: level.title || '',
-          type: level.type || '',
-          language: level.codeLanguage || '',
-          taskIdentifier: level.source ? identifierFromSource(level.source) : '',
-          // 作业号也在 source 的查询串里：班级答案文件按它拼任务 URL（/tasks/{关卡}?homework_common_id={作业号}）
-          homeworkCommonId: level.source
-            ? (String(level.source).match(/[?&]homework_common_id=(\d+)/)?.[1] || '')
-            : ''
-        }))
+        levels: mappedLevels
       });
     }
     if (experiments.length) {
