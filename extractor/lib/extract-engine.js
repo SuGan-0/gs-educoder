@@ -469,10 +469,13 @@ class ExtractEngine {
       // （「面向对象分析」）——精确匹配必然落空，categoryId 全空 → 章页导航被跳过 →
       // 页面停在课堂列表页，整批实验「无法定位入口」（10-11 实测 5 个实验全这么挂的）。
       const stripIndex = (name) => String(name || '').replace(/^\d+、\s*/, '').trim();
+      const idByExact = new Map(categories.map((item) => [String(item.name || '').trim(), item.id]));
       const idByBareName = new Map(categories.map((item) => [stripIndex(item.name), item.id]));
       experiments = experiments.map((item) => ({
         ...item,
-        categoryId: idByName.get(item.categoryName) || idByBareName.get(stripIndex(item.categoryName)) || ''
+        categoryId: idByExact.get(String(item.categoryName || '').trim())
+          || idByBareName.get(stripIndex(item.categoryName))
+          || ''
       }));
     }
 
