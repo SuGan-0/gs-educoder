@@ -25,14 +25,73 @@ const fmt = require('../lib/answer-format');
 const { signingKeysEncoded, SIGNING_VERSION, MISSING_KEYS_HINT } = require('../lib/educoder-sign');
 const { describeAiConfig, MISSING_KEY_HINT: AI_MISSING_KEY_HINT } = require('../lib/ai-config');
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
+const classAnswers = require('../lib/class-answers');
+const answerer = require('../lib/answerer');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
 
 // 控制台日志落盘：内存只留 MAX_LOGS 条，故障复盘需要全量
 // （10-11 的入口串台就是因为控制台日志没落盘、截图又是残片，无法定位）。
 const { appendFileSync, mkdirSync, statSync, renameSync } = require('node:fs');
+const exportRootDir = () => process.env.EDUCODER_EXPORT_ROOT || path.join(__dirname, '..', '..', 'exports');
 const consoleLogFile = () => path.join(exportRootDir(), 'logs', '控制台日志.log');
 let consoleLogReady = false;
+async function exportClassAnswers({ exportRoot, grade, className } = {}) {
+  const root = exportRoot || exportRootDir();
+  const courses = await answerer.listTargets(root);
+  if (!courses.length) {
+    return { ok: false, message: 'exports/ 下还没有任何可汇总的课程存档。' };
+  }
+  const classrooms = courses.map((course) => {
+    const first = course.experiments[0] || {};
+    const classroomBlock = first.classroom || { name: course.name };
+    const experiments = course.experiments.map((experiment) => {
+      let answerDoc = null;
+      try {
+        answerDoc = fmt.normalizeDocument(
+          JSON.parse(require('node:fs').readFileSync(experiment.answerPath, 'utf8')),
+          { classroom: experiment.classroom, experiment: { name: experiment.name } }
+        );
+      } catch { /* 该实验还没答案文件：照常进班级文件（answered=false） */ }
+      return {
+        name: experiment.name,
+        chapter: (String(experiment.name).match(/^\[([^\]]+)\]/) || [])[1] || '',
+        records: experiment.levels.map((level) => ({
+          levelId: level.id,
+          taskIndex: level.taskIndex,
+          title: level.title,
+          type: level.type,
+          taskIdentifier: level.taskIdentifier || ''
+        })),
+        answerDoc
+      };
+    });
+    return { name: classroomBlock.name || course.name, code: classroomBlock.code || '', experiments };
+  });
+
+  const next = classAnswers.buildClassDocument({ grade, className, classrooms });
+  const classPath = classAnswers.classAnswersPathFor(root, { grade, className });
+  let previous = null;
+  try {
+    previous = JSON.parse(await fs.readFile(classPath, 'utf8'));
+  } catch { /* 首次导出没有旧文件 */ }
+  const merged = previous ? classAnswers.mergeClassDocuments(previous, next) : next;
+  const verdict = classAnswers.validateClassDocument(merged);
+  await fs.mkdir(path.dirname(classPath), { recursive: true });
+  await fs.writeFile(classPath, JSON.stringify(merged, null, 2), 'utf8');
+  return {
+    ok: verdict.ok,
+    path: classPath,
+    message:
+      `已写出 ${verdict.stats.classrooms} 个课堂 / ${verdict.stats.experiments} 个实验 / `
+      + `${verdict.stats.levels} 关（有答案 ${verdict.stats.answered}、缺 ${verdict.stats.missing}）`
+      + (verdict.errors.length ? `；校验错误 ${verdict.errors.length} 条，首条：${verdict.errors[0]}` : ''),
+    stats: verdict.stats,
+    errors: verdict.errors.slice(0, 5),
+    warnings: verdict.warnings.slice(0, 5)
+  };
+}
+
 function persistLog(entry) {
   try {
     const file = consoleLogFile();
@@ -62,7 +121,9 @@ const ACTIONS = new Set([
   'stop',
   // 诊断：在已打开的抓取浏览器里检查 cookie / 登录接口原文 / DOM / 时间偏差。
   // 外壳 run.js 实现了该动作，这里必须放行，否则按钮永远返回「未知动作」。
-  'diagnose'
+  'diagnose',
+  // 班级答案文件：把所有课堂的工作层答案汇总成「一个班一份」的发布文件
+  'export-class-answers'
 ]);
 const LOGIN_PHASES = new Set(['login', 'waiting-login']);
 const LOG_LEVELS = new Set(['info', 'warn', 'error']);
@@ -618,6 +679,16 @@ async function startUiServer({
     let selection = null;
     let result = null;
     try {
+      // 班级答案文件导出：纯磁盘操作，不需要引擎/浏览器
+      if (action === 'export-class-answers') {
+        const outcome = await exportClassAnswers({
+          exportRoot: exportRootDir(),
+          grade: args.grade,
+          className: args.className
+        });
+        appendLog(snapshot, outcome.ok ? 'ok' : 'error', `班级答案文件导出：${outcome.message}`);
+        return sendJson(res, 200, { ok: outcome.ok, ...outcome });
+      }
       selection = resolveSelection(action, args);
       result = await onControl(action, args); // 动作真正生效后才更新快照
     } catch (error) {

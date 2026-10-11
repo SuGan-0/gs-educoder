@@ -38,6 +38,10 @@ function levelEntry(record, answerEntry) {
   const answer = answerEntry || {};
   const kind = answer.kind || (record && record.type) || 'unknown';
   const identifiers = [...identifiersFromSource(record && record.source)];
+  // 控制台收集数据时直接给了 taskIdentifier（从 source 提取好的），两种来源都收
+  if (record && record.taskIdentifier && !identifiers.includes(record.taskIdentifier)) {
+    identifiers.unshift(record.taskIdentifier);
+  }
   if (answer.task_identifier && !identifiers.includes(answer.task_identifier)) {
     identifiers.unshift(answer.task_identifier);
   }
