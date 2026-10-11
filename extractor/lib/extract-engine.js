@@ -465,8 +465,15 @@ class ExtractEngine {
           this.log(`章分类读取失败（只影响无标识实验的兜底路径）：${error.message}`, 'warn');
           return [];
         });
-      const idByName = new Map(categories.map((item) => [item.name, item.id]));
-      experiments = experiments.map((item) => ({ ...item, categoryId: idByName.get(item.categoryName) || '' }));
+      // 分类名带编号前缀（left_banner 返回「8、面向对象分析」），实验的 categoryName 不带
+      // （「面向对象分析」）——精确匹配必然落空，categoryId 全空 → 章页导航被跳过 →
+      // 页面停在课堂列表页，整批实验「无法定位入口」（10-11 实测 5 个实验全这么挂的）。
+      const stripIndex = (name) => String(name || '').replace(/^\d+、\s*/, '').trim();
+      const idByBareName = new Map(categories.map((item) => [stripIndex(item.name), item.id]));
+      experiments = experiments.map((item) => ({
+        ...item,
+        categoryId: idByName.get(item.categoryName) || idByBareName.get(stripIndex(item.categoryName)) || ''
+      }));
     }
 
     if (!experiments.length) this.log('该课堂没有可提取的课堂实验。');
@@ -1026,6 +1033,14 @@ class ExtractEngine {
       }
       await this.sleep(500);
     }
+    // 轮询失败：把现场打出来（当前 URL + 正文摘要），否则只能靠猜。
+    const scene = await this.page
+      .evaluate(() => ({
+        url: location.href,
+        sample: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 240)
+      }))
+      .catch(() => ({ url: this.page.url(), sample: '(取不到页面内容)' }));
+    this.log(`章页卡片未找到的现场：${scene.url}｜正文摘要：${scene.sample}`, 'warn');
     return { clicked: false, buttonLabel: '', reason: lastReason };
   }
 
@@ -1034,12 +1049,16 @@ class ExtractEngine {
     // 「1、软件工程初体验」的 9 个不在其中）。所以先打开它所属的章页，再在那一页里找卡片；
     // 否则卡片找不到时只能回落到「页面上第一个开始学习」，会**点到别的实验**。
     const classroomCode = course?.classroomCode || this.currentCourse?.classroomCode || '';
-    if (experiment.categoryId && classroomCode) {
-      const chapterUrl = `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework/${experiment.categoryId}?tabs=0`;
+    if (classroomCode) {
+      // 有分类号就打开该章的列表；没有（分类匹配失败）也**必须**打开默认作业列表——
+      // 它渲染全部实验的卡片（10-11 探针实测）。什么都不打开会让卡片轮询必然失败。
+      const chapterUrl = `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework`
+        + (experiment.categoryId ? `/${experiment.categoryId}` : '')
+        + '?tabs=0';
       await this.navigateTo(this.page, chapterUrl);
       await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
       await this.page.waitForTimeout(1500);
-      this.log(`先打开所在章页：${experiment.categoryName || experiment.categoryId}`);
+      this.log(`先打开所在章页：${experiment.categoryName || experiment.categoryId || '(全部分类)'}`);
     }
     // 在页面内找到卡片并点它（`clickExperimentCard` 会轮询等待 SPA 渲染完）。
     // 实测：点卡片会**开一个新标签页**到作业详情页
