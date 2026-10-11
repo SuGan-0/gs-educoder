@@ -2352,3 +2352,30 @@ test('引擎：收掉多余的标签页，只留工作页', async () => {
   engine.page = null;
   assert.equal(await engine.closeStrayPages(), 0);
 });
+
+test('归属校验：challenge_id 不在白名单 → 拒收（10-11 串台复发的防护）', () => {
+  const { ExtractEngine } = freshEngineModule();
+  const experiment = {
+    name: '[8、面向对象分析] 面向对象分析之类图',
+    expectedChallengeIds: new Set(['111', '222']),
+    expectedSubjects: new Set(['类图认识'])
+  };
+
+  // 白名单内的 challenge_id → 放行
+  assert.deepEqual(
+    ExtractEngine.levelOwnership({ challenge: { id: 111, subject: '类图认识' } }, experiment),
+    { ok: true }
+  );
+
+  // challenge_id 不在白名单 → 拒收（10-11 串台的形态：内容是别的实验的题）
+  const mismatch = ExtractEngine.levelOwnership({ challenge: { id: 999, subject: '软件危机' } }, experiment);
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.reason, /999/);
+
+  // payload 不带 id 时退化用关卡名：名字不在清单 → 拒收；在清单 → 放行
+  assert.equal(ExtractEngine.levelOwnership({ challenge: { subject: '软件危机' } }, experiment).ok, false);
+  assert.equal(ExtractEngine.levelOwnership({ challenge: { subject: '类图认识' } }, experiment).ok, true);
+
+  // 关卡清单没读到（无白名单）→ 跳过校验：不做没有依据的拒绝
+  assert.equal(ExtractEngine.levelOwnership({ challenge: { id: 999 } }, {}).ok, true);
+});

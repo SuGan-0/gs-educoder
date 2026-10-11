@@ -536,6 +536,15 @@ class ExtractEngine {
       this.log('未能读取关卡列表；将尝试沿关卡链遍历，并尽可能从页面元素确定起点。', 'warn');
     }
     this.discoveredLevels = levels;
+    // 归属白名单：本实验**应有**哪几关（challenge_id 与关卡名）。
+    // 抓到的不在白名单里 = 入口串到了别的实训（10-11 实测 [8、面向对象分析] 5 个实验
+    // 全串到同一个旧任务 wafjr3xgmk5b），captureLevel 在写盘前按这个清单拒收。
+    experiment.expectedChallengeIds = new Set(
+      levels.map((level) => String(level.challengeId || '')).filter(Boolean)
+    );
+    experiment.expectedSubjects = new Set(
+      levels.map((level) => String(level.name || '').trim()).filter(Boolean)
+    );
     if (emit) this.emit({ type: 'levels', experiment, levels });
     return levels;
   }
@@ -851,6 +860,36 @@ class ExtractEngine {
       await this.sleep(400);
     }
     return { clicked: false, reason: '没找到该文案的可点元素' };
+  }
+
+  /**
+   * 归属判定（纯函数）：这份关卡 payload 是不是目标实验自己的题。
+   *
+   * 10-11 实测：[8、面向对象分析] 5 个实验的入口全部串到同一个旧任务
+   * （/tasks/wafjr3xgmk5b「软件危机」）——URL 里的 homework_common_id 是对的、
+   * 任务却是错的，URL 级校验（entryBelongsToExperiment）挡不住，必须在内容级验。
+   *
+   * 判定：challenge_id 在白名单里 → 通过；不在 → 拒收（清单没读到时跳过校验，
+   * 不做没有依据的拒绝）。payload 不带 challenge_id 时退化用关卡名比对。
+   */
+  static levelOwnership(payload, experiment) {
+    const expectedIds = experiment && experiment.expectedChallengeIds;
+    if (!expectedIds || !expectedIds.size) {
+      return { ok: true, reason: '无白名单（关卡清单没读到），跳过内容校验' };
+    }
+    const challenge = (payload && payload.challenge) || {};
+    const challengeId = String(challenge.id ?? challenge.challenge_id ?? '').trim();
+    if (challengeId) {
+      return expectedIds.has(challengeId)
+        ? { ok: true }
+        : { ok: false, reason: `challenge_id=${challengeId} 不在该实验的 ${expectedIds.size} 关清单里` };
+    }
+    const subject = String(challenge.subject || '').trim();
+    const expectedSubjects = (experiment && experiment.expectedSubjects) || new Set();
+    if (subject && expectedSubjects.size && !expectedSubjects.has(subject)) {
+      return { ok: false, reason: `关卡名「${subject}」不在该实验的关卡清单里` };
+    }
+    return { ok: true, reason: 'payload 未带 challenge_id，关卡名在清单里，放行' };
   }
 
   async clickEntryButton(page, experiment) {
@@ -1717,6 +1756,20 @@ class ExtractEngine {
     // 直接取接口：不再「先挂监听再导航、等页面自己发请求」，也不再 sleep。
     // 每关少一次完整页面导航，关卡多的实验是数量级的差别，也彻底不依赖页面结构。
     const payload = prefetched || await this.fetchTask(page, gameIdentifier, experiment);
+    // ★ 归属校验（写任何东西之前）：这一关必须是当前实验自己的题。
+    // 拒收时返回 null 终止整条链——链已经串到别的实训了，继续走只会产出更多错数据。
+    const ownership = ExtractEngine.levelOwnership(payload, experiment);
+    if (!ownership.ok) {
+      this.log(
+        `串台防护：实验「${experiment.name}」抓到的关卡不属于它（${ownership.reason}）`
+        + '——入口串到了别的实训，本实验已放弃，不写入任何数据。'
+        + '常见原因：该实验是图形化/虚拟机题（StarUML 等）且本机从未打开过它，'
+        + '「查看实战」落点解析失败。可先在头歌网页里打开一次该实验再重抓。',
+        'error'
+      );
+      this.stats.rejected = (this.stats.rejected || 0) + 1;
+      return null;
+    }
     const task = taskFromApi(payload, course, experiment, taskUrl);
     // 记录当前关卡的序号与主题：无标识的关卡列表靠序号做选择过滤与进度显示。
     this.currentLevelPosition = payload?.challenge?.homework_challenge_index ?? null;
