@@ -56,6 +56,7 @@ async function exportClassAnswers({ exportRoot, grade, className } = {}) {
       return {
         name: experiment.name,
         chapter: (String(experiment.name).match(/^\[([^\]]+)\]/) || [])[1] || '',
+        homeworkId: experiment.homeworkId || 0,
         records: experiment.levels.map((level) => ({
           levelId: level.id,
           taskIndex: level.taskIndex,

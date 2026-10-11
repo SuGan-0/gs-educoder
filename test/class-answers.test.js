@@ -35,9 +35,12 @@ function experimentInput(name, chapter, levels) {
         kind: level.kind,
         source: level.answerSource || 'ai',
         verified: false,
-        answer: level.kind === 'choice'
-          ? { questions: [{ number: 1, selected: level.selected || [] }] }
-          : { language: level.language || 'python', code: level.answer || '' }
+        // normalizeAnswer 的输出是**扁平**的：choice → questions[]，code → language/code
+        questions: level.kind === 'choice'
+          ? (level.selected || []).map((s, i) => ({ number: i + 1, selected: [s] }))
+          : undefined,
+        language: level.language || 'python',
+        code: level.kind === 'code' ? (level.answer || '') : undefined
       })),
     unanswered: []
   };
