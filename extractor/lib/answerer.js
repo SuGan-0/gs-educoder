@@ -167,12 +167,15 @@ async function listTargets(exportRoot) {
       } catch {
         answered = 0;
       }
+      const homeworkFromLevels = levels
+        .map((level) => Number(level.homeworkCommonId) || 0)
+        .find((value) => value > 0) || 0;
       experiments.push({
         name: experimentDir.name,
         directory: dir,
         answerPath,
         classroom: identity.classroom,
-        homeworkId: identity.experiment.homework_id,
+        homeworkId: identity.experiment.homework_id || homeworkFromLevels,
         levelCount: levels.length,
         answered,
         levels: levels.map((level) => ({
@@ -181,7 +184,11 @@ async function listTargets(exportRoot) {
           title: level.title || '',
           type: level.type || '',
           language: level.codeLanguage || '',
-          taskIdentifier: level.source ? identifierFromSource(level.source) : ''
+          taskIdentifier: level.source ? identifierFromSource(level.source) : '',
+          // 作业号也在 source 的查询串里：班级答案文件按它拼任务 URL（/tasks/{关卡}?homework_common_id={作业号}）
+          homeworkCommonId: level.source
+            ? (String(level.source).match(/[?&]homework_common_id=(\d+)/)?.[1] || '')
+            : ''
         }))
       });
     }
