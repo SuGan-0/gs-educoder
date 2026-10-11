@@ -138,3 +138,11 @@ test('简易版：startAuto 持久化开关并导航到第一个有答案的关�
     '要导航到第一个有答案的关卡（L002；L001 没答案不排队）'
   );
 });
+
+test('简易版：submitAndWait 在没有提交按钮时返回 blocked（函数必须存在——曾漏定义导致运行时才炸）', async () => {
+  const hooks = loadSandbox({ storedAnswers: CLASS_DOC });
+  assert.equal(typeof hooks.submitAndWait, 'function', 'submitAndWait 必须有定义');
+  const outcome = await hooks.submitAndWait(); // 假页面没有任何按钮
+  assert.equal(outcome.status, 'blocked');
+  assert.match(outcome.text, /找不到提交按钮/);
+});
