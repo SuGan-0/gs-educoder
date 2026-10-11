@@ -52,14 +52,15 @@ function levelEntry(record, answerEntry) {
     kind: kind === 'choice' ? 'choice' : kind === 'code' ? 'code' : 'unknown',
     identifiers
   };
-  if (answer.answer && typeof answer.answer === 'object') {
+  // 注意形状：normalizeAnswer 的输出是**扁平**的——choice 用 questions[]，code 用 language/code
+  if (answerEntry) {
     if (base.kind === 'choice') {
-      base.answer = (answer.answer.questions || []).map((q) => ({ number: q.number, selected: q.selected }));
+      base.answer = (answer.questions || []).map((q) => ({ number: q.number, selected: q.selected }));
     } else if (base.kind === 'code') {
-      base.answer = { language: answer.answer.language || '', code: answer.answer.code || '' };
+      base.answer = { language: answer.language || '', code: answer.code || '' };
     }
+    if (answer.source) base.source = answer.source;
   }
-  if (answer.source) base.source = answer.source;
   return base;
 }
 
@@ -125,6 +126,34 @@ function buildClassDocument({ grade, className, classrooms }) {
   return doc;
 }
 
+/** 重算 doc.stats（merge 之后计数会变，必须重算再落盘）。 */
+function computeStats(doc) {
+  let experimentCount = 0;
+  let levelCount = 0;
+  let answeredCount = 0;
+  const perClassroom = {};
+  for (const classroom of doc.classrooms || []) {
+    let answeredIn = 0;
+    for (const experiment of classroom.experiments || []) {
+      experimentCount += 1;
+      for (const level of experiment.levels || []) {
+        levelCount += 1;
+        if (level.answered) { answeredCount += 1; answeredIn += 1; }
+      }
+    }
+    perClassroom[classroom.name] = { experiments: classroom.experiments.length, answered: answeredIn };
+  }
+  doc.stats = {
+    classrooms: doc.classrooms.length,
+    experiments: experimentCount,
+    levels: levelCount,
+    answered: answeredCount,
+    missing: levelCount - answeredCount,
+    perClassroom
+  };
+  return doc;
+}
+
 /**
  * 合并两份班级文件（已有文件 + 新导出）：按 课堂码/课堂名 → 实验名 → level_id 对齐。
  * 规则：新文件里有答案的关卡**覆盖**旧值；新文件没有的关卡保留旧答案（不丢）。
@@ -155,7 +184,7 @@ function mergeClassDocuments(previous, next) {
     }
   }
   next.generated_at = new Date().toISOString();
-  return next;
+  return computeStats(next);
 }
 
 /**
