@@ -39,6 +39,14 @@ const CLASS_DOC = {
 async function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] } = {}) {
   const hooks = {};
   hooks.__location = { pathname: '/tasks/x', href: 'https://www.educoder.net/tasks/x', search: '' };
+  // 运行态现在存 sessionStorage（按标签页隔离）——沙箱里给一个可断言的实现
+  const sessionStore = new Map();
+  hooks.__session = sessionStore;
+  const fakeSessionStorage = {
+    getItem: (key) => (sessionStore.has(key) ? sessionStore.get(key) : null),
+    setItem: (key, value) => sessionStore.set(String(key), String(value)),
+    removeItem: (key) => sessionStore.delete(String(key))
+  };
   const fakeDocument = {
     querySelectorAll: () => [],
     querySelector: () => null,
@@ -56,6 +64,7 @@ async function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites 
     document: fakeDocument,
     location,
     navigator: { userAgent: 'test' },
+    sessionStorage: fakeSessionStorage,
     URL, URLSearchParams, console, setTimeout, clearTimeout,
     GM_getValue: (key, fallback) => (key === 'lite-answers-v2' ? storedAnswers : key === 'lite-auto' ? storedAuto : fallback),
     GM_setValue: (key, value) => gmWrites.push({ key, value }),
@@ -134,8 +143,8 @@ test('简易版：startAuto 持久化开关并导航到第一个有答案的关�
   // 当前页面（/tasks/x）不是任何目标关卡 → startAuto 应导航到第一个有答案的关卡
   await hooks.startAuto();
   // 一键开关现在按账号隔离（lite-auto:{login}）——断言用前缀匹配
-  const autoWrites = gmWrites.filter((w) => String(w.key).startsWith('lite-auto'));
-  assert.ok(autoWrites.length && autoWrites[autoWrites.length - 1].value === true, '一键开关必须持久化（跨页面续答的命门）');
+  // 一键开关现在存 sessionStorage（按标签页隔离；新标签页继承副本 → 接力成立）
+  assert.equal(hooks.__session.get('lite-auto'), 'true', '一键开关必须写进本标签页的会话存储');
   // 现在的正确链路：先到「作业详情页」→ 点「开启挑战」→ 落到当前账号自己的关卡
   // （不能直接用答案文件里的关卡标识导航——那个标识属于别的账号，10-11 实证）
   assert.match(
