@@ -36,8 +36,9 @@ const CLASS_DOC = {
   stats: { classrooms: 1, experiments: 1, levels: 2, answered: 1, missing: 1 }
 };
 
-function loadSandbox({ storedAnswers = null, storedAuto = false } = {}) {
+function loadSandbox({ storedAnswers = null, storedAuto = false, gmWrites = [] } = {}) {
   const hooks = {};
+  hooks.__location = { pathname: '/tasks/x', href: 'https://www.educoder.net/tasks/x', search: '' };
   const fakeDocument = {
     querySelectorAll: () => [],
     querySelector: () => null,
@@ -57,12 +58,13 @@ function loadSandbox({ storedAnswers = null, storedAuto = false } = {}) {
     navigator: { userAgent: 'test' },
     URL, URLSearchParams, console, setTimeout, clearTimeout,
     GM_getValue: (key, fallback) => (key === 'lite-answers-v2' ? storedAnswers : key === 'lite-auto' ? storedAuto : fallback),
-    GM_setValue: () => {},
+    GM_setValue: (key, value) => gmWrites.push({ key, value }),
     GM_deleteValue: () => {},
     GM_registerMenuCommand: () => {},
     unsafeWindow: null
   };
-  sandbox.window.location = location;
+  sandbox.location = hooks.__location;
+  sandbox.window.location = hooks.__location;
   vm.createContext(sandbox);
   new vm.Script(SOURCE).runInContext(sandbox);
   return hooks;
@@ -118,5 +120,21 @@ test('简易版：gameIdFromUrl 两种任务 URL 形态都取到关卡标识（1
   assert.equal(
     hooks.gameIdFromUrl('https://www.educoder.net/tasks/2xxxxxx/4200911/vrtbzlmexi3f?coursesId=x'),
     'vrtbzlmexi3f'
+  );
+});
+
+
+test('简易版：startAuto 持久化开关并导航到第一个有答案的关卡（修复"点一下走一步"）', async () => {
+  const stored = JSON.parse(JSON.stringify(CLASS_DOC));
+  const gmWrites = [];
+  const hooks = loadSandbox({ storedAnswers: stored, gmWrites });
+  // 当前页面（/tasks/x）不是任何目标关卡 → startAuto 应导航到第一个有答案的关卡
+  await hooks.startAuto();
+  const autoWrites = gmWrites.filter((w) => w.key === 'lite-auto');
+  assert.ok(autoWrites.length && autoWrites[autoWrites.length - 1].value === true, '一键开关必须持久化（跨页面续答的命门）');
+  assert.match(
+    String(hooks.__location.href),
+    /\/tasks\/efbt5uy9cgwj\?homework_common_id=4200882$/,
+    '要导航到第一个有答案的关卡（L002；L001 没答案不排队）'
   );
 });
