@@ -136,10 +136,12 @@ test('简易版：startAuto 持久化开关并导航到第一个有答案的关�
   // 一键开关现在按账号隔离（lite-auto:{login}）——断言用前缀匹配
   const autoWrites = gmWrites.filter((w) => String(w.key).startsWith('lite-auto'));
   assert.ok(autoWrites.length && autoWrites[autoWrites.length - 1].value === true, '一键开关必须持久化（跨页面续答的命门）');
+  // 现在的正确链路：先到「作业详情页」→ 点「开启挑战」→ 落到当前账号自己的关卡
+  // （不能直接用答案文件里的关卡标识导航——那个标识属于别的账号，10-11 实证）
   assert.match(
     String(hooks.__location.href),
-    /\/tasks\/efbt5uy9cgwj\?homework_common_id=4200882$/,
-    '要导航到第一个有答案的关卡（L002；L001 没答案不排队）'
+    /\/classrooms\/2i6ng7vp\/shixun_homework\/4200882\/detail\?tabs=1$/,
+    '要打开作业详情页（开启挑战的入口）'
   );
 });
 
