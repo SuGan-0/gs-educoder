@@ -238,20 +238,18 @@ test('签名常量：存着但解不出来的值不算「已配置」，仍会�
   assert.equal(signingRequests(built).length, 1, '解不出来的常量不该被认为已配好');
 });
 
-// 常量已**内置**进脚本（10-14 用户要求「固定进篡改猴」）：GM 空也不再向控制台拉——
-// signingRequests 必须为 0，内置值直接种进 GM（「设置签名常量」菜单的预填走同一条路）。
-test('签名常量：内置常量生效，空 GM 也不向控制台拉（直接种进 GM）', () => {
+// 仓库里的脚本**不带真实常量**（公开仓库不常驻，见 EMBEDDED_SIGNING_KEYS 的注释）：
+// GM 空 + 配了控制台 → 向控制台要一次，拿到后才种进 GM；要不到就什么都不写。
+test('签名常量：仓库不带常量，空 GM 时向控制台同步一次', () => {
   const built = boot({ gm: { 'educoder-local-console': 'http://127.0.0.1:43127', 'educoder-local-token': 'a'.repeat(48) } });
-  assert.equal(signingRequests(built).length, 0, '内置常量生效时不该再向控制台请求');
-  const { validateSigningKey } = built.hooks;
-  assert.equal(validateSigningKey(built.store['educoder-sign-ak']).ok, true, '种进 GM 的内置 AK 要通过校验');
-  assert.equal(validateSigningKey(built.store['educoder-sign-sk']).ok, true, '种进 GM 的内置 SK 要通过校验');
+  assert.equal(signingRequests(built).length, 1, '没有内置常量时应当向控制台要一次');
+  assert.equal(built.store['educoder-sign-ak'], undefined, '空值不该被种进 GM');
 });
 
-test('签名常量：没配控制台地址时同样不打扰（内置常量开箱即用）', () => {
+test('签名常量：没配地址时只试一次默认控制台，拿不到就什么都不写', () => {
   const built = boot();
-  assert.equal(signingRequests(built).length, 0, '没有地址也不该发请求——常量已经内置');
-  assert.ok(built.store['educoder-sign-ak'], '内置值要种进 GM');
+  assert.equal(signingRequests(built).length, 1, '会向默认控制台地址试一次（拿不到也不报错）');
+  assert.equal(built.store['educoder-sign-ak'], undefined, '不该种入任何常量');
 });
 
 test('面板：标题栏里的按钮不能被拖动逻辑吃掉（「收起没效果」的根因）', () => {
