@@ -82,6 +82,22 @@ function safeFilePart(value) {
   return text(value).replace(/[\\/:*?"<>|]/g, '～').trim() || 'untitled';
 }
 
+/**
+ * `{班级}（{课堂码}）` 目录名 → `{ name, code }`，**是 `answerDirFor` 的逆运算**。
+ *
+ * 为什么需要逆运算：写入时课堂码由调用方给（篡改猴从关卡页的 `course_identifier` 拿到，很稳），
+ * 但**读取**时只能从关卡存档的 `classroomCode` 字段推。早期抓的存档没有这个字段，
+ * 于是读的时候算出的路径缺班级码、与真实位置对不上，只能靠回退 v1 扁平文件兜住
+ * ——「答案迁到 v2 了却读不回来，旧文件也不敢删」。目录名本身就是课堂码的持久记录，
+ * 读的时候必须能把它认回来。
+ *
+ * 不含 `（…）` 时 `code` 为空（旧产物可能没有码）；班级名里本身带 `（…）` 也认（取最后一组）。
+ */
+function classroomFromDirName(dirName) {
+  const match = /^(.*)（([^（）]*)）$/.exec(text(dirName));
+  return match ? { name: match[1].trim(), code: match[2].trim() } : { name: text(dirName), code: '' };
+}
+
 // -------------------------------------------------------- 选择题答案解析
 
 /**
@@ -371,6 +387,7 @@ module.exports = {
   levelIdOf,
   taskIndexOf,
   safeFilePart,
+  classroomFromDirName,
   parseChoiceAnswer,
   formatChoiceAnswer,
   normalizeAnswer,

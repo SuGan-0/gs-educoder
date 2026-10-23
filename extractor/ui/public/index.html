@@ -489,6 +489,8 @@
   .tag-choice { color: var(--purple-fg); background: var(--purple-bg); border-color: var(--purple-line); }
   .tag-unknown { color: var(--fg-2); background: var(--sunken); border-color: var(--line-2); }
   .tag-end { color: var(--fg-3); background: var(--sunken); border-color: var(--line); }
+  /* 跳过清单：本地已有（存档 / 已有答案）的关卡。「全选」会自动不勾这些。 */
+  .tag-done { color: var(--ok); background: transparent; border-color: var(--ok); }
 
   /* 多实验合并时的关卡列表：每条标出所属实验 */
   .row-exp {
@@ -1322,6 +1324,21 @@
     return el('span', { class: 'tag ' + cls, text: value, attrs: { title: label } });
   }
 
+  /**
+   * 跳过清单标签：引擎在关卡上带了 localDone（本地存档 / 答案文件里已有这一关）。
+   * 只做展示——勾选权还在用户手里，「全选」时才会自动排除（见 applyBulk）。
+   */
+  function doneTag(level) {
+    var done = level && level.localDone;
+    if (!done || (!done.archived && !done.answered)) return null;
+    var text = done.answered ? '已有答案' : '已存档';
+    return el('span', {
+      class: 'tag tag-done',
+      text: text,
+      attrs: { title: '本地已有' + (done.answered ? '答案' : '存档') + '，「全选」时自动不勾；要重抓可手动勾上' }
+    });
+  }
+
   /* ------------------------------ toast ------------------------------ */
 
   function toast(message, kind) {
@@ -1892,19 +1909,22 @@
       // 否则用户会以为「只列出了第一个实验的关卡」。
       if (level && level.experimentName) meta.push(level.experimentName);
       if (level && level.index != null) meta.push('第 ' + num(level.index) + ' 关');
-      return el('label', {
-        class: 'row' + (level && level.experimentName ? ' has-exp' : ''),
-        attrs: { title: (level && level.name) || '' }
-      }, [
+      var row = [
         input,
         el('span', { class: 'row-main' }, [
           el('span', { class: 'row-exp', text: (level && level.experimentName) || '' }),
           el('span', { class: 'row-title', text: (level && level.name) || '未命名关卡' }),
           el('span', { class: 'row-meta' }, meta.map(function (text) { return el('span', { text: text }); }))
         ]),
-        typeTag(level && level.type),
-        el('span', { class: 'row-side mono', text: identifier, attrs: { title: identifier } })
-      ]);
+        typeTag(level && level.type)
+      ];
+      var done = doneTag(level);
+      if (done) row.push(done);
+      row.push(el('span', { class: 'row-side mono', text: identifier, attrs: { title: identifier } }));
+      return el('label', {
+        class: 'row' + (level && level.experimentName ? ' has-exp' : ''),
+        attrs: { title: (level && level.name) || '' }
+      }, row);
     }));
   }
 
@@ -2060,6 +2080,7 @@
 
   /** 关卡区的分组说明：多实验合并列表时逐行标出所属实验，并给出统计。 */
   function levelGroupHintText() {
+    var parts = [];
     var counts = [];
     state.levels.forEach(function (level) {
       var name = level && level.experimentName;
@@ -2068,9 +2089,17 @@
       if (hit) hit.count += 1;
       else counts.push({ name: name, count: 1 });
     });
-    if (counts.length <= 1) return '';
-    return '共 ' + state.levels.length + ' 关，来自 ' + counts.length + ' 个实验：' +
-      counts.map(function (item) { return item.name + ' ' + item.count + ' 关'; }).join('、');
+    if (counts.length > 1) {
+      parts.push('共 ' + state.levels.length + ' 关，来自 ' + counts.length + ' 个实验：' +
+        counts.map(function (item) { return item.name + ' ' + item.count + ' 关'; }).join('、'));
+    }
+    // 跳过清单：不解释的话，「全选完怎么少了一截」会像 bug。
+    var doneCount = state.levels.filter(function (level) {
+      var done = level && level.localDone;
+      return done && (done.archived || done.answered);
+    }).length;
+    if (doneCount) parts.push('跳过清单 ' + doneCount + ' 关本地已有，「全选」自动不勾');
+    return parts.join('；');
   }
 
   function hintFor(kind, enabled) {
@@ -2308,6 +2337,10 @@
       state.levels.forEach(function (level, index) {
         var key = levelKey(level, index);
         var current = sel.levels.has(key);
+        // 跳过清单：「全选」不勾本地已有的关（存档 / 已有答案）。
+        // 反选 / 手动勾选不受影响——要重抓某一关，手动勾上就行。
+        var done = level && level.localDone && (level.localDone.archived || level.localDone.answered);
+        if (done && mode === 'all') return;
         if (mode === 'all' || (mode === 'invert' && !current)) next.add(key);
       });
       sel.levels = next;

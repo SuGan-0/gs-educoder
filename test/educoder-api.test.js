@@ -409,6 +409,65 @@ test('listExperiments：章名取 upper_category_name，没有章时为空串', 
   assert.deepEqual(experiments.map((item) => item.categoryName), ['8、面向对象分析', '']);
 });
 
+// 10-14 实测：homework_commons 返回**全部**作业（含未发布），这些条目 is_shixun 为真、
+// 会混进实验列表，但课程页上根本没有它们的卡片——提取时每个都白等 ~50 秒入口轮询，
+// 再「无法定位入口关卡，已跳过」。必须在读取阶段按发布状态滤掉，并把名单交代出来。
+test('listExperiments：未发布的实验要滤掉，且名单挂在 skippedUnpublished 上', async () => {
+  const FUTURE = new Date(Date.now() + 30 * 24 * 3600 * 1000)
+    .toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' '); // 北京时间墙上时间
+  const PAST = '2026-01-01 00:00:00';
+  const payload = {
+    query_total_count: 5,
+    homeworks: [
+      // status 数组带「未发布」文案 → 滤掉
+      { is_shixun: true, homework_id: 1, name: '课堂回归测验', status: ['未发布'], shixun_identifier: 'a', myshixun_identifier: 'm' },
+      // status 没标，但发布时间在未来 → 滤掉
+      { is_shixun: true, homework_id: 2, name: '定时发布的实验', status: ['提交中'], publish_time: FUTURE, shixun_identifier: 'b', myshixun_identifier: 'n' },
+      // 正常已发布 → 保留
+      { is_shixun: true, homework_id: 3, name: '白盒测试', status: ['提交中'], publish_time: PAST, shixun_identifier: 'c', myshixun_identifier: 'o' },
+      // 没有 status / publish_time 字段（老数据形状）→ 不能误杀，保留
+      { is_shixun: true, homework_id: 4, name: '无状态字段', shixun_identifier: 'd', myshixun_identifier: 'p' },
+      // 发布时间解析不出来（老师填了别的文本）→ 宁可保留，不能错杀
+      { is_shixun: true, homework_id: 5, name: '时间异常', status: ['提交中'], publish_time: '等通知', shixun_identifier: 'e', myshixun_identifier: 'q' }
+    ]
+  };
+  const page = stubPage(() => ok(JSON.stringify(payload)));
+  const experiments = await api.listExperiments(page, { classroomCode: 'DEMO0001' });
+
+  assert.deepEqual(
+    experiments.map((item) => item.name),
+    ['白盒测试', '无状态字段', '时间异常'],
+    '只应留下已发布（或无法判定发布状态）的实验'
+  );
+  const skipped = experiments.skippedUnpublished;
+  assert.equal(skipped.length, 2, '被滤掉的要记录在 skippedUnpublished（非可枚举）');
+  assert.deepEqual(skipped.map((item) => item.name), ['课堂回归测验', '定时发布的实验']);
+  assert.match(skipped[0].reason, /未发布/);
+  assert.match(skipped[1].reason, /在未来/);
+  // 非可枚举：不影响既有 deepEqual 契约（deepEqual / JSON.stringify 都看不到它）
+  assert.equal(
+    Object.prototype.propertyIsEnumerable.call(experiments, 'skippedUnpublished'),
+    false,
+    'skippedUnpublished 必须是非可枚举属性'
+  );
+});
+
+test('publicationState：两条判据与边界（status 文案 / 发布时间在未来 / 宽容解析）', () => {
+  const future = new Date(Date.now() + 3600 * 1000)
+    .toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
+  const past = '2020-01-01 08:00:00';
+
+  assert.equal(api.publicationState({ status: ['未发布'] }).unpublished, true);
+  assert.equal(api.publicationState({ status: ['提交中', '补交中'] }).unpublished, false);
+  assert.equal(api.publicationState({ publish_time: future }).unpublished, true, '发布时间在未来 = 未发布');
+  assert.equal(api.publicationState({ publish_time: past }).unpublished, false, '已过发布时间 = 已发布');
+  // 宽容：解析不出 / 缺字段一律不判未发布（提取宁可多试，不能错杀）
+  assert.equal(api.publicationState({ publish_time: '等通知' }).unpublished, false);
+  assert.equal(api.publicationState({}).unpublished, false);
+  assert.equal(api.publicationState(null).unpublished, false);
+  assert.match(api.publicationState({ status: ['未发布'] }).reason, /未发布/);
+});
+
 test('listExperiments：按 query_total_count 分页取全', async () => {
   const pages = {
     1: { query_total_count: 2, homeworks: [{ is_shixun: true, homework_id: 1, name: 'A', shixun_identifier: 'a', myshixun_identifier: 'm' }] },
@@ -630,7 +689,9 @@ test('导出面严格等于契约', () => {
       'listCourses',
       'listExperiments',
       'listShixunCategories',
-      'probeLogin'
+      'parsePlatformTime',
+      'probeLogin',
+      'publicationState'
     ]
   );
 });

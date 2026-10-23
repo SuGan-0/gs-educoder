@@ -22,6 +22,7 @@ const {
   mergeAnswer,
   mergeAnswers,
   answerPathFor,
+  classroomCodeFromDir,
   loadAnswerDocument
 } = require('../extractor/lib/answer-store');
 const fmt = require('../extractor/lib/answer-format');
@@ -344,4 +345,29 @@ test('loadAnswerDocument：优先 v2 位置，其次旧位置', async (t) => {
   const found = await loadAnswerDocument(root, CLASSROOM, EXPERIMENT);
   assert.equal(found.legacy, true);
   assert.equal(found.path, legacy);
+});
+
+// 读取侧的关键一环（10-14）：早期抓的关卡存档没有 `classroomCode` 字段，只靠它算出的
+// 答案路径会缺班级码（`answers/{班级}/…`），与真实位置 `answers/{班级}（{码}）/…` 对不上。
+// 目录名本身就是课堂码的持久记录——读的时候必须能认回来，否则「迁到 v2 了却读不回来」。
+test('classroomCodeFromDir：从已有 v2 目录名认出课堂码', async (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const saved = await mergeAnswers({
+    exportRoot: root,
+    classroom: CLASSROOM,
+    experiment: EXPERIMENT,
+    entries: [{ levelId: 'L001', kind: 'choice', answer: 'B' }]
+  });
+  assert.equal(saved.ok, true);
+
+  assert.equal(await classroomCodeFromDir(root, '示例课程A'), 'DEMO0001');
+  assert.equal(await classroomCodeFromDir(root, '没有这个班'), '', '认不出来就是空，不能瞎猜');
+  assert.equal(await classroomCodeFromDir(root, ''), '');
+
+  // 同时存在「没有码的班级目录」时，仍然要认出带码的那个
+  fs.mkdirSync(path.join(root, 'answers', '没有码的班'), { recursive: true });
+  assert.equal(await classroomCodeFromDir(root, '没有码的班'), '', '只有班级名不算认出了课堂码');
+  assert.equal(await classroomCodeFromDir(root, '示例课程A'), 'DEMO0001', '不能被别的目录带偏');
 });

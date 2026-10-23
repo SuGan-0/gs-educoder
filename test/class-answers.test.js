@@ -135,6 +135,49 @@ test('mergeClassDocuments：新导出没抓到的关卡保留旧答案（不丢�
   assert.deepEqual(level.answer, [{ number: 1, selected: ['B'] }]);
 });
 
+// 回归（10-12 实测）：新导出拿不到课堂码时，合并必须仍能按**课堂名**找到旧班级。
+// 否则只按 code 查会全部落空 → 旧答案被静默丢掉。实测重新导出班级文件时
+// 「结构化分析工具」L002 的人工答案就是这么没的，有答案的关卡 102 → 101。
+// （新导出为什么常缺码：关卡 source 不是三段式 `/tasks/{码}/{作业号}/{关卡}` 时就没有码。）
+test('mergeClassDocuments：新导出缺课堂码时，按课堂名也要对上，旧答案不能丢', () => {
+  const previous = buildClassDocument({
+    grade: '2024级',
+    className: '软工24-15、16班',
+    classrooms: [
+      {
+        name: '软件工程导论2026年下半年',
+        code: '2i6ng7vp',
+        experiments: [
+          experimentInput('结构化分析工具', '4、需求分析与结构化分析', [
+            { level_id: 'L002', position: 2, title: 'Warnier图', kind: 'code', answer: '序号1：(VIP 用户)', answerSource: 'manual' }
+          ])
+        ]
+      }
+    ]
+  });
+  // 新导出：码丢了，只剩课堂名；同一关这次没有答案
+  const next = buildClassDocument({
+    grade: '2024级',
+    className: '软工24-15、16班',
+    classrooms: [
+      {
+        name: '软件工程导论2026年下半年',
+        code: '',
+        experiments: [
+          experimentInput('结构化分析工具', '4、需求分析与结构化分析', [
+            { level_id: 'L002', position: 2, title: 'Warnier图', kind: 'code' }
+          ])
+        ]
+      }
+    ]
+  });
+  const merged = mergeClassDocuments(previous, next);
+  const classroom = merged.classrooms[0];
+  const level = classroom.experiments[0].levels[0];
+  assert.equal(level.answered, true, '缺码时旧答案仍必须保留');
+  assert.equal(classroom.code, '2i6ng7vp', '旧文件里的课堂码要被捡回来');
+});
+
 test('validateClassDocument：空答案/缺班级名要报错，重复标识给 warning', () => {
   const doc = buildClassDocument({
     grade: '2024级',

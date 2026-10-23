@@ -163,9 +163,25 @@ function computeStats(doc) {
 function mergeClassDocuments(previous, next) {
   if (!previous || previous.kind !== CLASS_KIND) return next;
   const key = (value) => String(value || '').trim();
-  const prevByCode = new Map(
-    (previous.classrooms || []).map((c) => [key(c.code) || key(c.name), c])
-  );
+  /**
+   * 旧班级的索引：**课堂码与课堂名都建键**。
+   *
+   * 只按「code 或 name」取一个键是不行的：新导出常常拿不到课堂码
+   * （关卡 source 不是三段式 `/tasks/{码}/{作业号}/{关卡}` 时就没有码，
+   * 见 answerer.listTargets 的 classroomCodeFromLevels），于是它查的是「课堂名」，
+   * 而旧文件里存的是码 → 一条都对不上 → 旧答案被**静默丢掉**。
+   * 实测：重新导出班级文件时「结构化分析工具」L002 的人工答案就这么没了，
+   * 有答案的关卡从 102 掉到 101（丢的不多是因为多数关卡在工作层还有备份，纯人工补的没有）。
+   *
+   * 两个键都建，下面照旧按 `code || name` 查，命中率最高。
+   */
+  const prevByCode = new Map();
+  for (const item of previous.classrooms || []) {
+    const code = key(item.code);
+    const name = key(item.name);
+    if (code) prevByCode.set(code, item);
+    if (name && !prevByCode.has(name)) prevByCode.set(name, item);
+  }
   for (const classroom of next.classrooms || []) {
     const code = key(classroom.code) || key(classroom.name);
     const prevClassroom = prevByCode.get(code);

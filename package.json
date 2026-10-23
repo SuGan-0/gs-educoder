@@ -8,6 +8,10 @@
     "extract": "node extractor/run.js",
     "ui": "node extractor/run.js --ui",
     "reminder": "node extractor/reminder.js",
+    "check-fit": "node tools/check-answer-fit.js",
+    "build-class-answers": "node tools/build-class-answers.js",
+    "merge-class-answers": "node tools/merge-class-answers.js",
+    "migrate-answers": "node tools/migrate-answers.js",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "writer": "node extractor/writer-server.js",
     "crawler": "node extractor/traditional-crawler.js"

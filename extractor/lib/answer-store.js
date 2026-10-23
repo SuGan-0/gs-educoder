@@ -38,6 +38,34 @@ function answerPathFor(exportRoot, classroom, experiment) {
 }
 
 /**
+ * 从**已存在的答案目录名**里认出课堂码：`answers/{班级}（{码}）/` → `{码}`。
+ *
+ * 为什么必须有这一步：**写入**时课堂码是调用方给的（篡改猴从关卡页的 `course_identifier`
+ * 拿到，很稳），但**读取**时只能从关卡存档的 `classroomCode` 字段推。早期抓的存档没有这个字段，
+ * 于是读的时候算出的路径是 `answers/{班级}/{实验}.answers.json`（没班级码），与真实位置
+ * `answers/{班级}（{码}）/…` 对不上——以前靠**回退 v1 扁平文件**兜住，结果就是
+ * 「答案明明迁到 v2 了，工具却读不回来，旧文件也不敢删」。
+ *
+ * 目录名本身就是课堂码的持久记录（`answerDirFor` 写进去的），在这里补上这一步，读写才对称。
+ */
+async function classroomCodeFromDir(exportRoot, classroomName) {
+  const wanted = String(classroomName || '').trim();
+  if (!wanted) return '';
+  let entries = [];
+  try {
+    entries = await fs.readdir(path.join(exportRoot, 'answers'), { withFileTypes: true });
+  } catch {
+    return '';
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const parsed = fmt.classroomFromDirName(entry.name);
+    if (parsed.code && parsed.name === wanted) return parsed.code;
+  }
+  return '';
+}
+
+/**
  * 「已通过测评」判定：得分达到满分。
  *
  * 实测（2026-09-28，示例课程A）：
@@ -246,6 +274,7 @@ async function mergeAnswer(options) {
 
 module.exports = {
   answerPathFor,
+  classroomCodeFromDir,
   levelPassed,
   choiceAnswerText,
   readAnswerDocument,

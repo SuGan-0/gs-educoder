@@ -221,3 +221,27 @@ test('路径：旧位置仍能算出来（只读兼容用）', () => {
     path.join(root, 'answers', 'A班__CNN.answers.json')
   );
 });
+
+test('路径：目录名能反解出班级与课堂码（answerDirFor 的逆运算）', () => {
+  assert.deepStrictEqual(fmt.classroomFromDirName('机器学习_2026年下半年（HCEAP94S）'), {
+    name: '机器学习_2026年下半年',
+    code: 'HCEAP94S'
+  });
+  assert.deepStrictEqual(fmt.classroomFromDirName('A班'), { name: 'A班', code: '' }, '没有码的旧产物');
+  assert.deepStrictEqual(
+    fmt.classroomFromDirName('A（B）（C1）'),
+    { name: 'A（B）', code: 'C1' },
+    '班级名里本身带括号：取最后一组'
+  );
+});
+
+test('路径：answerDirFor → 目录名 → classroomFromDirName 往返一致', () => {
+  const root = path.join('E:', 'x');
+  for (const classroom of [{ name: '机器学习_2026年下半年', code: 'HCEAP94S' }, { name: 'A班' }]) {
+    const dirName = path.basename(fmt.answerDirFor(root, classroom));
+    assert.deepStrictEqual(fmt.classroomFromDirName(dirName), {
+      name: classroom.name,
+      code: classroom.code || ''
+    });
+  }
+});

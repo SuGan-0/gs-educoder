@@ -31,6 +31,16 @@ exports/
 目录名里的 `（HCEAP94S）` 是**课堂码**。旧位置
 （`answers/{班级}__{实验}.answers.json`）仍然只读兼容，读到就升级。
 
+**批量迁移用 `npm run migrate-answers`**：把旧扁平文件逐个升级到上面这个位置
+（`task_identifier` / `title` 从关卡存档补齐，`source` 由文件级 `model` 推断），
+`--dry-run` 先预演、`--cleanup` 把已被 v2 完整覆盖的旧文件移进 `answers/.legacy-backup/`
+（移动不是删除）。**绝不覆盖已存在的 v2 文件**——平台标准答案与人工改过的条目都比旧文件权威。
+
+读取侧还有一条规矩：**课堂码能从答案目录名反解**（`answer-format.classroomFromDirName()`，
+是 `answerDirFor()` 的逆运算）。早期抓的关卡存档没有 `classroomCode` 字段，只靠存档算路径
+会得到缺班级码的位置（`answers/{班级}/…`），与真实目录对不上——那就会出现
+「答案迁到 v2 了却读不回来，旧文件也不敢删」。
+
 `CNN.md` 的 frontmatter 里直接写了该实验对应的答案文件路径：
 
 ```yaml
