@@ -107,9 +107,9 @@ test('篡改猴签名：请求头三件套齐全，X-EDU-Type 必须精确是 pc
   assert.equal(headers['X-EDU-Type'], 'pc');
 });
 
-// 常量已**内置**进脚本（用户 10-14 要求「固定进篡改猴」）：GM 空的时候，
-// signingKeysRaw 会用内置值补上并种回 GM——开箱即用，不再提示缺常量。
-test('篡改猴签名：GM 空时内置常量生效（自动种回 GM，签名可用）', () => {
+// 仓库里的脚本**不带真实常量**（公开仓库不常驻）：GM 空的时候必须如实报「缺常量」，
+// 不种空值、不编造签名——把用户引到菜单粘一次，而不是发一个必被拒的请求。
+test('篡改猴签名：仓库不带常量，GM 空时如实报缺常量', () => {
   // 用一个「没有常量」的沙箱（GM_getValue 只回 fallback），记录 GM_setValue 的写入
   const hooks = {};
   const seeded = {};
@@ -142,21 +142,10 @@ test('篡改猴签名：GM 空时内置常量生效（自动种回 GM，签名�
   vm.createContext(sandbox);
   new vm.Script(SOURCE).runInContext(sandbox);
 
-  assert.equal(hooks.hasSigningKeys(), true, '内置常量要让 hasSigningKeys 通过');
-  const keys = hooks.signingKeys();
-  assert.ok(keys && keys.ak && keys.sk, '内置常量要能解码出 AK/SK');
-  assert.match(keys.ak, /^[0-9a-f]{32}$/, '内置 AK 解出来是 32 位十六进制（与 .env 同一份）');
-  assert.match(keys.sk, /^[0-9a-f]{32}$/, '内置 SK 解出来是 32 位十六进制');
-  // 种回 GM：「设置签名常量」菜单的预填走同一条路
-  assert.ok(seeded['educoder-sign-ak'] && seeded['educoder-sign-sk'], '内置值要种进 GM 存储');
-  // 签名真的可用：拼出来的签名串用的是内置常量
-  const text = hooks.signingText('GET', 1758956400000);
-  assert.equal(
-    text,
-    `method=GET&ak=${keys.ak}&sk=${keys.sk}&time=1758956400000`,
-    '签名串用内置常量拼装'
-  );
-  assert.doesNotThrow(() => hooks.signature('GET', 1758956400000), '内置常量下签名函数不该抛错');
+  assert.equal(hooks.hasSigningKeys(), false, '没有内置常量时 hasSigningKeys 必须为 false');
+  assert.equal(hooks.signingKeys(), null, '缺常量时 signingKeys() 返回 null');
+  assert.equal(seeded['educoder-sign-ak'], undefined, '不该把空值种进 GM 存储');
+  assert.throws(() => hooks.signingText('GET', 1758956400000), /签名常量/, '缺常量要报出可操作的提示');
 });
 
 // GM 里已经存了一**对**时（用户粘过）优先用存的那对——内置值只是缺省，不许悄悄顶掉用户的覆盖。
