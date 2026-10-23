@@ -1660,6 +1660,250 @@ test('引擎：入口必须是链首（第 1 关），列表最小序号为 1 �
   assert.ok(String(corrected.source).startsWith('backtrack'), '来源应标记为回溯');
 });
 
+// 10-14 实测的串台根因：多实验连抓时共享的 engine.discoveredLevels 停留在
+// **最后一个被读取的实验**的列表上，于是每个实验的入口都被解析成别人列表里的
+// 「第 1 关 软件危机」，日志表现为「选中 N 关，但关卡链上只到达 0 关」。
+// 修复：resolveEntry / startPath 接受显式的本实验关卡列表，优先于共享状态。
+test('引擎：入口解析必须用本实验自己的关卡列表，不能吃别的实验剩下的', async (t) => {
+  const fake = installFakePlaywright();
+  const restoreApi = patchApiForFakes();
+  const { ExtractEngine } = freshEngineModule();
+  const exportRoot = withTempExportRoot();
+  t.after(() => {
+    restoreApi();
+    fake.restore();
+    fs.rmSync(exportRoot, { recursive: true, force: true });
+  });
+
+  const engine = new ExtractEngine({
+    exportRoot,
+    profileDir: path.join(exportRoot, 'profile'),
+    pageSettleMs: 0,
+    onEvent: () => {},
+    control: {
+      waitForCourse: async (c) => c[0],
+      waitForExperiments: async (e) => e,
+      waitForLevels: async () => null,
+      shouldStop: async () => false
+    }
+  });
+  await engine.launch();
+
+  // 模拟 selectLevelsForAll 跑完后的现场：共享列表停留在《软件工程初体验》上
+  engine.discoveredLevels = [
+    { identifier: 'zqfirst00001', name: '软件危机', position: 1, type: 'choice' }
+  ];
+
+  // 当前要抓的是《白盒测试》，它自己的第 1 关是「逻辑覆盖-语句覆盖」
+  const ownLevels = [
+    { identifier: 'zqcover00001', name: '逻辑覆盖-语句覆盖', position: 1, type: 'choice' },
+    { identifier: 'zqcover00002', name: '逻辑覆盖-判定覆盖', position: 2, type: 'choice' }
+  ];
+
+  // ① 显式传入本实验列表时，入口必须来自它，而不是共享的旧列表
+  const entry = await engine.resolveEntry({ gameIdentifier: '' }, [], ownLevels);
+  assert.equal(entry.identifier, 'zqcover00001', '必须用本实验列表的第 1 关，不能用共享列表的「软件危机」');
+  assert.equal(entry.subject, '逻辑覆盖-语句覆盖');
+  assert.equal(entry.source, 'level-list');
+
+  // ② startPath 把第三个参数透传给 resolveEntry（runExperiment 就是这样调的）
+  const fakePage = {
+    locator: () => ({
+      evaluateAll: async () => [] // 实训页上没有 /tasks/ 链接
+    })
+  };
+  const startUrl = await engine.startPath({ gameIdentifier: '', homeworkId: 4157468 }, fakePage, ownLevels);
+  assert.ok(
+    startUrl.includes('/tasks/zqcover00001'),
+    `入口 URL 必须指向本实验的第 1 关，实际：${startUrl}`
+  );
+  assert.ok(startUrl.includes('homework_common_id=4157468'), 'taskUrl 要带上本实验的作业号');
+
+  // ③ 不传第三参时保持旧行为（退回共享列表）——单实验路径与老测试依赖它
+  const legacy = await engine.resolveEntry({ gameIdentifier: '' }, []);
+  assert.equal(legacy.identifier, 'zqfirst00001', '不传列表时退回共享 discoveredLevels（旧行为不变）');
+});
+
+// 用户要求：抓取时「全选」要能自动排除本地已有的关卡（已抓过有存档的 / 答案文件里
+// 已有答案的，比如虚拟机题这类早就抓好的）。跳过清单的判定就是给这个用的。
+test('引擎：跳过清单——本地已有存档或答案的关卡要能被识别出来', async (t) => {
+  const { ExtractEngine } = freshEngineModule();
+  const exportRoot = withTempExportRoot();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+  const engine = new ExtractEngine({ exportRoot, onEvent: () => {} });
+
+  // ① 存档里已有第 1 关：手写一行存档记录（格式与 level-store 的读取一致）
+  const archivePath = path.join(exportRoot, '示例课程A', '白盒测试', 'levels.jsonl');
+  fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+  await fs.promises.writeFile(
+    archivePath,
+    `${JSON.stringify({ taskIndex: 1, title: '逻辑覆盖-语句覆盖', type: 'code' })}\n`,
+    'utf8'
+  );
+
+  // ② 答案文件里已有第 2 关：用真实的 mergeAnswer 写（与抓取端 / 篡改猴回传同一格式）
+  const { mergeAnswer } = require('../extractor/lib/answer-store');
+  const saved = await mergeAnswer({
+    exportRoot,
+    classroom: { name: '示例课程A', code: 'DEMO0001' },
+    experiment: { name: '白盒测试', homeworkId: 88000002 },
+    levelId: 'L002',
+    kind: 'choice',
+    answer: '1:A;2:B,C',
+    source: 'export'
+  });
+  assert.equal(saved.ok, true, `答案文件要写得进去：${saved.error || ''}`);
+
+  const done = await engine.localDoneIndex(
+    { name: '示例课程A', classroomCode: 'DEMO0001' },
+    { name: '白盒测试', homeworkId: 88000002 }
+  );
+  assert.ok(done.archived.has(1), '存档里已有的第 1 关要进跳过清单');
+  assert.ok(done.answered.has(2), '答案文件里已有的第 2 关要进跳过清单');
+  assert.equal(done.answered.has(1), false, '第 1 关没有答案，不应记成「已有答案」');
+  assert.equal(done.archived.has(2), false, '第 2 关没有存档，不应记成「已存档」');
+  assert.equal(done.archived.has(9), false, '不存在的关卡不能混进清单');
+});
+
+// 10-14 实测：课程页的实验卡片列表**每页只渲染 20 张**（机器学习 30 个实验，
+// 第 21~30 个的卡片在列表第 2 页，卡片轮询 20 秒永远找不到 → 整批「卡片未找到」）。
+// 修复：homeworkId 本来就在实验列表接口里，直接打开作业详情页（点卡片的落点），
+// 绕过分页的卡片列表；旧的「章页找卡片」降级为 homeworkId 缺失时的兜底。
+test('引擎：进实验要直达作业详情页，不再依赖会分页的卡片列表', async (t) => {
+  const { ExtractEngine } = freshEngineModule();
+  const exportRoot = withTempExportRoot();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+  const engine = new ExtractEngine({ exportRoot, onEvent: () => {} });
+
+  const fakeElement = {
+    asElement: async () => fakeElement,
+    dispose: async () => {},
+    evaluate: async () => '开始学习',
+    click: async () => {}
+  };
+
+  // ① 主路径：详情页能打开 → 必须直达，且不再打开章页列表
+  const gotos = [];
+  let currentUrl = 'https://www.educoder.net/';
+  engine.page = {
+    url: () => currentUrl,
+    goto: async (url) => { gotos.push(url); currentUrl = url; },
+    waitForLoadState: async () => {},
+    waitForTimeout: async () => {},
+    on: () => {},
+    off: () => {},
+    waitForEvent: async () => null,
+    waitForResponse: async () => null,
+    locator: () => ({ count: async () => 0, first: () => ({ count: async () => 0 }) }),
+    evaluateHandle: async () => fakeElement,
+    evaluate: async () => [],
+    close: async () => {}
+  };
+  const experiment = { name: 'CNN', homeworkId: 88000002, shixunIdentifier: 'zq6177bf' };
+  await engine.openExperiment(experiment, { classroomCode: 'DEMO0001' });
+
+  assert.equal(gotos.length, 1, `应只导航一次（直达详情页），实际：${JSON.stringify(gotos)}`);
+  assert.match(
+    gotos[0],
+    /\/classrooms\/DEMO0001\/shixun_homework\/88000002\/detail\?tabs=1$/,
+    '必须直达作业详情页（卡片列表会分页，不可依赖）'
+  );
+
+  // ② 兜底：详情页没开出来 → 退回「章页找卡片」的旧路径（老实验仍可用）
+  const fallbackGotos = [];
+  const logs = [];
+  const engine2 = new ExtractEngine({
+    exportRoot,
+    onEvent: (event) => { if (event.type === 'log') logs.push(event.message); }
+  });
+  engine2.page = {
+    // url() 恒定返回非 /detail/ 页面：模拟详情页被重定向、没开出来
+    url: () => 'https://www.educoder.net/classrooms/DEMO0001',
+    goto: async (url) => { fallbackGotos.push(url); },
+    waitForLoadState: async () => {},
+    waitForTimeout: async () => {},
+    on: () => {},
+    off: () => {},
+    waitForEvent: async () => null,
+    waitForResponse: async () => null,
+    locator: () => ({ count: async () => 0, first: () => ({ count: async () => 0 }) }),
+    evaluateHandle: async () => fakeElement,
+    evaluate: async () => [],
+    close: async () => {}
+  };
+  await engine2.openExperiment(
+    { name: 'CNN', homeworkId: 88000002, shixunIdentifier: 'zq6177bf' },
+    { classroomCode: 'DEMO0001' }
+  );
+  assert.ok(
+    fallbackGotos.some((url) => /shixun_homework\?tabs=0$/.test(url)),
+    `兜底路径要导航到章页列表，实际：${JSON.stringify(fallbackGotos)}`
+  );
+  assert.ok(logs.some((line) => /详情页没有打开/.test(line)), '兜底时要说清为什么退回旧路径');
+  assert.ok(logs.some((line) => /先打开所在章页/.test(line)), '兜底路径保留章页导航');
+});
+
+// 跳过清单在关卡列表上的落地：多实验合并列表里每关要带 localDone 标注，
+// 选择界面据此在「全选」时自动排除。没有标注的话前端无从下手。
+test('引擎：合并关卡列表要带 localDone 标注（跳过清单的数据来源）', async (t) => {
+  const { ExtractEngine } = freshEngineModule();
+  const exportRoot = withTempExportRoot();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+
+  // 预置本地痕迹：第 2 关有存档、第 1 关有答案、第 3 关什么都没有
+  const archivePath = path.join(exportRoot, '示例课程A', 'CNN', 'levels.jsonl');
+  fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+  await fs.promises.writeFile(
+    archivePath,
+    `${JSON.stringify({ taskIndex: 2, title: 'pool', type: 'code' })}\n`,
+    'utf8'
+  );
+  const { mergeAnswer } = require('../extractor/lib/answer-store');
+  const saved = await mergeAnswer({
+    exportRoot,
+    classroom: { name: '示例课程A', code: 'DEMO0001' },
+    experiment: { name: 'CNN', homeworkId: 88000002 },
+    levelId: 'L001',
+    kind: 'choice',
+    answer: '1:A',
+    source: 'export'
+  });
+  assert.equal(saved.ok, true, `答案文件要写得进去：${saved.error || ''}`);
+
+  const events = [];
+  const engine = new ExtractEngine({
+    exportRoot,
+    onEvent: (event) => events.push(event),
+    control: {
+      shouldStop: async () => false,
+      waitForAllLevels: async (levels) => levels
+    }
+  });
+  engine.currentCourse = { name: '示例课程A', classroomCode: 'DEMO0001' };
+  engine.page = fakePageFor({
+    // listChallenges 走 myshixuns 端点（带 homework_common_id 参数，fake 按 URL 片段匹配）
+    'api/myshixuns/zq3a1b66ee/challenges.json': JSON.stringify(CHALLENGES)
+  });
+
+  const plans = await engine.selectLevelsForAll([
+    { name: 'CNN', homeworkId: 88000002, myshixunIdentifier: 'zq3a1b66ee' }
+  ]);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].levels.length, 3, '关卡列表要读出来');
+
+  const emitted = events.filter((event) => event.type === 'levels');
+  assert.equal(emitted.length, 1, '合并列表应一次性发出');
+  const merged = emitted[0].levels;
+  assert.equal(merged.length, 3);
+  for (const level of merged) {
+    assert.ok(level.localDone && typeof level.localDone === 'object', '每关都要带 localDone 标注');
+  }
+  assert.deepEqual(merged[0].localDone, { archived: false, answered: true }, '第 1 关：已有答案');
+  assert.deepEqual(merged[1].localDone, { archived: true, answered: false }, '第 2 关：已有存档');
+  assert.deepEqual(merged[2].localDone, { archived: false, answered: false }, '第 3 关：本地没有');
+});
+
+
 test('引擎：回溯读取失败时必须报告未确认，而不是假装成功', async (t) => {
   const fake = installFakePlaywright();
   const restoreApi = patchApiForFakes();

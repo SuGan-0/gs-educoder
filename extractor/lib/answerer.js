@@ -30,7 +30,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const { readArchive, orderedLevels } = require('./level-store');
-const { mergeAnswers } = require('./answer-store');
+const { mergeAnswers, classroomCodeFromDir } = require('./answer-store');
 const { validateAnswerList } = require('./answer-validator');
 const fmt = require('./answer-format');
 
@@ -159,15 +159,7 @@ async function listTargets(exportRoot) {
       }
       if (!levels.length) continue;
       const identity = identityFromLevels(levels, courseDir.name, experimentDir.name);
-      const answerPath = fmt.answerPathFor(exportRoot, identity.classroom, identity.experiment);
-      let answered = 0;
-      try {
-        const parsed = fmt.normalizeDocument(JSON.parse(await fs.readFile(answerPath, 'utf8')), identity);
-        answered = parsed.answers.filter((item) => item.level_id).length;
-      } catch {
-        answered = 0;
-      }
-      // 先映射（含作业号提取），再算实验级 homeworkId——顺序反了会拿到 0（10-11 实测）
+      // 先映射（含作业号 / 课堂码提取），再算实验级 homeworkId——顺序反了会拿到 0（10-11 实测）
       const mappedLevels = levels.map((level) => ({
         taskIndex: Number(level.taskIndex) || 0,
         id: fmt.levelIdOf(level.taskIndex),
@@ -188,15 +180,46 @@ async function listTargets(exportRoot) {
       const homeworkFromLevels = mappedLevels
         .map((level) => Number(level.homeworkCommonId) || 0)
         .find((value) => value > 0) || 0;
-      const classroomCodeFromLevels = identity.classroom.code
+      // 课堂码三路兜底：存档字段 / 三段式 source → **已有 v2 目录名** → 空。
+      // 最后那一路不是可有可无：早期抓的存档没有 `classroomCode`，只靠前两路会算出一个
+      // **没有班级码**的路径（`answers/{班级}/…`），与真实位置 `answers/{班级}（{码}）/…` 对不上，
+      // 只能靠回退 v1 扁平文件兜住——于是「答案迁到 v2 了却读不回来，旧文件也不敢删」。
+      // 目录名本身就是课堂码的持久记录（`answerDirFor` 写进去的），读的时候必须认它。
+      const classroomCode = identity.classroom.code
         || mappedLevels.map((level) => level.classroomCode).find(Boolean)
+        || await classroomCodeFromDir(exportRoot, identity.classroom.name)
         || '';
+      const classroom = { name: identity.classroom.name, code: classroomCode };
+      // 答案文件位置：**v2 优先，不存在则回退 v1 扁平文件**。
+      // 少了这步回退，只写过 v1 的实验会被当成「没有答案」——实测重新导出班级答案文件时
+      // 有答案的关卡从 102 掉到 16（86 条答案静默丢失），控制台的「已有答案几关」也会显示 0。
+      // 两处位置的口径必须与控制台 `/api/answers`（v2 优先、v1 兜底）一致。
+      let answerPath = fmt.answerPathFor(exportRoot, classroom, identity.experiment);
+      const legacyPath = fmt.legacyAnswerPathFor(exportRoot, classroom, identity.experiment);
+      try {
+        await fs.access(answerPath);
+      } catch {
+        try {
+          await fs.access(legacyPath);
+          answerPath = legacyPath;
+        } catch { /* 两个位置都没有：保留 v2 路径，后续报「缺答案」时指的就是它 */ }
+      }
+      let answered = 0;
+      try {
+        const parsed = fmt.normalizeDocument(JSON.parse(await fs.readFile(answerPath, 'utf8')), {
+          classroom,
+          experiment: { name: identity.experiment.name, homeworkId: identity.experiment.homeworkId }
+        });
+        answered = parsed.answers.filter((item) => item.level_id).length;
+      } catch {
+        answered = 0;
+      }
       experiments.push({
         name: experimentDir.name,
         directory: dir,
         answerPath,
-        classroom: { name: identity.classroom.name, code: classroomCodeFromLevels },
-        homeworkId: identity.experiment.homework_id || homeworkFromLevels,
+        classroom,
+        homeworkId: identity.experiment.homeworkId || homeworkFromLevels,
         levelCount: mappedLevels.length,
         answered,
         levels: mappedLevels
@@ -247,6 +270,12 @@ async function answerExperiment({
   const levels = orderedLevels((await readArchive(path.join(directory, 'levels.jsonl'))).records);
   if (!levels.length) throw new Error(`实验「${experiment}」没有关卡存档（先抓取，或用 tools/build-exports.js 生成）`);
   const identity = identityFromLevels(levels, course, experiment);
+  // 存档没有 classroomCode 时，从已有 v2 目录名认码。**写入侧也必须认**：
+  // 否则答案会被写进「没有班级码」的目录（`answers/{班级}/…`），而读取侧认的是带码的目录，
+  // 等于写了一份谁也不会读到的答案。
+  if (!identity.classroom.code) {
+    identity.classroom.code = await classroomCodeFromDir(exportRoot, identity.classroom.name);
+  }
 
   const wanted = onlyLevelIds && onlyLevelIds.length
     ? levels.filter((level) => onlyLevelIds.includes(fmt.levelIdOf(level.taskIndex)))

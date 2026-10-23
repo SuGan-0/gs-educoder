@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
 
 const { safeName, makeLevelSection, makeExperimentDocument, taskFromApi, classifyTask, detectImageExtension, normalizeImageSource, levelId, KINDS } = require('./task-parser');
 const { ARCHIVE_NAME, readArchive, appendLevel, orderedLevels, toArchiveRecord } = require('./level-store');
-const { levelPassed, choiceAnswerText, mergeAnswer } = require('./answer-store');
+const { levelPassed, choiceAnswerText, mergeAnswer, loadAnswerDocument } = require('./answer-store');
 const api = require('./educoder-api');
 const { SIGNING_VERSION } = require('./educoder-sign');
 
@@ -451,6 +451,18 @@ class ExtractEngine {
       this.log(`实验接口读取失败：${error.message}`, 'error');
       throw error;
     }
+    // 未发布的实验被 listExperiments 滤掉了（学生页面上没有它们的卡片，
+    // 进列表只会让提取白等一轮入口再跳过）。这里把名单打出来——
+    // 「为什么我课程里的实验列表里没有它」必须有一句解释，不能静默变少。
+    const skippedUnpublished = experiments.skippedUnpublished || [];
+    if (skippedUnpublished.length) {
+      const names = skippedUnpublished.map((item) => item.name).filter(Boolean);
+      const listed = names.slice(0, 8).join('、') + (names.length > 8 ? '…' : '');
+      this.log(
+        `跳过 ${skippedUnpublished.length} 个未发布的实验（老师还没发布，课程页上看不到）：${listed}`,
+        'warn'
+      );
+    }
     experiments = experiments.map((item) => ({
       ...item,
       name: item.categoryName ? `[${item.categoryName}] ${item.name}` : item.name
@@ -555,7 +567,27 @@ class ExtractEngine {
     experiment.expectedSubjects = new Set(
       levels.map((level) => String(level.name || '').trim()).filter(Boolean)
     );
-    if (emit) this.emit({ type: 'levels', experiment, levels });
+    if (emit) {
+      // 单实验路径也标注跳过清单，与多实验路径（selectLevelsForAll）行为一致。
+      let local = null;
+      try {
+        local = await this.localDoneIndex(this.currentCourse, experiment);
+      } catch (error) {
+        this.log(`实验「${experiment.name}」跳过清单读取失败：${error.message}`, 'warn');
+      }
+      levels = levels.map((level) => {
+        const index = Number(level?.position ?? level?.index) || 0;
+        return {
+          ...level,
+          localDone: {
+            archived: local ? local.archived.has(index) : false,
+            answered: local ? local.answered.has(index) : false
+          }
+        };
+      });
+      this.discoveredLevels = levels;
+      this.emit({ type: 'levels', experiment, levels });
+    }
     return levels;
   }
 
@@ -607,10 +639,20 @@ class ExtractEngine {
    *
    * 做法：先用可信度最高的候选作为回溯起点，再沿 `prev_game` 回溯确认链首；
    * 若回溯结果与候选不一致，以回溯结果为准并记日志说明。
+   *
+   * @param {object} experiment
+   * @param {string[]} pageLinks 页面上扫到的 /tasks/ 链接
+   * @param {Array<{identifier?:string, position?:number, index?:number, name?:string}>} [levels]
+   *   **当前这个实验自己的关卡列表**。多实验连抓时必须显式传入——
+   *   引擎上的 `this.discoveredLevels` 在 selectLevelsForAll 之后停留在**最后一个**
+   *   被读取的实验的列表上（10-14 实测：一门课所有实验的入口全部串到同一份列表的
+   *   「第 1 关 软件危机」，每个实验都「选中 N 关，只到达 0 关」）。不传时才退回共享值
+   *   （单实验路径刚调完 loadLevels，二者一致，老测试也依赖这个行为）。
    */
-  async resolveEntry(experiment, pageLinks = []) {
+  async resolveEntry(experiment, pageLinks = [], levels = null) {
+    const sourceLevels = Array.isArray(levels) ? levels : (this.discoveredLevels || []);
     const known = new Map(
-      (this.discoveredLevels || [])
+      sourceLevels
         .filter((level) => level && level.identifier)
         .map((level) => [String(level.identifier), level])
     );
@@ -645,7 +687,7 @@ class ExtractEngine {
 
     const candidate = linked?.identifier
       || fromList?.identifier
-      || (this.discoveredLevels || []).find((level) => level.identifier)?.identifier
+      || sourceLevels.find((level) => level.identifier)?.identifier
       || experiment.gameIdentifier
       || null;
 
@@ -1036,75 +1078,125 @@ class ExtractEngine {
       }
       await this.sleep(500);
     }
-    // 轮询失败：把现场打出来（当前 URL + 正文摘要），否则只能靠猜。
+    // 轮询失败：把现场打出来（当前 URL + 正文摘要 + 页面上实际可见的实验名），
+    // 否则只能靠猜。可见名单是关键——一眼就能对出「目标实验确实不在这个课程页上」。
     const scene = await this.page
-      .evaluate(() => ({
-        url: location.href,
-        sample: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 240)
-      }))
-      .catch(() => ({ url: this.page.url(), sample: '(取不到页面内容)' }));
-    this.log(`章页卡片未找到的现场：${scene.url}｜正文摘要：${scene.sample}`, 'warn');
+      .evaluate(() => {
+        // 实验卡片：文字在 CSS Modules 类名的 span 里（如 name___CCaOX），外面套 listItem 容器。
+        // 类名带哈希后缀，所以只能按前缀模糊匹配；抓不到也不影响主流程（兜底为空数组）。
+        const nodes = document.querySelectorAll(
+          'div[class*="listItem"] span[class*="name"], div[class*="listItem"] a[class*="name"]'
+        );
+        const seen = new Set();
+        const visible = [];
+        for (const node of nodes) {
+          const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!text || text.length > 80 || seen.has(text)) continue;
+          seen.add(text);
+          visible.push(text);
+          if (visible.length >= 40) break;
+        }
+        return {
+          url: location.href,
+          sample: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 240),
+          visible
+        };
+      })
+      .catch(() => ({ url: this.page.url(), sample: '(取不到页面内容)', visible: [] }));
+    const visibleText = scene.visible && scene.visible.length
+      ? `｜本页可见实验：${scene.visible.join('、')}`
+      : '｜本页没扫到任何实验卡片（列表可能没渲染，或页面结构变了）';
+    this.log(`章页卡片未找到的现场：${scene.url}｜正文摘要：${scene.sample}${visibleText}`, 'warn');
     return { clicked: false, buttonLabel: '', reason: lastReason };
   }
 
   async openExperiment(experiment, course) {
-    // 「分章视图」里的实验不在首页列表上（实测：示例课程A首页只有「7、软件测试」那 20 个，
-    // 「1、软件工程初体验」的 9 个不在其中）。所以先打开它所属的章页，再在那一页里找卡片；
-    // 否则卡片找不到时只能回落到「页面上第一个开始学习」，会**点到别的实验**。
     const classroomCode = course?.classroomCode || this.currentCourse?.classroomCode || '';
-    if (classroomCode) {
-      // 有分类号就打开该章的列表；没有（分类匹配失败）也**必须**打开默认作业列表——
-      // 它渲染全部实验的卡片（10-11 探针实测）。什么都不打开会让卡片轮询必然失败。
-      const chapterUrl = `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework`
-        + (experiment.categoryId ? `/${experiment.categoryId}` : '')
-        + '?tabs=0';
-      await this.navigateTo(this.page, chapterUrl);
+    const expectedHomework = String(experiment.homeworkId || '');
+
+    // ★ 主路径（10-14 起）：**直接打开作业详情页**。
+    // 课程页的实验卡片列表**每页只渲染 20 张**（08-14 实测：机器学习 30 个实验，
+    // 第 21~30 个的卡片在列表第 2 页，「卡片轮询 20 秒」永远找不到 → 整批「卡片未找到」）。
+    // 而 homeworkId 本来就在实验列表接口里；详情页正是「点卡片」的落点
+    // （/shixun_homework/{作业号}/detail?tabs=1），直达它等价、还省一次卡片轮询。
+    let enteredPage = null;
+    let landing = '';
+    let execPromise = Promise.resolve(null);
+    let usedCard = false;
+
+    if (classroomCode && expectedHomework) {
+      const detailUrl = `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework/${expectedHomework}/detail?tabs=1`;
+      await this.navigateTo(this.page, detailUrl);
       await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
       await this.page.waitForTimeout(1500);
-      this.log(`先打开所在章页：${experiment.categoryName || experiment.categoryId || '(全部分类)'}`);
+      landing = this.page.url();
+      if (/\/detail/.test(landing)) {
+        this.log(`直接打开作业详情页（绕过会分页的卡片列表）：${landing}`);
+      } else {
+        // 详情页没开出来（被重定向 / 登录态丢失）→ 退回旧的「章页找卡片」路径
+        this.log(`详情页没有打开（当前在 ${landing}），退回章页找卡片的旧路径。`, 'warn');
+      }
     }
-    // 在页面内找到卡片并点它（`clickExperimentCard` 会轮询等待 SPA 渲染完）。
-    // 实测：点卡片会**开一个新标签页**到作业详情页
-    // （`/classrooms/{课程码}/shixun_homework/{作业号}/detail?tabs=1`），不是原地跳转；
-    // 因此 popup 监听必须挂在点击**之前**，并且超时要够长（早期 8 秒的监听会过期 → 漏掉新标签页）。
-    const popupPromise = this.page.waitForEvent('popup', { timeout: 25000 }).catch(() => null);
-    // 有些实验点卡片后是**直接进关卡页**（如 CNN 那类老实训），此时页面会发 shixun_exec.json，
-    // 响应里的 game_identifier 就是入口标识。监听要挂在点击之前。
-    const execFragment = experiment.shixunIdentifier
-      ? `/shixuns/${experiment.shixunIdentifier}/shixun_exec.json`
-      : 'shixun_exec.json';
-    const execPromise = this.page
-      .waitForResponse((response) => response.url().includes(execFragment), { timeout: 25000 })
-      .catch(() => null);
-    const clicked = await this.clickExperimentCard(experiment);
-    if (!clicked.clicked) {
-      this.log(`在章页上没找到实验「${experiment.name}」（${clicked.reason || '未知原因'}），无法进入。`, 'warn');
-      await popupPromise;
-      return this.page;
-    }
-    this.log(`已点击实验卡片（${clicked.buttonLabel || '开始学习'}），等待进入关卡…`);
 
-    // 真实路径：点卡片 → **作业详情页** `/shixun_homework/{作业号}/detail?tabs=1`
-    // → 在详情页点「开启挑战」→ 关卡页 `/tasks/{课程码}/{作业号}/{关卡标识}`。
-    // 校验落点作业号是这里的关键：只有它一致才说明进的是目标实验。
-    let enteredPage = await popupPromise;
-    if (enteredPage) {
-      await enteredPage.waitForLoadState('domcontentloaded').catch(() => {});
-      await enteredPage.waitForTimeout(1000);
-    } else {
-      await this.page.waitForTimeout(1500);
-    }
-    let landing = enteredPage ? enteredPage.url() : this.page.url();
-    this.log(`卡片落点：${landing}`);
+    if (!/\/detail/.test(landing)) {
+      // —— 旧路径：章页 → 卡片轮询 → popup。homeworkId 缺失或详情页打不开时才走。 ——
+      usedCard = true;
+      // 「分章视图」里的实验不在首页列表上（实测：示例课程A首页只有「7、软件测试」那 20 个，
+      // 「1、软件工程初体验」的 9 个不在其中）。所以先打开它所属的章页，再在那一页里找卡片；
+      // 否则卡片找不到时只能回落到「页面上第一个开始学习」，会**点到别的实验**。
+      if (classroomCode) {
+        // 有分类号就打开该章的列表；没有（分类匹配失败）也**必须**打开默认作业列表——
+        // 它渲染全部实验的卡片（10-11 探针实测，列表不超过一页时成立）。什么都不打开会让卡片轮询必然失败。
+        const chapterUrl = `https://www.educoder.net/classrooms/${classroomCode}/shixun_homework`
+          + (experiment.categoryId ? `/${experiment.categoryId}` : '')
+          + '?tabs=0';
+        await this.navigateTo(this.page, chapterUrl);
+        await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        await this.page.waitForTimeout(1500);
+        this.log(`先打开所在章页：${experiment.categoryName || experiment.categoryId || '(全部分类)'}`);
+      }
+      // 在页面内找到卡片并点它（`clickExperimentCard` 会轮询等待 SPA 渲染完）。
+      // 实测：点卡片会**开一个新标签页**到作业详情页，不是原地跳转；
+      // 因此 popup 监听必须挂在点击**之前**，并且超时要够长（早期 8 秒的监听会过期 → 漏掉新标签页）。
+      const popupPromise = this.page.waitForEvent('popup', { timeout: 25000 }).catch(() => null);
+      // 有些实验点卡片后是**直接进关卡页**（如 CNN 那类老实训），此时页面会发 shixun_exec.json，
+      // 响应里的 game_identifier 就是入口标识。监听要挂在点击之前。
+      const execFragment = experiment.shixunIdentifier
+        ? `/shixuns/${experiment.shixunIdentifier}/shixun_exec.json`
+        : 'shixun_exec.json';
+      execPromise = this.page
+        .waitForResponse((response) => response.url().includes(execFragment), { timeout: 25000 })
+        .catch(() => null);
+      const clicked = await this.clickExperimentCard(experiment);
+      if (!clicked.clicked) {
+        this.log(`在章页上没找到实验「${experiment.name}」（${clicked.reason || '未知原因'}），无法进入。`, 'warn');
+        await popupPromise;
+        return this.page;
+      }
+      this.log(`已点击实验卡片（${clicked.buttonLabel || '开始学习'}），等待进入关卡…`);
 
-    const expectedHomework = String(experiment.homeworkId || '');
-    const landingHomework = ExtractEngine.homeworkIdFromUrl(landing);
-    if (landingHomework && expectedHomework && landingHomework !== expectedHomework) {
-      this.log(
-        `落点作业号 ${landingHomework} 与目标 ${expectedHomework} 不符，卡片可能点错了，放弃这次进入。`,
-        'warn'
-      );
-      return this.page;
+      // 真实路径：点卡片 → **作业详情页** `/shixun_homework/{作业号}/detail?tabs=1`
+      // → 在详情页点「开启挑战」→ 关卡页 `/tasks/{课程码}/{作业号}/{关卡标识}`。
+      // 校验落点作业号是这里的关键：只有它一致才说明进的是目标实验。
+      enteredPage = await popupPromise;
+      if (enteredPage) {
+        await enteredPage.waitForLoadState('domcontentloaded').catch(() => {});
+        await enteredPage.waitForTimeout(1000);
+      } else {
+        await this.page.waitForTimeout(1500);
+      }
+      landing = enteredPage ? enteredPage.url() : this.page.url();
+      this.log(`卡片落点：${landing}`);
+
+      // 卡片可能点错：落点作业号必须与目标一致（直达详情页不存在这个问题，跳过）
+      const landingHomework = ExtractEngine.homeworkIdFromUrl(landing);
+      if (landingHomework && expectedHomework && landingHomework !== expectedHomework) {
+        this.log(
+          `落点作业号 ${landingHomework} 与目标 ${expectedHomework} 不符，卡片可能点错了，放弃这次进入。`,
+          'warn'
+        );
+        return this.page;
+      }
     }
 
     // 落在作业详情页时继续点「开启挑战」
@@ -1258,7 +1350,16 @@ class ExtractEngine {
     return this.page;
   }
 
-  async startPath(experiment, page) {
+  /**
+   * 解析本实验的入口关卡 URL。
+   *
+   * @param {object} experiment
+   * @param {import('playwright').Page} page
+   * @param {Array<object>} [levels] **本实验自己的关卡列表**——必须传！
+   *   多实验连抓时共享的 `this.discoveredLevels` 停留在最后一个被读取的实验上，
+   *   不传的话入口会串到别的实验（10-14 实测整门课全串到「第 1 关 软件危机」）。
+   */
+  async startPath(experiment, page, levels = null) {
     const links = await page
       .locator('a[href*="/tasks/"]')
       .evaluateAll((anchors) => anchors.map((anchor) => anchor.href))
@@ -1267,7 +1368,7 @@ class ExtractEngine {
     if (unique.length) this.log(`实训页发现 ${unique.length} 个关卡链接。`);
 
     // 入口必须是链首（第 1 关）：resolveEntry 会用 prev_game 回溯确认/纠正。
-    const entry = await this.resolveEntry(experiment, unique);
+    const entry = await this.resolveEntry(experiment, unique, levels);
     if (entry.identifier) return this.taskUrl(entry.identifier, experiment);
 
     // resolveEntry 的候选来自「关卡列表/页面链接/实训上下文」；若都拿不到，
@@ -1662,6 +1763,57 @@ class ExtractEngine {
     return entry;
   }
 
+  /**
+   * 「跳过清单」：本地已有的关卡序号集合（供选择界面在全选时自动排除）。
+   *
+   * 两条判据，满足其一即算「本地已有」：
+   * ① **存档**（`levels.jsonl`）里已有该关 —— 之前抓过；就算重抓，复用快路径也会跳过它，
+   *    但每个实验仍要白走一遍关卡链（每关一次 tasks.json），不如一开始就不勾；
+   * ② **答案文件**里已有该关的可用答案（选择题有选项 / 编程题有代码）——
+   *    不管答案是抓取导出的、AI 作答写的还是篡改猴回传的，都在同一份文件里。
+   *
+   * 判据刻意**宽松**（只看「有没有」，不比对内容指纹）：内容变没变由复用快路径
+   * 的 contentHash 把关；这里只负责让「全选」默认避开已完成的部分。
+   *
+   * @returns {Promise<{archived: Set<number>, answered: Set<number>}>} 键是关卡序号（1 起）
+   */
+  async localDoneIndex(course, experiment) {
+    const courseName = typeof course === 'string' ? course : String(course?.name || '');
+    const experimentName = typeof experiment === 'string' ? experiment : String(experiment?.name || '');
+    const entry = await this.experimentEntry(courseName, experimentName);
+    const archived = new Set();
+    for (const key of entry.index.keys()) {
+      const value = Number(key);
+      if (Number.isFinite(value) && value > 0) archived.add(value);
+    }
+    const answered = new Set();
+    try {
+      const loaded = await loadAnswerDocument(this.exportRoot, {
+        name: courseName,
+        code: typeof course === 'object' ? String(course?.classroomCode || '') : ''
+      }, { name: experimentName });
+      for (const item of (loaded?.document?.answers || [])) {
+        const match = /^L(\d{3})$/.exec(String(item?.level_id || ''));
+        if (!match) continue;
+        // normalizeDocument 产出的条目是**扁平**结构（questions / code 直接在条目上）；
+        // 磁盘 v2 落盘结构是嵌套的（answer.questions / answer.code）。两种都认，
+        // 以防某个调用方绕过 normalize 直接给了原始文档。
+        const questions = Array.isArray(item.questions)
+          ? item.questions
+          : Array.isArray(item.answer?.questions) ? item.answer.questions : null;
+        const code = String(item.code ?? item.answer?.code ?? '');
+        const has = item.kind === 'choice'
+          ? Boolean(questions && questions.length > 0)
+          : code.trim().length > 0;
+        if (has) answered.add(Number(match[1]));
+      }
+    } catch (error) {
+      // 答案文件读不了不算失败：跳过清单退化为「只按存档判断」
+      this.log(`答案文件读取失败（跳过清单只按本地存档判断）：${error.message}`, 'warn');
+    }
+    return { archived, answered };
+  }
+
   /** 「该关已存在且内容未变」的统一口径：计数 + reused 事件 + 日志 + 进度。 */
   emitReused(task, existingLevel) {
     const { directory, archivePath } = this.experimentPaths(task.course, task.experiment);
@@ -1916,11 +2068,37 @@ class ExtractEngine {
       } catch (error) {
         this.log(`实验「${experiment.name}」关卡列表读取失败：${error.message}`, 'warn');
       }
+      // 跳过清单：本实验里本地已有的关卡（存档 / 答案）。
+      // 读不到不阻塞选择——大不了「全选」时多勾了几关，复用快路径会兜住。
+      let local = null;
+      try {
+        local = await this.localDoneIndex(this.currentCourse, experiment);
+      } catch (error) {
+        this.log(`实验「${experiment.name}」跳过清单读取失败：${error.message}`, 'warn');
+      }
       const planIndex = plans.length;
       plans.push({ experiment, levels, selection: null, selectedIds: null, selectedPositions: null });
       for (const level of levels) {
-        merged.push({ ...level, experimentName: experiment.name, experimentIndex: planIndex });
+        // 序号口径与 levelId(task) 一致：taskIndex = 关卡的 homework_challenge_index，
+        // 列表里 position 优先（接口给的），其次 index（页面解析的）。
+        const index = Number(level?.position ?? level?.index) || 0;
+        const archived = local ? local.archived.has(index) : false;
+        const answered = local ? local.answered.has(index) : false;
+        merged.push({
+          ...level,
+          experimentName: experiment.name,
+          experimentIndex: planIndex,
+          localDone: { archived, answered }
+        });
       }
+    }
+
+    // 跳过清单的总数要让用户看见，否则「全选完怎么少了一截」会像 bug。
+    const doneCount = merged.filter((level) => level.localDone && (level.localDone.archived || level.localDone.answered)).length;
+    if (doneCount) {
+      this.log(
+        `跳过清单：${doneCount} 关本地已有（存档或已有答案），「全选」时会自动不勾；要重抓可手动勾上。`
+      );
     }
 
     if (stoppedEarly) {
@@ -2075,11 +2253,19 @@ class ExtractEngine {
     // 关键：先回到课堂实验列表页，避免上一个实验的关卡页影响本次入口定位。
     await this.prepareExperimentEntry(experiment, course).catch(() => {});
     let experimentPage = await this.openExperiment(experiment, course);
-    const startUrl = await this.startPath(experiment, experimentPage);
+    // 入口解析必须用**本实验自己的**关卡列表：plan 路径下 loadLevels 是在选关阶段
+    // 逐个调的，共享的 discoveredLevels 早已被最后一个实验覆盖（10-14 实测的串台根因）。
+    const startUrl = await this.startPath(experiment, experimentPage, levels);
     this.log(`实验「${experiment.name}」入口解析完成`);
     if (!startUrl) {
       this.stats.failed += 1;
-      this.log(`无法定位实验「${experiment.name}」的入口关卡，已跳过。`, 'error');
+      // 这条实验的记录接口里有、但页面上没有入口。最常见的原因按概率排：
+      // 未发布（listExperiments 已滤掉大多数，但 status/publish_time 都缺的会漏进来）、
+      // 只对其他班级发布（同一课堂多个班，你所在的班不在发布范围）、或已被移出课程。
+      this.log(
+        `无法定位实验「${experiment.name}」的入口关卡，已跳过——多半是未发布、只对其他班级发布、或已从课程移除（接口里还留着这条记录）。`,
+        'error'
+      );
       this.progress({ experimentName: experiment.name });
       if (experimentPage !== this.page) await experimentPage.close().catch(() => {});
       return;

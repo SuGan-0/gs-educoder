@@ -222,6 +222,23 @@ test('队首匹配：序号命中即续跑、不命中不续；handoff 超过 90
   assert.equal(hooks.queueFresh({ ...queue, handoffAt: Date.now() - 120000 }), false);
 });
 
+// 面板「关卡数据最多等（秒）」可以调到 300。若续跑新鲜度仍按固定 90 秒判，
+// **等待本身**就会被当成「太久没跳转」——下一轮刷新回来直接停队，
+// 表现就是「我明明把等待调大了，它还是停」。
+test('续跑新鲜度：窗口要盖得住「关卡数据等待」，也不能无限放宽', () => {
+  const hooks = loadHooks();
+  hooks.state.levelWaitSeconds = 300;
+  // 等了 120 秒后刷新回来：老的固定 90 秒窗口会判过期
+  assert.equal(
+    hooks.queueFresh({ running: true, handoffAt: Date.now() - 120000 }), true,
+    '等待 120 秒不该被判成「太久没跳转」'
+  );
+  assert.equal(
+    hooks.queueFresh({ running: true, handoffAt: Date.now() - 400000 }), false,
+    '超过「等待上限 + 30 秒」才算过期（否则真乱跑也拦不住）'
+  );
+});
+
 test('队首匹配：未选中的关卡也算队首（走过场），不会把队列卡死', () => {
   const hooks = loadHooks();
   const queue = {

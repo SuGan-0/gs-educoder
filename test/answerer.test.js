@@ -101,6 +101,54 @@ test('listTargets：从关卡存档列课程/实验/关卡，并带上「已有�
   assert.equal(experiment.levels[1].type, 'choice');
 });
 
+// 回归（10-12 实测）：答案只在 v1 扁平位置（`answers/{课程}__{实验}.answers.json`）时，
+// 也要被当成「已有答案」。少了这个回退，重新导出班级答案文件会把 86 条答案当成不存在
+// （有答案的关卡 102 → 16），控制台的「已有答案几关」也会显示 0。
+test('listTargets：答案只在 v1 扁平位置时也要数出来（v2 优先、v1 回退）', async (t) => {
+  const exportRoot = tmpDir();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+  seedExperiment(exportRoot, '课程A', '实验B', [CODE_LEVEL(), CHOICE_LEVEL()]);
+  // 只写 v1 位置，v2 目录不存在
+  const legacy = path.join(exportRoot, 'answers', '课程A__实验B.answers.json');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.writeFileSync(legacy, JSON.stringify({
+    course: '课程A',
+    experiment: '实验B',
+    answers: [{ level_id: 'L001', kind: 'code', answer: { language: 'python', code: 'x' } }],
+    unanswered: []
+  }), 'utf8');
+
+  const courses = await listTargets(exportRoot);
+  const experiment = courses[0].experiments[0];
+  assert.equal(experiment.answered, 1, 'v1 位置的答案不能被当成没有答案');
+  assert.equal(experiment.answerPath, legacy, '要把路径指向实际存在的 v1 文件');
+});
+
+// 回归（10-14 实测）：关卡存档里没有 `classroomCode` 字段时（早期抓的存档都这样），
+// 课堂码必须能从**已有的 v2 目录名**（`{班级}（{码}）`）里认出来。只靠存档字段会算出一个
+// 缺班级码的路径 `answers/{班级}/…`，与真实位置 `answers/{班级}（{码}）/…` 对不上——
+// 表现就是「答案明明迁到 v2 了却读不回来」，旧扁平文件也因此不敢删。
+test('listTargets：存档无课堂码时，从已有 v2 目录名认出课堂码', async (t) => {
+  const exportRoot = tmpDir();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+  seedExperiment(exportRoot, '课程A', '实验B', [CODE_LEVEL(), CHOICE_LEVEL()]);
+  // v2 目录名带班级码；关卡存档里并没有 classroomCode 字段
+  const answerFile = path.join(exportRoot, 'answers', '课程A（DEMO0001）', '实验B.answers.json');
+  fs.mkdirSync(path.dirname(answerFile), { recursive: true });
+  fs.writeFileSync(answerFile, JSON.stringify({
+    schema_version: 2,
+    classroom: { name: '课程A', code: 'DEMO0001' },
+    experiment: { name: '实验B', homework_id: 0 },
+    answers: [{ level_id: 'L001', kind: 'code', answer: { language: 'python', code: 'x' } }]
+  }), 'utf8');
+
+  const courses = await listTargets(exportRoot);
+  const experiment = courses[0].experiments[0];
+  assert.equal(experiment.classroom.code, 'DEMO0001', '课堂码要从目录名认出来');
+  assert.equal(experiment.answerPath, answerFile, '路径必须指向带班级码的 v2 文件');
+  assert.equal(experiment.answered, 1, '认不出码就会当成没有答案');
+});
+
 test('answerExperiment：调模型 → 答案写到 exports/answers/课程__实验.answers.json → 自校验', async (t) => {
   const exportRoot = tmpDir();
   t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));

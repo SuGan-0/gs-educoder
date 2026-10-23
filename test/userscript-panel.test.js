@@ -110,6 +110,9 @@ function boot({ pathname = '/tasks/HCEAP94S/3965745/vrtbzlmexi3f', gm = {}, requ
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     cancelAnimationFrame: () => {},
+    // 真实页面上下文有这两个：签名常量的校验要解双 base64（缺了它校验无法工作）
+    btoa: (value) => Buffer.from(String(value), 'binary').toString('base64'),
+    atob: (value) => Buffer.from(String(value), 'base64').toString('binary'),
     console,
     setTimeout,
     clearTimeout,
@@ -215,38 +218,40 @@ test('课堂区：主要控件都在，且没有多余的折叠层', () => {
   );
 });
 
+/**
+ * 一份**形状真实**的签名常量夹具：双 base64（解两次得到可打印 ASCII）。
+ * 不用真实 AK/SK——发布版脚本与测试都不携带平台常量。
+ */
+const FIXTURE_AK_B64 = Buffer.from(Buffer.from('0123456789abcdef0123456789abcdef', 'utf8').toString('base64'), 'utf8').toString('base64');
+const FIXTURE_SK_B64 = Buffer.from(Buffer.from('fedcba98765432100123456789abcdef', 'utf8').toString('base64'), 'utf8').toString('base64');
+
 test('签名常量：已配置过就不再打扰控制台', () => {
-  const built = boot({ gm: { 'educoder-sign-ak': 'x'.repeat(40), 'educoder-sign-sk': 'y'.repeat(40) } });
+  const built = boot({ gm: { 'educoder-sign-ak': FIXTURE_AK_B64, 'educoder-sign-sk': FIXTURE_SK_B64 } });
   assert.equal(signingRequests(built).length, 0, '已配好就不该再发请求');
 });
 
-test('签名常量：没配过时向控制台拉一次，并缓存进 GM', async () => {
-  const requests = [];
-  const built = boot({ gm: { 'educoder-local-console': 'http://127.0.0.1:43127', 'educoder-local-token': 'a'.repeat(48) }, requests });
-  const request = requests.find((item) => String(item.url).includes('/api/signing-keys'));
-  assert.ok(request, '应当向控制台请求签名常量');
-  assert.match(String(request.url), /token=a{48}/, '必须带上 token，否则控制台会 403');
-
-  // 模拟控制台返回
-  request.onload({ status: 200, responseText: JSON.stringify({ ok: true, ak: 'AKVALUE', sk: 'SKVALUE', version: '2026-09-24' }) });
-  assert.equal(built.store['educoder-sign-ak'], 'AKVALUE', '拿到的常量要写进 GM');
-  assert.equal(built.store['educoder-sign-sk'], 'SKVALUE');
+// 存着一份**解不出来**的常量（比如手粘时只粘了「解过一次」的那串）：不能再当成「已配好」。
+// 以前只检查「存过没有」，于是这种值会被算作已配置 → 状态总览显示「签名常量✓」，
+// 而请求一路被拒、报的还是 `-102 服务器时间不匹配`（跟时间无关）。
+test('签名常量：存着但解不出来的值不算「已配置」，仍会向控制台要一次', () => {
+  const built = boot({ gm: { 'educoder-sign-ak': 'x'.repeat(40), 'educoder-sign-sk': 'y'.repeat(40) } });
+  assert.equal(signingRequests(built).length, 1, '解不出来的常量不该被认为已配好');
 });
 
-test('签名常量：没配过地址时也按固定端口试一次（零配置的全部代价）', () => {
-  const built = boot();
-  const requests = signingRequests(built);
-  assert.equal(requests.length, 1, '应当按默认端口试一次——地址已固定，不需要用户先配');
-  assert.match(
-    String(requests[0].url),
-    /^http:\/\/127\.0\.0\.1:43127\/api\/signing-keys/,
-    '要打到与 extractor/run.js 一致的固定端口'
-  );
+// 常量已**内置**进脚本（10-14 用户要求「固定进篡改猴」）：GM 空也不再向控制台拉——
+// signingRequests 必须为 0，内置值直接种进 GM（「设置签名常量」菜单的预填走同一条路）。
+test('签名常量：内置常量生效，空 GM 也不向控制台拉（直接种进 GM）', () => {
+  const built = boot({ gm: { 'educoder-local-console': 'http://127.0.0.1:43127', 'educoder-local-token': 'a'.repeat(48) } });
+  assert.equal(signingRequests(built).length, 0, '内置常量生效时不该再向控制台请求');
+  const { validateSigningKey } = built.hooks;
+  assert.equal(validateSigningKey(built.store['educoder-sign-ak']).ok, true, '种进 GM 的内置 AK 要通过校验');
+  assert.equal(validateSigningKey(built.store['educoder-sign-sk']).ok, true, '种进 GM 的内置 SK 要通过校验');
+});
 
-  // 没带 token 时控制台会 403：静默失败，不打扰用户、也不写入任何东西
-  requests[0].onload({ status: 403, responseText: '{"ok":false,"error":"未授权"}' });
-  assert.equal(built.store['educoder-sign-ak'], undefined, '失败时不该写入常量');
-  assert.equal(built.store['educoder-sign-sk'], undefined);
+test('签名常量：没配控制台地址时同样不打扰（内置常量开箱即用）', () => {
+  const built = boot();
+  assert.equal(signingRequests(built).length, 0, '没有地址也不该发请求——常量已经内置');
+  assert.ok(built.store['educoder-sign-ak'], '内置值要种进 GM');
 });
 
 test('面板：标题栏里的按钮不能被拖动逻辑吃掉（「收起没效果」的根因）', () => {
@@ -310,13 +315,21 @@ test('只应有一个控制台传输实现', () => {
 test('传输层：连不上存的地址时自动改用默认地址重试并更正', () => {
   // 控制台端口曾经随机分配，GM 里可能存着指向早已不存在的端口的地址；
   // 症状却是「签名常量同步不到 → 课程读取失败」这种毫不相干的报错。
+  // 传输层的重试是 consoleRequest 的通用行为（签名同步之外的所有控制台请求都走它），
+  // 这里直接驱动它验证——不再依赖「签名常量同步」这条已经内置化了的触发路径。
   const built = boot({
     gm: {
       'educoder-local-console': 'http://127.0.0.1:61238',
       'educoder-local-token': 't'.repeat(40)
     }
   });
-  const keyRequests = () => built.requests.filter((item) => String(item.url).includes('/api/signing-keys'));
+  const keyRequests = () => built.requests.filter((item) => String(item.url).includes('/api/answer/save'));
+  built.hooks.consoleRequest('/api/answer/save', {
+    method: 'POST',
+    body: { identifier: 'x', answer: '1:A' },
+    onload: () => {},
+    onerror: () => {}
+  });
   assert.equal(keyRequests().length, 1, '先按存的地址试一次');
   assert.match(String(keyRequests()[0].url), /:61238/, '第一次用的是存下来的（过期）地址');
 
@@ -325,7 +338,6 @@ test('传输层：连不上存的地址时自动改用默认地址重试并更�
   assert.match(String(keyRequests()[1].url), /127\.0\.0\.1:43127/, '重试要用固定的默认端口');
 
   // 重试成功 → 把地址更正过来并持久化，免得下次又白试一遍
-  keyRequests()[1].onload({ status: 200, responseText: JSON.stringify({ ok: true, ak: 'AK', sk: 'SK' }) });
+  keyRequests()[1].onload({ status: 200, responseText: '{"ok":true}' });
   assert.equal(built.store['educoder-local-console'], 'http://127.0.0.1:43127', '地址要更正');
-  assert.equal(built.store['educoder-sign-ak'], 'AK', '顺手把拿到的常量也存上');
 });

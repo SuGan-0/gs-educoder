@@ -88,6 +88,53 @@ function toNumber(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+// ------------------------------------------------------- 未发布实验判定
+//
+// 背景（2026-10-14 实测）：`homework_commons.json` 返回的是课堂里的**全部**作业——
+// 包括老师还没发布的。这些条目 `is_shixun` 为真、会进实验列表，但课程页上根本
+// 没有它们的卡片，于是提取时每个都要白等 25 秒卡片轮询 + 25 秒 popup 才能
+// 「无法定位入口关卡，已跳过」。提醒功能（homework-model）早就按同一批字段
+// 认「未发布」，这里对齐同一口径。
+//
+// 判据两条（与 homework-model.reminderState 一致）：
+//   1. `status` 数组里带「未发布」文案；
+//   2. `publish_time`（北京时间墙上时间）还在未来。
+// 区别：这里**更宽容**——发布时间缺失/解析不出来时**不**当作未发布
+// （homework-model 对解析失败抛错是因为漏提醒事大；提取这边反着来：
+//  错杀一个能抓的实验，比多等一次入口更糟）。平台时间是北京时间墙上时间串
+// （如 `2026-09-25 12:00:30`），带时区后缀就按后缀算，否则按 +08:00。
+
+/** 列表里「未发布」的标记文案（与 homework-model.UNPUBLISHED_MARK 同源）。 */
+const UNPUBLISHED_MARK = '未发布';
+
+/** 平台时间串 → 毫秒时间戳；空值/解析不出返回 NaN（由调用方决定怎么办）。 */
+function parsePlatformTime(value) {
+  if (value === null || value === undefined) return NaN;
+  if (typeof value !== 'string') return NaN;
+  const text = value.trim();
+  if (!text || text === '--') return NaN;
+  const withT = text.includes('T') ? text : text.replace(' ', 'T');
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(withT);
+  const ms = Date.parse(hasZone ? withT : `${withT}+08:00`);
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+/**
+ * 这条作业是不是「学生现在看不见」的未发布作业。
+ * @returns {{unpublished: boolean, reason: string}} reason 用于日志/诊断。
+ */
+function publicationState(item, nowMs = Date.now()) {
+  const statusList = Array.isArray(item && item.status) ? item.status : [];
+  if (statusList.some((entry) => String(entry) === UNPUBLISHED_MARK)) {
+    return { unpublished: true, reason: `status 标记「${UNPUBLISHED_MARK}」` };
+  }
+  const publishAt = parsePlatformTime(item && item.publish_time);
+  if (Number.isFinite(publishAt) && publishAt > nowMs) {
+    return { unpublished: true, reason: `发布时间 ${String(item.publish_time).trim()} 在未来` };
+  }
+  return { unpublished: false, reason: '' };
+}
+
 /**
  * 判定一个响应意味着什么。
  *
@@ -498,9 +545,22 @@ async function listExperiments(page, course, opts = {}) {
   }
 
   const experiments = [];
+  const skippedUnpublished = [];
   const seen = new Set();
   for (const item of raw) {
     if (!item || !item.is_shixun) continue;
+    // 未发布的作业对学生不可见（课程页没有卡片），进列表只会让提取白等一轮
+    // 入口轮询再「无法定位」跳过——这里直接滤掉，但把名单记在结果上，
+    // 让调用方能向用户说明「为什么列表里没有它」，而不是静默变少。
+    const publication = publicationState(item);
+    if (publication.unpublished) {
+      skippedUnpublished.push({
+        name: normalizeText(item.name),
+        homeworkId: item.homework_id,
+        reason: publication.reason
+      });
+      continue;
+    }
     const key = item.homework_id === undefined || item.homework_id === null ? '' : String(item.homework_id);
     if (key) {
       if (seen.has(key)) continue;
@@ -517,6 +577,8 @@ async function listExperiments(page, course, opts = {}) {
     });
   }
   Object.defineProperty(experiments, 'rawTotal', { value: raw.length, enumerable: false });
+  // 非可枚举：不改变数组的 deepEqual 形状（实验对象本身不加字段，历史契约不动）。
+  Object.defineProperty(experiments, 'skippedUnpublished', { value: skippedUnpublished, enumerable: false });
   return experiments;
 }
 
@@ -696,6 +758,8 @@ module.exports = {
   listShixunCategories,
   listChallenges,
   listChallengeNames,
+  publicationState,
+  parsePlatformTime,
   ApiError,
   AuthExpiredError,
   SignatureRejectedError

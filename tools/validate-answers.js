@@ -8,8 +8,9 @@
  *   node tools/validate-answers.js                    # 校验 exports 下全部实验
  *   node tools/validate-answers.js 课程名 实验名        # 只校验一个实验
  *
- * 答案的规范位置：`exports/answers/{课程}__{实验}.answers.json`（一个文件夹集中放，
- * 文件名标清课程与实验）。同时也接受实验目录下的 `answers/` 或根目录同名文件（早期产物）。
+ * 答案的规范位置（v2）：`exports/answers/{班级}（{课堂码}）/{实验}.answers.json`。
+ * 旧位置（`exports/answers/{课程}__{实验}.answers.json`）只读兼容；也接受实验目录下的
+ * `answers/` 或根目录同名文件（早期产物）。
  *
  * 检查内容（详见 extractor/lib/answer-validator.js）：
  *   ① 每关都有答案；② 题型与存档一致；③ 选择题字母不越界、小问不缺；
@@ -23,6 +24,7 @@ const path = require('node:path');
 
 const { readArchive, orderedLevels } = require('../extractor/lib/level-store');
 const { validateAnswers } = require('../extractor/lib/answer-validator');
+const { classroomCodeFromDir } = require('../extractor/lib/answer-store');
 const fmt = require('../extractor/lib/answer-format');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -96,7 +98,13 @@ async function main() {
     const levels = orderedLevels((await readArchive(path.join(target.dir, 'levels.jsonl'))).records);
     // 班级身份取自关卡存档：名称会重名，课堂码不会。
     const first = levels.find(Boolean) || {};
-    const classroom = { name: first.course || target.course, code: first.classroomCode || '' };
+    const classroomName = first.course || target.course;
+    // 早期存档没有 `classroomCode` 字段——只靠它算出的路径会缺班级码，与真实的
+    // `answers/{班级}（{码}）/…` 对不上。补一路「从已有 v2 目录名认码」（与 answerer.listTargets 同口径）。
+    const classroom = {
+      name: classroomName,
+      code: first.classroomCode || (await classroomCodeFromDir(EXPORT_ROOT, classroomName)) || ''
+    };
     const experimentBlock = { name: first.experiment || target.experiment };
 
     const answerFile = await findAnswerFile(target.dir, target.experiment, target.course, classroom);

@@ -107,9 +107,12 @@ test('篡改猴签名：请求头三件套齐全，X-EDU-Type 必须精确是 pc
   assert.equal(headers['X-EDU-Type'], 'pc');
 });
 
-test('篡改猴签名：GM 里没有常量时，签名单函数要抛带获取方法的错误', () => {
-  // 用一个「没有常量」的沙箱（GM_getValue 只回 fallback）
+// 常量已**内置**进脚本（用户 10-14 要求「固定进篡改猴」）：GM 空的时候，
+// signingKeysRaw 会用内置值补上并种回 GM——开箱即用，不再提示缺常量。
+test('篡改猴签名：GM 空时内置常量生效（自动种回 GM，签名可用）', () => {
+  // 用一个「没有常量」的沙箱（GM_getValue 只回 fallback），记录 GM_setValue 的写入
   const hooks = {};
+  const seeded = {};
   const fakeDocument = {
     querySelectorAll: () => [],
     querySelector: () => null,
@@ -129,6 +132,69 @@ test('篡改猴签名：GM 里没有常量时，签名单函数要抛带获取�
     setTimeout,
     clearTimeout,
     GM_getValue: (_key, fallback) => fallback,
+    GM_setValue: (key, value) => { seeded[key] = value; },
+    GM_deleteValue: () => {},
+    GM_registerMenuCommand: () => {},
+    GM_xmlhttpRequest: () => {}
+  };
+  sandbox.window.document = fakeDocument;
+  sandbox.window.location = sandbox.location;
+  vm.createContext(sandbox);
+  new vm.Script(SOURCE).runInContext(sandbox);
+
+  assert.equal(hooks.hasSigningKeys(), true, '内置常量要让 hasSigningKeys 通过');
+  const keys = hooks.signingKeys();
+  assert.ok(keys && keys.ak && keys.sk, '内置常量要能解码出 AK/SK');
+  assert.match(keys.ak, /^[0-9a-f]{32}$/, '内置 AK 解出来是 32 位十六进制（与 .env 同一份）');
+  assert.match(keys.sk, /^[0-9a-f]{32}$/, '内置 SK 解出来是 32 位十六进制');
+  // 种回 GM：「设置签名常量」菜单的预填走同一条路
+  assert.ok(seeded['educoder-sign-ak'] && seeded['educoder-sign-sk'], '内置值要种进 GM 存储');
+  // 签名真的可用：拼出来的签名串用的是内置常量
+  const text = hooks.signingText('GET', 1758956400000);
+  assert.equal(
+    text,
+    `method=GET&ak=${keys.ak}&sk=${keys.sk}&time=1758956400000`,
+    '签名串用内置常量拼装'
+  );
+  assert.doesNotThrow(() => hooks.signature('GET', 1758956400000), '内置常量下签名函数不该抛错');
+});
+
+// GM 里已经存了一**对**时（用户粘过）优先用存的那对——内置值只是缺省，不许悄悄顶掉用户的覆盖。
+test('篡改猴签名：GM 已存的完整一对优先于内置值', () => {
+  const hooks = loadHooks(); // 注入了夹具常量（不同于内置值）
+  assert.equal(hooks.hasSigningKeys(), true);
+  const text = hooks.signingText('GET', 1758956400000);
+  assert.equal(
+    text,
+    `method=GET&ak=${FIX_AK}&sk=${FIX_SK}&time=1758956400000`,
+    '用户粘的常量优先于内置值'
+  );
+});
+
+// 内置不是免死金牌：GM 里存了**非法**的一对（比如只解了一次的串）时，
+// 必须如实报「不可用」并把用户引到菜单，而不是悄悄退回内置值掩盖错误。
+test('篡改猴签名：GM 里的非法常量要如实报不可用（不退回内置值掩盖）', () => {
+  const hooks = {};
+  const onceAk = Buffer.from('0123456789abcdef', 'utf8').toString('base64'); // 只解一次的形态
+  const fakeDocument = {
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: () => null,
+    createElement: () => ({ style: {}, append() {}, addEventListener() {}, setAttribute() {} }),
+    head: { append() {} },
+    body: { append() {} }
+  };
+  const sandbox = {
+    window: { __educoderAutosubmitTestHooks: hooks, btoa: (v) => Buffer.from(String(v), 'binary').toString('base64'), atob: (v) => Buffer.from(String(v), 'base64').toString('binary'), document: fakeDocument },
+    document: fakeDocument,
+    location: { pathname: '/tasks/x', search: '', origin: 'https://www.educoder.net', href: 'https://www.educoder.net/tasks/x' },
+    navigator: { userAgent: 'test' },
+    URL,
+    URLSearchParams,
+    console,
+    setTimeout,
+    clearTimeout,
+    GM_getValue: (key, fallback) => (key === 'educoder-sign-ak' || key === 'educoder-sign-sk' ? onceAk : fallback),
     GM_setValue: () => {},
     GM_deleteValue: () => {},
     GM_registerMenuCommand: () => {},
@@ -138,6 +204,30 @@ test('篡改猴签名：GM 里没有常量时，签名单函数要抛带获取�
   sandbox.window.location = sandbox.location;
   vm.createContext(sandbox);
   new vm.Script(SOURCE).runInContext(sandbox);
-  assert.equal(hooks.hasSigningKeys(), false, '没注入常量时要能探测出来');
-  assert.throws(() => hooks.signature('GET', 0), /设置签名常量/, '报错要告诉用户怎么设置');
+  assert.equal(hooks.hasSigningKeys(), false, '非法常量要如实报不可用');
+  assert.throws(() => hooks.signature('GET', 0), /设置签名常量/, '报错要指向菜单（粘贴覆盖或更新脚本）');
+});
+
+
+// 常量是**双重 base64**。「只粘解过一次的那串」也能被解出结果（十六进制字符本身都是
+// 合法 base64 字符），只是解出来是乱码；乱码一路走到请求里被拒，报的却是
+// `-102 服务器时间不匹配`（跟时间完全无关），用户会顺着错方向查半天。
+// 所以在粘贴那一刻就要拦住。
+test('签名常量校验：双 base64 通过；「只粘解过一次」的那串要被拦住', () => {
+  const hooks = loadHooks();
+  assert.equal(typeof hooks.validateSigningKey, 'function', '测试钩子应暴露 validateSigningKey');
+
+  const ok = hooks.validateSigningKey(FIX_AK_B64);
+  assert.equal(ok.ok, true, '正确的双 base64 应通过');
+  assert.equal(ok.reason, '');
+
+  // 只解过一次的那串：44 字符、以 = 结尾
+  const once = Buffer.from(FIX_AK, 'utf8').toString('base64');
+  assert.match(once, /=$/, '夹具前提：解一次的结果以 = 结尾');
+  const wrong = hooks.validateSigningKey(once);
+  assert.equal(wrong.ok, false, '解过一次的那串不能算通过');
+  assert.match(wrong.reason, /双 base64/, '要明确说要粘双 base64');
+
+  assert.equal(hooks.validateSigningKey('').ok, false, '空值不通过');
+  assert.equal(hooks.validateSigningKey('not base64!!').ok, false, '含非法字符不通过');
 });

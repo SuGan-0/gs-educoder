@@ -18,6 +18,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+
+/**
+ * 取「某个顶层函数」的完整源码：从它的签名开始，到**下一个顶层函数**为止。
+ *
+ * 别用写死的字符窗口（`slice(start, start + 4000)`）去切函数体：在函数里加几行注释或
+ * 一个等待，断言就会掉出窗口——测试假红，而代码其实没问题（10-12 加"等关卡数据"时踩过）。
+ */
+function fnBody(source, signature) {
+  const start = source.indexOf(signature);
+  if (start < 0) return '';
+  const next = source.indexOf('\n  async function ', start + 1);
+  return source.slice(start, next > 0 ? next : source.length);
+}
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
@@ -244,6 +257,44 @@ test('控制台：缺答案清单面板与接口接线都在', () => {
   assert.match(HTML, /action: 'clear'/, '「清空」必须调用接口的 clear');
 });
 
+// 用户要求：抓取全选时，本地已有的关卡（有存档 / 答案文件里已有答案，如虚拟机题）
+// 要自动取消勾选。前端三件套缺一不可：引擎标注的展示、「全选」的排除、数量的提示。
+test('控制台：跳过清单——全选自动排除本地已有的关卡，且有标签与提示', () => {
+  assert.match(HTML, /function doneTag\(/, '要有「已有答案 / 已存档」的标签渲染');
+  assert.match(HTML, /tag-done/, '标签样式要存在');
+  // 「全选」的排除逻辑：done 且 mode==='all' 时不加入选中集合（反选/手动勾选不受影响）
+  assert.match(HTML, /if \(done && mode === 'all'\) return;/, 'applyBulk 的 all 模式必须跳过 localDone 关卡');
+  assert.match(
+    HTML,
+    /var done = level && level\.localDone && \(level\.localDone\.archived \|\| level\.localDone\.answered\);/,
+    '判定要同时看存档与答案两个标记'
+  );
+  // 提示：不解释的话「全选完怎么少了一截」会像 bug
+  assert.match(HTML, /跳过清单/, '要有跳过清单的数量提示');
+  // 引擎侧：合并列表要带 localDone 标注（数据来源）
+  const engineSource = fs.readFileSync(path.join(ROOT, 'extractor', 'lib', 'extract-engine.js'), 'utf8');
+  assert.match(engineSource, /localDoneIndex\(/, '引擎要有跳过清单判定');
+  assert.match(engineSource, /localDone: \{ archived, answered \}/, '合并关卡列表要带 localDone 标注');
+});
+
+// 用户要求：审查「导出本实验全部答案」的漏洞。两条硬约束：
+// ① 兜底只认选择题标准答案——编程题退回的编辑器内容是用户草稿，
+//    标成 platform/verified 会污染答案库（作答与回传都信这个标记）；
+// ② 回传控制台按**真实归属实验**——链条可能跨作业（一实训多作业），
+//    把邻实验的关卡标成当前实验会写进错误实验的答案文件。
+test('篡改猴脚本：导出兜底不许把草稿当平台答案，回传按真实归属实验', () => {
+  const start = USERSCRIPT.indexOf('async function exportExperimentAnswers');
+  const end = USERSCRIPT.indexOf('function finishExportExperiment', start);
+  assert.ok(start > 0 && end > start, '要能切出 exportExperimentAnswers 的函数体');
+  const body = USERSCRIPT.slice(start, end);
+  assert.match(body, /fallback && fallback\.kind === 'choice'/, '兜底的选择题分支只接受标准答案');
+  assert.match(body, /state\.taskContext && state\.taskContext\.passed/, '编程题兜底只认「已通过测评」的关卡（草稿不算答案）');
+  assert.match(body, /不一定是答案，不写入/, '未通过的编程题要明说「不写入」的原因');
+  assert.match(body, /homework_challenge_index \?\? data\.challenge\.position|harvestPositionOf\(data\)/, '序号要用本作业内的，不能用实训内全局的');
+  assert.match(body, /state\.levelIndex\[row\.identifier\]/, '回传控制台要按命中的条目定归属实验');
+  assert.match(USERSCRIPT, /homework_common_id=\$\{homeworkId\}/, '回捞接口要带作业号（在 fetchTaskData 里，一实训多作业课程按作业算）');
+});
+
 test('篡改猴脚本：导出标准答案要回传控制台（与控制台同一份答案库），而不是只下载文件', () => {
   // 与控制台「AI 作答」写的是同一份 exports/answers/，走既有的 /api/answer/save
   assert.match(USERSCRIPT, /pushAnswerToConsole\(\{\s*identifier/, '导出应走 pushAnswerToConsole');
@@ -341,11 +392,82 @@ test('篡改猴脚本：教学队列要能存档续跑（同一批实验接着�
   assert.match(USERSCRIPT, /清空答题进度（下次从头跑）/, '要给一个"重来"的出口');
 });
 
-test('篡改猴脚本：面板不再有单关的「导出标准答案」（已并入「导出本实验全部答案」）', () => {
-  assert.doesNotMatch(USERSCRIPT, /textContent: '导出标准答案'/, '面板按钮已移除');
-  assert.match(USERSCRIPT, /textContent: '导出本实验全部答案'/, '合并成一个按钮');
+test('篡改猴脚本：导出入口只有两个——本实验（叠加进库、不下载）/ 全部（下载文件）', () => {
+  assert.doesNotMatch(USERSCRIPT, /textContent: '导出标准答案'/, '旧的单关按钮要移除');
   assert.doesNotMatch(USERSCRIPT, /exportCurrentAnswer/, '单关导出函数已删除（逻辑并进批量导出）');
-  assert.match(USERSCRIPT, /GM_registerMenuCommand\('导出标准答案（本实验全部）'/, '菜单项指向批量导出');
+  assert.match(USERSCRIPT, /textContent: '导出本实验全部答案'/, '要能一键回捞本实验');
+  assert.match(USERSCRIPT, /textContent: '导出全部答案'/, '要能一键导出全部');
+  assert.match(
+    USERSCRIPT,
+    /GM_registerMenuCommand\('回捞本实验标准答案（叠加进答案库，不下载文件）'/,
+    '菜单要说清「本实验那个是叠加、不下载」'
+  );
+  assert.match(
+    USERSCRIPT,
+    /GM_registerMenuCommand\('导出全部答案到本地文件（与导入同一格式，可原样导回）'/,
+    '菜单里也要有「导出全部到本地文件」，并说明与导入同格式'
+  );
+  // 二者分工：本实验的回捞 → mergeStandardAnswer 叠加；全部的那个 → downloadJsonFile 下载。
+  // 少了任何一半，就会出现「点了没反应（脱控制台时只 POST 回控制台）」或「只能看不能带走」。
+  assert.match(USERSCRIPT, /function buildClassAnswersDoc\(/, '要有「按班级答案文件格式汇总」的构建函数');
+  assert.match(USERSCRIPT, /function mergeStandardAnswer\(/, '本实验回捞要能叠加进答案库');
+  assert.match(USERSCRIPT, /function downloadJsonFile\(/, '导出全部要真的下载文件');
+});
+
+// 用户反馈：「导出本实验的答案时也没有个成功提示」。
+// 之前只有 `merged > 0` 才打一行日志，于是「拉到了但一条都没写进去」「只写了当前这一关」
+// 这两种情况点完按钮毫无反应——看着就像按钮是坏的。
+test('篡改猴脚本：「导出本实验全部答案」每种结果都要有明确提示，按钮上也要闪一下', () => {
+  assert.match(USERSCRIPT, /function flashButton\(/, '要有「按钮上临时显示结果」的辅助函数');
+  assert.match(USERSCRIPT, /function finishExportExperiment\(/, '要有统一收尾（不能各分支自己 return 了事）');
+
+  const start = USERSCRIPT.indexOf('async function exportExperimentAnswers');
+  const end = USERSCRIPT.indexOf('function finishExportExperiment', start);
+  assert.ok(start > 0 && end > start, '要能切出 exportExperimentAnswers 的函数体');
+  const body = USERSCRIPT.slice(start, end);
+  // 三条出口都必须给反馈：正常收尾 / 只写了当前这一关 / 完全没取到数据
+  assert.match(body, /finishExportExperiment\(\{\s*experimentName,\s*harvested: rows\.length/, '正常路径要走统一收尾');
+  assert.match(body, /finishExportExperiment\(\{\s*\n\s*experimentName,\s*\n\s*harvested: 1/, '「只处理当前这一关」也要走统一收尾');
+  assert.match(body, /flashButton\('eas-export-answers', '✗ 没取到关卡数据', 'err'\)/, '取不到数据时也要有失败提示');
+  assert.match(body, /flashButton\('eas-export-answers', '✗ 不是关卡页', 'err'\)/, '不是关卡页时也要有失败提示');
+
+  // 收尾要说清「覆盖了几关、新补了几关」，否则用户分不清是盖了旧的还是补了空的
+  assert.match(
+    USERSCRIPT,
+    /已写入 \$\{merged\} 关平台标准答案到答案库（覆盖原有答案 \$\{stats\.overwritten\} 关、新补 \$\{stats\.added\} 关）/,
+    '写入结果要区分覆盖与新补'
+  );
+  assert.match(USERSCRIPT, /导出\$\{where\}成功/, '成功那句必须出现「成功」字样');
+  assert.match(USERSCRIPT, /flashButton\('eas-export-all'/, '「导出全部答案」同样要有按钮反馈');
+});
+
+// 用户明确要求：库里已有答案时**要覆盖**（平台标准答案就是判分依据，比导入来的权威），
+// 不能「已有就跳过」。唯一例外：库里是代码答案时不能被选择题答案盖掉（会把代码弄丢）。
+test('篡改猴脚本：回捞的标准答案是「覆盖」语义，只有代码答案例外', () => {
+  const start = USERSCRIPT.indexOf('function mergeStandardAnswer');
+  assert.ok(start > 0, '应有 mergeStandardAnswer');
+  const body = USERSCRIPT.slice(start, USERSCRIPT.indexOf('function exportExperimentAnswers', start));
+  assert.match(body, /bump\(overwrite \? 'overwritten' : 'added'\)/, '要按「原来是空还是有答案」分别记账');
+  assert.match(body, /existing\.kind === 'code'/, '代码答案要被认出来');
+  assert.match(body, /bump\('kept'\)/, '保留代码要单独记一笔（否则日志里说不清为什么没写）');
+  assert.match(USERSCRIPT, /覆盖会把代码弄丢/, '代码里要写清「为什么不覆盖」（注释或日志文案任一处即可）');
+});
+
+test('篡改猴脚本：答案不可用（跳过）与页面坏了（停队）必须分开，不能混成一种', () => {
+  // 答不了的原因有两类，处置**相反**：
+  //   ① 答案本身不可用（库里没代码/没条目）→ 记账 + 跳过，别拖垮整条队列；
+  //   ② 页面结构坏了（找不到编辑器/提交按钮）→ 必须停队，悄悄跳过会让一整片关卡无声漏掉。
+  // 所以标记只该出现在第①类上，数量精确到 2 条。
+  const flagged = USERSCRIPT.match(/unusableAnswer: true/g) || [];
+  assert.equal(flagged.length, 2, `只有「答案本身不可用」的两条该带 unusableAnswer，实际 ${flagged.length} 条`);
+  assert.match(USERSCRIPT, /unusableAnswer: true, text: '答案里没有代码内容'/, '缺代码要算答案问题');
+  assert.match(USERSCRIPT, /unusableAnswer: true, text: '没有本地答案'/, '没条目也算答案问题');
+  assert.match(USERSCRIPT, /if \(outcome\.unusableAnswer\)/, '调用方要按缺答案记账并跳过');
+  assert.doesNotMatch(
+    USERSCRIPT,
+    /unusableAnswer: true[^\n]*页面上找不到/,
+    '「页面上找不到编辑器/提交按钮」是页面坏了，必须停队，不能标成答案问题'
+  );
 });
 
 test('篡改猴脚本：落盘后清空面板日志要保留最后几行（否则「队列完成」被清掉，看着像卡住）', () => {
@@ -358,7 +480,7 @@ test('篡改猴脚本：作答内核只应有一份（勾选逻辑不得再分�
   assert.match(USERSCRIPT, /async function answerCurrentLevel/, '要有作答内核');
   const teach = USERSCRIPT.indexOf('async function processTeachLevel');
   assert.ok(teach > 0, '教学队列要在');
-  assert.match(USERSCRIPT.slice(teach, teach + 4000), /await answerCurrentLevel\(/, '教学队列要用内核');
+  assert.match(fnBody(USERSCRIPT, 'async function processTeachLevel'), /await answerCurrentLevel\(/, '教学队列要用内核');
   // 手动单关流程（processCurrentLevel）已删除：多关推进统一交给队列，
   // 它那套「自动点下一关 / 判定通过才下一关」的开关也一并消失（见上面的安全默认用例）。
   assert.doesNotMatch(USERSCRIPT, /processCurrentLevel/, '不该再有第二套作答流程');
@@ -380,11 +502,10 @@ test('篡改猴脚本：读课堂实验必须带 limit（不带只能拿到默�
 
 test('篡改猴脚本：代码题必须等编辑器挂载（Monaco 异步插进 DOM，进页面就查会误判没有）', () => {
   assert.match(USERSCRIPT, /async function waitForCodeEditor/, '要有等待函数');
-  const core = USERSCRIPT.indexOf('async function answerCurrentLevel');
-  const body = USERSCRIPT.slice(core, core + 2200);
+  const body = fnBody(USERSCRIPT, 'async function answerCurrentLevel');
   assert.match(body, /await waitForCodeEditor\(\)/, '代码分支要等编辑器，不能立刻放弃');
   assert.match(body, /describeEditorScene\(\)/, '失败时要把现场（monaco 模型 / textarea / iframe 数量）打出来');
   // 动作判定前也要等：否则「没编辑器也没选项」会把代码题误判成虚拟机题跳过
   const teach = USERSCRIPT.indexOf('async function processTeachLevel');
-  assert.match(USERSCRIPT.slice(teach, teach + 2200), /await waitForCodeEditor\(2500\)/, '动作判定前也要等编辑器');
+  assert.match(fnBody(USERSCRIPT, 'async function processTeachLevel'), /await waitForCodeEditor\(2500\)/, '动作判定前也要等编辑器');
 });

@@ -20,3 +20,9 @@ docs/HANDOVER.md
 docs/DEVELOPMENT_STATUS.md
 # 本地技能方法论（不随仓库发布）
 skills/
+# 简化版油猴脚本：只留本地用，不进仓库（发布的是完整版 educoder-autosubmit.user.js）
+userscript/educoder-lite.user.js
+# 本地 AI 工作区记忆
+.workbuddy/
+# 只用 npm（package-lock.json 为准），pnpm 的锁文件是本地产物
+pnpm-lock.yaml
