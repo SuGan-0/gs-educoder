@@ -18,6 +18,8 @@ docs/README-traditional.md
 docs/BUG.md
 docs/HANDOVER.md
 docs/DEVELOPMENT_STATUS.md
+docs/OPTIMIZATION-PLAN.md
+docs/superpowers/
 # 本地技能方法论（不随仓库发布）
 skills/
 # 简化版油猴脚本：只留本地用，不进仓库（发布的是完整版 educoder-autosubmit.user.js）
