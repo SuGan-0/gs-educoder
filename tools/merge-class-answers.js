@@ -23,7 +23,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const fmt = require(path.join(ROOT, 'extractor', 'lib', 'answer-format'));
 const classAnswers = require(path.join(ROOT, 'extractor', 'lib', 'class-answers'));
-const answerer = require(path.join(ROOT, 'extractor', 'lib', 'answerer'));
+const catalog = require(path.join(ROOT, 'extractor', 'lib', 'archive-catalog'));
 
 /** `--key=value` 取值。 */
 function argOf(name) {
@@ -175,7 +175,7 @@ function mergeInto(target, incoming) {
 /** 从工作层汇总某个课程（一次只取一个课程），产出班级文件结构。 */
 async function buildFromCourse(courseName, template) {
   const exportRoot = process.env.EDUCODER_EXPORT_ROOT || path.join(ROOT, 'exports');
-  const courses = await answerer.listTargets(exportRoot);
+  const courses = await catalog.listTargets(exportRoot);
   const course = courses.find((item) => key(item.name) === key(courseName));
   if (!course) {
     throw new Error(`exports/ 下没有课程「${courseName}」的存档。`);
@@ -197,9 +197,9 @@ async function buildFromCourse(courseName, template) {
     }
   }
   const experiments = course.experiments.map((experiment) => {
-    let answerDoc = null;
+    let answerDoc = experiment.answerDoc || null;
     try {
-      answerDoc = fmt.normalizeDocument(JSON.parse(fs.readFileSync(experiment.answerPath, 'utf8')), {
+      if (!answerDoc) answerDoc = fmt.normalizeDocument(JSON.parse(fs.readFileSync(experiment.answerPath, 'utf8')), {
         classroom: experiment.classroom,
         experiment: { name: experiment.name }
       });

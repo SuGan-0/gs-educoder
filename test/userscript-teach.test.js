@@ -177,10 +177,10 @@ test('队列构建：默认全选、按勾选过滤、虚拟机实验剔除', ()
   assert.deepEqual(Array.from(partial.experiments[0].positions), [2], '勾选了的按勾选来');
 });
 
-test('每关动作判定：未选中 → 虚拟机 → 已通过 → 无答案 → 作答', () => {
+test('每关动作判定：未选中 → 无法识别的页面 → 已通过 → 无答案 → 作答', () => {
   const hooks = loadHooks();
   assert.equal(hooks.teachLevelAction({ selected: false, hasEditor: true, hasChoice: false, passed: false, hasAnswer: true }), 'unselected');
-  assert.equal(hooks.teachLevelAction({ selected: true, hasEditor: false, hasChoice: false, passed: false, hasAnswer: true }), 'vm');
+  assert.equal(hooks.teachLevelAction({ selected: true, hasEditor: false, hasChoice: false, passed: false, hasAnswer: true }), 'unsupported');
   assert.equal(hooks.teachLevelAction({ selected: true, hasEditor: true, hasChoice: false, passed: true, hasAnswer: false }), 'passed');
   assert.equal(hooks.teachLevelAction({ selected: true, hasEditor: true, hasChoice: false, passed: false, hasAnswer: false }), 'missing');
   assert.equal(hooks.teachLevelAction({ selected: true, hasEditor: true, hasChoice: false, passed: false, hasAnswer: true }), 'answer');

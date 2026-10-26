@@ -5,8 +5,10 @@ const { chromium } = require('playwright');
 
 const { safeName, makeLevelSection, makeExperimentDocument, taskFromApi, classifyTask, detectImageExtension, normalizeImageSource, levelId, KINDS } = require('./task-parser');
 const { ARCHIVE_NAME, readArchive, appendLevel, orderedLevels, toArchiveRecord } = require('./level-store');
+const fmt = require('./answer-format');
 const { levelPassed, choiceAnswerText, mergeAnswer, loadAnswerDocument } = require('./answer-store');
 const api = require('./educoder-api');
+const { mapConcurrent } = require('./async-pool');
 const { SIGNING_VERSION } = require('./educoder-sign');
 
 // 本文件位于 extractor/lib/，仓库根需要上跳两级。
@@ -794,21 +796,11 @@ class ExtractEngine {
 
   /**
    * 从 URL 里读出作业号，用于校验「进的是不是目标实验」。
-   * 支持三种形态：
-   * - `/tasks/{课程码}/{作业号}/{关卡标识}`（三段式）
-   * - `/tasks/{关卡标识}?homework_common_id={作业号}`（旧形态）
-   * - `/classrooms/{课程码}/shixun_homework/{作业号}/detail?tabs=1`（作业详情页）
+   * 支持三种形态：三段式 /tasks/{课程码}/{作业号}/{关卡标识}、查询串 homework_common_id=、
+   * /classrooms/{课程码}/shixun_homework/{作业号}/detail。实现在 answer-format.js（共享）。
    */
   static homeworkIdFromUrl(url) {
-    const text = String(url || '');
-    const quick = /[?&]homework_common_id=(\d+)/.exec(text)?.[1];
-    if (quick) return quick;
-    const detail = /\/shixun_homework\/(\d+)(?:\/|$|\?)/.exec(text)?.[1];
-    if (detail) return detail;
-    const raw = text.match(/\/tasks\/([^/?#]+(?:\/[^/?#]+)*)/)?.[1] || '';
-    const segments = raw.split('/').filter(Boolean);
-    if (segments.length >= 2 && /^\d+$/.test(segments[segments.length - 2])) return segments[segments.length - 2];
-    return '';
+    return fmt.homeworkIdFromTaskUrl(url);
   }
 
   /**
@@ -1387,17 +1379,13 @@ class ExtractEngine {
   /**
    * 从关卡页面 URL 里取关卡标识（game identifier）。
    *
-   * 头歌真实存在两种形态：
-   * - `/tasks/{identifier}`                          （旧形态）
-   * - `/tasks/{courseCode}/{homeworkId}/{identifier}` （三段式，实测 zqa079e5 用这种）
+   * 头歌真实存在两种形态：`/tasks/{identifier}` 与 `/tasks/{courseCode}/{homeworkId}/{identifier}`。
    * **三段式里第一段是课程码、第二段是作业 ID，只有最后一段才是关卡标识**。
    * 早期只取 `/tasks/([^/?#]+)` 会得到课程码，导致后续接口全部 404。
+   * 实现在 answer-format.js（汇总工具/迁移工具共用同一份解析），这里只是引擎侧入口。
    */
   static identifierFromTaskUrl(url) {
-    const match = String(url || '').match(/\/tasks\/([^/?#]+(?:\/[^/?#]+)*)/);
-    if (!match) return '';
-    const segments = match[1].split('/').filter(Boolean);
-    return segments.length ? segments[segments.length - 1] : '';
+    return fmt.identifierFromTaskUrl(url);
   }
 
   /**
@@ -1533,7 +1521,7 @@ class ExtractEngine {
 
   /**
    * 关卡「已通过测评」时，把提交的代码 / 所选项当作答案导出到
-   * `exports/answers/{课程}__{实验}.answers.json`（格式见 docs/AI-ANSWER-FORMAT.md）。
+   * `exports/answers/{课堂}（{课堂码}）/{实验}.answers.json`（格式见 docs/AI-ANSWER-FORMAT.md）。
    *
    * 为什么放在抓取链路上：判据（满分/得分、选择题所选项）都在本次已经取到的 payload 里，
    * 代码内容也已经在 attachStarterCode 里取过一次（已提交的关卡，那份内容就是提交的代码），
@@ -1948,11 +1936,14 @@ class ExtractEngine {
     // 记录当前关卡的序号与主题：无标识的关卡列表靠序号做选择过滤与进度显示。
     this.currentLevelPosition = payload?.challenge?.homework_challenge_index ?? null;
     this.currentLevelSubject = payload?.challenge?.subject || '';
-    await this.attachStarterCode(page, task, payload, experiment, gameIdentifier);
 
     // 只提取答案：链路照跑（答案判据与内容都在这份 payload 里），但不写任何题目存档。
     // 复用快路径在这里没有意义（不写存档，也就无所谓「复用」），image/md 一律跳过。
     if (this.answersOnly) {
+      // 未通过的关卡和选择题不需要读取仓库文件，减少一次带签名的网络请求。
+      if (levelPassed(payload) && classifyTask(task).kind === KINDS.CODE) {
+        await this.attachStarterCode(page, task, payload, experiment, gameIdentifier);
+      }
       const result = await this.captureAnswer(task, payload, course, experiment);
       if (result && result.ok) {
         if (result.changed === false) {
@@ -1983,6 +1974,7 @@ class ExtractEngine {
       this.progress({ levelName: task.level, levelType: task.type });
       return payload.next_game || null;
     }
+    await this.attachStarterCode(page, task, payload, experiment, gameIdentifier);
 
     // 复用快路径：正文（含文件内容）与图片清单都没变的关卡，**不重新下载图片、不追加存档**。
     // 以前只有「落盘时」才比对指纹，重跑同一门课时每关仍会重下图片、重写答案文件、
@@ -2055,12 +2047,9 @@ class ExtractEngine {
     this.status('levels', `正在读取所选 ${experiments.length} 个实验的关卡列表…`);
     const plans = [];
     const merged = [];
-    let stoppedEarly = false;
-    for (const experiment of experiments) {
-      if (await this.stopping()) {
-        stoppedEarly = true;
-        break;
-      }
+    let completed = 0;
+    // 只并发读取清单，进入实验/浏览器导航仍串行；结果按原始实验顺序合并。
+    const discovered = await mapConcurrent(experiments, 3, async (experiment) => {
       let levels = [];
       try {
         // 关键：不要在这里一个个发 levels 事件（会让界面只剩最后一个实验的关卡）。
@@ -2076,6 +2065,14 @@ class ExtractEngine {
       } catch (error) {
         this.log(`实验「${experiment.name}」跳过清单读取失败：${error.message}`, 'warn');
       }
+      completed += 1;
+      if (!(await this.stopping())) this.status('levels', `已读取 ${completed}/${experiments.length} 个实验的关卡清单…`);
+      return { experiment, levels, local };
+    }, () => this.stopping());
+    const stoppedEarly = await this.stopping();
+    for (const result of discovered) {
+      if (!result) continue;
+      const { experiment, levels, local } = result;
       const planIndex = plans.length;
       plans.push({ experiment, levels, selection: null, selectedIds: null, selectedPositions: null });
       for (const level of levels) {

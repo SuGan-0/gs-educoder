@@ -34,16 +34,19 @@ function fnBody(source, signature) {
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
-const HTML = fs.readFileSync(path.join(ROOT, 'extractor', 'ui', 'public', 'index.html'), 'utf8');
+const MARKUP = fs.readFileSync(path.join(ROOT, 'extractor', 'ui', 'public', 'index.html'), 'utf8');
+const FRONTEND = fs.readFileSync(path.join(ROOT, 'extractor', 'ui', 'public', 'console.js'), 'utf8');
+const CSS = fs.readFileSync(path.join(ROOT, 'extractor', 'ui', 'public', 'console.css'), 'utf8');
+const HTML = [MARKUP, FRONTEND, CSS].join('\n');
 const USERSCRIPT = fs.readFileSync(path.join(ROOT, 'userscript', 'educoder-autosubmit.user.js'), 'utf8');
 /** 会发事件的文件：HTTP 服务、外壳、引擎。 */
 const BACKEND_SOURCES = ['extractor/ui/server.js', 'extractor/run.js', 'extractor/lib/extract-engine.js']
   .map((file) => fs.readFileSync(path.join(ROOT, file), 'utf8'));
 
-/** index.html 里的 `EVENT_TYPES` 白名单。 */
+/** 控制台脚本里的 `EVENT_TYPES` 白名单。 */
 function frontendEventTypes() {
   const match = /var EVENT_TYPES = \[([^\]]*)\]/.exec(HTML);
-  assert.ok(match, 'index.html 里应有 EVENT_TYPES 白名单');
+  assert.ok(match, 'console.js 里应有 EVENT_TYPES 白名单');
   return match[1]
     .split(',')
     .map((item) => item.trim().replace(/^'/, '').replace(/'$/, ''))
@@ -72,25 +75,20 @@ test('控制台：后端发出的每种事件都在前端白名单里（否则�
   assert.deepEqual(
     missing,
     [],
-    `这些事件会在前端入口被丢掉，请把它们加进 index.html 的 EVENT_TYPES：${missing.join(', ')}`
+    `这些事件会在前端入口被丢掉，请把它们加进 console.js 的 EVENT_TYPES：${missing.join(', ')}`
   );
 });
 
-test('控制台：AI 作答（answer）事件的整条接线都在', () => {
-  assert.ok(frontendEventTypes().includes('answer'), 'EVENT_TYPES 必须含 answer');
-  assert.match(HTML, /case 'answer':/, 'applyEvent 必须有 answer 分支');
-  assert.match(HTML, /function mergeAnswer\(/, 'mergeAnswer 必须存在');
-  assert.match(HTML, /mergeAnswer\(snapshot\.answer\)/, '快照恢复必须带上 answer（刷新页面后仍能看到进度）');
-  assert.match(HTML, /renderAnswerStatus\(\);\s*\n\s*\}/, 'renderAll 必须调用 renderAnswerStatus');
-
-  // SSE 监听列表：从 connectEvents 里取那一段，确认注册了 answer
-  const from = HTML.indexOf('function connectEvents()');
-  assert.ok(from > 0, '应能找到 connectEvents');
-  const segment = HTML.slice(from, HTML.indexOf('source.onerror', from));
-  assert.match(segment, /'answer'/, 'SSE 监听列表必须注册 answer');
+test('控制台：外部 Agent 工作流替代内置模型调用', () => {
+  assert.ok(!frontendEventTypes().includes('answer'), '不再订阅内置 AI 任务事件');
+  assert.doesNotMatch(HTML, /AI 作答|id="panel-answer"|startAnswerRun|stopAnswerRun|answer-model-name/);
+  assert.doesNotMatch(HTML, /\/api\/answer\/(run|stop|config|targets)/);
+  assert.match(HTML, /id="panel-agent"/);
+  assert.match(HTML, /\/api\/agent\/targets/);
+  assert.match(HTML, /\/api\/agent\/guide/);
 });
 
-test('控制台：answer 的判定顺序不会被 done 截走', () => {
+test('控制台：事件信封优先于载荷的 done 判据', () => {
   // answer 事件载荷里有 stopped 字段，而 detectEventType 里 `'stopped' in data` 会判成 done。
   // 只要 EVENT_TYPES 含 answer（先判 data.type）就不会走到那一步——这里把这个前提锁住。
   const match = /function detectEventType\(named, data\) \{([\s\S]*?)\n  \}/.exec(HTML);
@@ -122,7 +120,7 @@ test('篡改猴脚本：所有控制台请求都要走 consoleRequest（地址�
     'GM_xmlhttpRequest 只应出现在传输层（consoleRequest）里，别处一律调它'
   );
   // 各功能点给的是路径，不是拼好的 URL
-  for (const path of ['/api/answers', '/api/blueprint', '/api/log', '/api/answer/save', '/api/signing-keys']) {
+  for (const path of ['/api/answers', '/api/log', '/api/answer/save', '/api/signing-keys']) {
     assert.match(USERSCRIPT, new RegExp(`consoleRequest\\('${path.replace(/\//g, '\\/')}'`), `${path} 应走 consoleRequest`);
   }
 });
@@ -171,27 +169,25 @@ test('篡改猴脚本：编辑器必须取页面的 window.Monaco（大写 M）�
   assert.doesNotMatch(USERSCRIPT, /const monacoApi = window\.monaco/, '不得再直接读沙箱 window.monaco');
 });
 
-/* ------------------------------ 内联脚本自身 ------------------------------ */
-
-/** index.html 里最大的那段内联脚本（控制台的全部前端逻辑）。 */
-function inlineScript() {
-  const blocks = [...HTML.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-  assert.ok(blocks.length, 'index.html 应有内联脚本（单文件、无构建）');
-  return blocks.reduce((longest, block) => (block.length >= longest.length ? block : longest));
-}
-
-test('控制台：内联脚本必须能通过语法编译', () => {
-  // 前端是单文件内联脚本，一个字符打错整块就不执行——而 HTTP 级测试完全看不见。
-  // 只编译不执行，所以不需要 document / location 这些浏览器全局。
-  assert.doesNotThrow(() => new vm.Script(inlineScript()), '内联脚本存在语法错误，页面会整块失效');
+test('控制台：独立资源按依赖顺序载入，前端脚本可编译', () => {
+  assert.match(MARKUP, /<link rel="stylesheet" href="\/assets\/console.css">/);
+  const model = MARKUP.indexOf('src="/assets/selection-model.js"');
+  const frontend = MARKUP.indexOf('src="/assets/console.js"');
+  assert.ok(model > 0 && frontend > model, '共享选择逻辑必须先于页面脚本载入');
+  assert.doesNotThrow(() => new vm.Script(FRONTEND), '页面脚本存在语法错误');
 });
 
-test('控制台：作答面板的进度条与「复制地址」按钮已接线', () => {
-  assert.match(HTML, /id="answer-bar"/, '应有作答进度条');
-  assert.match(HTML, /id="answer-fill"/, '应有作答进度条填充');
-  assert.match(HTML, /answer-fill'\)\.style\.width/, '进度条必须被更新');
-  assert.match(HTML, /id="btn-answer-copy"/, '应有复制控制台地址按钮');
-  assert.match(HTML, /btn-answer-copy'\)\.addEventListener/, '复制按钮必须接线');
+test('控制台：Agent 说明、复制任务和班级导出有真实动作入口', () => {
+  assert.match(HTML, /id="btn-agent-guide"[^>]*download=/);
+  assert.match(HTML, /btn-agent-copy'\)\.addEventListener\('click', copyAgentTask/);
+  assert.match(HTML, /publish-form'\)\.addEventListener\('submit', publishClassAnswers/);
+  assert.match(HTML, /postAction\('export-class-answers'/);
+  assert.match(HTML, /btn-console-copy'\)\.addEventListener\('click', copyConsoleAddress/);
+});
+
+test('篡改猴脚本：不再录制或重放写请求', () => {
+  assert.doesNotMatch(USERSCRIPT, /function (replayTemplate|recordRequest|pushAllBlueprints|clearTemplates)/);
+  assert.doesNotMatch(USERSCRIPT, /consoleRequest\('\/api\/blueprint'/);
 });
 
 test('篡改猴脚本：找不到提交按钮时必须把页面上的候选按钮列出来', () => {
@@ -237,7 +233,12 @@ test('篡改猴脚本：网络钩子必须挂在 unsafeWindow 上（沙箱模式
   // 页面自己的请求（关卡数据 / 提交接口）根本看不见——「读到关卡数据」就永远不触发。
   // 必须 @grant unsafeWindow 并挂 unsafeWindow.fetch / unsafeWindow.XMLHttpRequest。
   assert.match(USERSCRIPT, /@grant\s+unsafeWindow/, '必须声明 unsafeWindow 权限');
-  assert.match(USERSCRIPT, /const host = \(typeof unsafeWindow !== 'undefined' && unsafeWindow\) \? unsafeWindow : window/, '必须优先用 unsafeWindow、无则退回 window');
+  assert.match(
+    USERSCRIPT,
+    /return \(typeof unsafeWindow !== 'undefined' && unsafeWindow\) \? unsafeWindow : window;/,
+    'pageWindow 必须优先用 unsafeWindow、无则退回 window'
+  );
+  assert.match(USERSCRIPT, /function installNetworkHooks\(\) \{\s*const host = pageWindow\(\);/, '网络钩子必须挂 pageWindow()（即 unsafeWindow）而非沙箱 window');
   assert.match(USERSCRIPT, /host\.fetch = function/, '必须挂 host.fetch 而非 window.fetch');
   assert.match(USERSCRIPT, /host\.XMLHttpRequest/, 'XHR 钩子同样要挂 host');
 });
@@ -247,6 +248,7 @@ test('控制台：只提取答案的勾选、载荷与引擎接线都在', () =>
   assert.match(HTML, /answersOnly: Boolean\(/, '开始/继续提取的载荷必须带上 answersOnly');
   const runSource = fs.readFileSync(path.join(ROOT, 'extractor', 'run.js'), 'utf8');
   assert.match(runSource, /engine\.answersOnly = payload\.answersOnly === true/, 'run.js 必须把 answersOnly 传给引擎');
+  assert.match(HTML, /body\.answersOnly = Boolean/, '选择步骤也必须传递当前抓取模式');
 });
 
 test('控制台：缺答案清单面板与接口接线都在', () => {
@@ -263,7 +265,7 @@ test('控制台：跳过清单——全选自动排除本地已有的关卡，�
   assert.match(HTML, /function doneTag\(/, '要有「已有答案 / 已存档」的标签渲染');
   assert.match(HTML, /tag-done/, '标签样式要存在');
   // 「全选」的排除逻辑：done 且 mode==='all' 时不加入选中集合（反选/手动勾选不受影响）
-  assert.match(HTML, /if \(done && mode === 'all'\) return;/, 'applyBulk 的 all 模式必须跳过 localDone 关卡');
+  assert.match(HTML, /if \(done && mode === 'all'\) \{ next.delete\(key\); return; \}/, 'applyBulk 的 all 模式必须排除 localDone 关卡');
   assert.match(
     HTML,
     /var done = level && level\.localDone && \(level\.localDone\.archived \|\| level\.localDone\.answered\);/,
@@ -296,7 +298,7 @@ test('篡改猴脚本：导出兜底不许把草稿当平台答案，回传按�
 });
 
 test('篡改猴脚本：导出标准答案要回传控制台（与控制台同一份答案库），而不是只下载文件', () => {
-  // 与控制台「AI 作答」写的是同一份 exports/answers/，走既有的 /api/answer/save
+  // 与外部 Agent 工作答案写入同一份 exports/answers/，走既有的 /api/answer/save
   assert.match(USERSCRIPT, /pushAnswerToConsole\(\{\s*identifier/, '导出应走 pushAnswerToConsole');
   assert.match(USERSCRIPT, /consoleEndpoint\('\/api\/answer\/save'\)/, '要先探测控制台地址，连不上才退回下载');
 });
@@ -320,12 +322,20 @@ test('篡改猴脚本：goToChainStart 必须先尝试「直达目标关」，�
 });
 
 test('篡改猴脚本：批量导出要逐关拉数据，且不能污染「当前关」上下文', () => {
-  assert.match(USERSCRIPT, /导出本实验全部关卡的标准答案/, '要有菜单项');
+  assert.match(USERSCRIPT, /回捞本实验标准答案/, '要有菜单项');
   assert.match(USERSCRIPT, /__easBatch/, '批量请求要带标记');
-  // fetch 与 XHR 两个网络钩子的 GET 观察都必须排除批量请求，否则会把别的关卡数据
-  // 当成「当前关」写进 state.taskContext
-  const guards = USERSCRIPT.match(/!\/__easBatch\/\.test\(/g) || [];
-  assert.ok(guards.length >= 2, `fetch 与 XHR 都要排除批量请求，实际 ${guards.length} 处`);
+  // fetch 与 XHR 两个网络钩子共用 responseKind 做观察分类。批量请求的排除必须是
+  // 它的第一件事（早于关卡数据匹配），否则会把别的关卡数据当成「当前关」写进 state.taskContext。
+  const start = USERSCRIPT.indexOf('function responseKind(');
+  assert.ok(start > 0, '应有 fetch/XHR 共用的 responseKind 分类函数');
+  const body = USERSCRIPT.slice(start, start + 500);
+  const batchGuard = body.indexOf('/__easBatch/.test(');
+  const taskMatch = body.indexOf('const task =');
+  assert.ok(batchGuard >= 0, 'responseKind 里要排除批量请求');
+  assert.ok(taskMatch > batchGuard, '排除必须先于关卡数据匹配');
+  // 两个钩子都必须经 responseKind 分类（含定义处至少 4 处引用），不能各自为政漏掉排除。
+  const callers = USERSCRIPT.match(/responseKind\(/g) || [];
+  assert.ok(callers.length >= 4, `fetch 与 XHR 都要走 responseKind 分类，实际引用 ${callers.length} 处`);
 });
 
 test('篡改猴脚本：「停止」必须真能停教学课程队列（之前只置标志、没人读）', () => {
@@ -364,7 +374,7 @@ test('篡改猴脚本：日志导出只发「上次之后的新行」，成功�
 test('篡改猴脚本：评测等待上限取「完整的最大测评时间」（不是一半），并把上限打进日志', () => {
   assert.match(USERSCRIPT, /Math\.min\(pageMax, 600\)/, '上限用完整的页面最大测评时间');
   assert.doesNotMatch(USERSCRIPT, /pageMax \/ 2/, '不能再取一半——实测有关卡超过一半（30 秒的页面、15 秒就放弃了）');
-  assert.match(USERSCRIPT, /等评测结果（最多/, '要把上限打进日志，否则只能靠时间戳反推等了多久');
+  assert.match(USERSCRIPT, /等本次评测的新结果（最多/, '要把上限打进日志，并说明只等待本次新结果');
 });
 
 test('篡改猴脚本：队列停下后「一键答题」按钮改文案，提示可续跑', () => {
@@ -376,26 +386,42 @@ test('篡改猴脚本：队列停下后「一键答题」按钮改文案，提�
 test('篡改猴脚本：点了「下一关」页面没跳转时必须明确停队列（不能静默卡住）', () => {
   const start = USERSCRIPT.indexOf('async function advanceTeachQueue');
   assert.ok(start > 0, '应有 advanceTeachQueue');
-  const body = USERSCRIPT.slice(start, start + 2800);
+  const body = USERSCRIPT.slice(start, USERSCRIPT.indexOf('async function handoffToNextLevel', start));
   assert.match(body, /waitForPathChange/, '要确认页面真的跳了');
   assert.match(body, /重试一次/, '没跳要重试');
   assert.match(body, /stopTeachQueue\('点了「下一关」但页面没有跳转/, '重试还不行就要明确停队列——实测就是这么静默断的（日志停在「进入下一关」后再无输出）');
 });
 
-test('篡改猴脚本：教学队列要能存档续跑（同一批实验接着上次的实验序号跑）', () => {
+test('篡改猴脚本：教学队列两种入口共用关卡断点续跑', () => {
   const start = USERSCRIPT.indexOf('async function startTeachRun');
   assert.ok(start > 0, '应有 startTeachRun');
   const body = USERSCRIPT.slice(start, start + 5000);
   assert.match(body, /saved\.stoppedReason/, '只在「停下」的队列上续跑（跑完的不续）');
-  assert.match(body, /experimentIndex: resume \?/, '续跑要保留上次的实验序号');
-  assert.match(body, /visited: resume &&/, '续跑要保留已访问关卡');
+  assert.match(body, /if \(resume\) return resumeStoppedQueue\(\{ \.\.\.saved, experiments: built\.experiments \}\)/, '重建面板后的续跑也保留完整存档');
+  const resumeStart = USERSCRIPT.indexOf('function resumeStoppedQueue');
+  const resumeBody = USERSCRIPT.slice(resumeStart, start);
+  assert.match(resumeBody, /queue\.expected = target/, '恢复具体关卡');
+  assert.match(resumeBody, /needChainStart: false/, '续跑不回退链首');
+  assert.doesNotMatch(resumeBody, /enterTeachExperiment\(queue\)/, '续跑不能重新走实验入口');
   assert.match(USERSCRIPT, /清空答题进度（下次从头跑）/, '要给一个"重来"的出口');
+});
+
+test('篡改猴脚本：刷新后「继续答题」直接按存档队列续跑，不逼重新选课/实验', () => {
+  // GM 只恢复勾选状态，课程/实验列表刷新即空；队列里带着完整实验清单，应能直续。
+  const start = USERSCRIPT.indexOf('async function startTeachRun');
+  assert.ok(start > 0, '应有 startTeachRun');
+  const body = USERSCRIPT.slice(start, start + 2200);
+  assert.match(body, /!canRebuild && stoppedQueue/, '常规路径不可用（列表为空）时才走直续');
+  assert.match(body, /resumeStoppedQueue\(stoppedQueue\)/, '面板选课不完整时按存档队列直续');
+  assert.match(body, /stoppedQueue\.mode === 'course' && stoppedQueue\.stoppedReason/, '只续「停下」的课程队列');
+  assert.match(USERSCRIPT, /!picked && !stopped/, '停过的队列即使没勾实验，「继续答题」也可点');
+  assert.match(USERSCRIPT, /无需重新选课\/实验/, '按钮提示要说明不用重选');
 });
 
 test('篡改猴脚本：导出入口只有两个——本实验（叠加进库、不下载）/ 全部（下载文件）', () => {
   assert.doesNotMatch(USERSCRIPT, /textContent: '导出标准答案'/, '旧的单关按钮要移除');
   assert.doesNotMatch(USERSCRIPT, /exportCurrentAnswer/, '单关导出函数已删除（逻辑并进批量导出）');
-  assert.match(USERSCRIPT, /textContent: '导出本实验全部答案'/, '要能一键回捞本实验');
+  assert.match(USERSCRIPT, /textContent: '回捞本实验答案'/, '要能一键回捞本实验');
   assert.match(USERSCRIPT, /textContent: '导出全部答案'/, '要能一键导出全部');
   assert.match(
     USERSCRIPT,
@@ -444,13 +470,13 @@ test('篡改猴脚本：「导出本实验全部答案」每种结果都要有�
 // 用户明确要求：库里已有答案时**要覆盖**（平台标准答案就是判分依据，比导入来的权威），
 // 不能「已有就跳过」。唯一例外：库里是代码答案时不能被选择题答案盖掉（会把代码弄丢）。
 test('篡改猴脚本：回捞的标准答案是「覆盖」语义，只有代码答案例外', () => {
-  const start = USERSCRIPT.indexOf('function mergeStandardAnswer');
-  assert.ok(start > 0, '应有 mergeStandardAnswer');
+  const start = USERSCRIPT.indexOf('function mergeHarvestedAnswer');
+  assert.ok(start > 0, '应有 mergeHarvestedAnswer（choice/code 两个入口共用的入库实现）');
   const body = USERSCRIPT.slice(start, USERSCRIPT.indexOf('function exportExperimentAnswers', start));
   assert.match(body, /bump\(overwrite \? 'overwritten' : 'added'\)/, '要按「原来是空还是有答案」分别记账');
-  assert.match(body, /existing\.kind === 'code'/, '代码答案要被认出来');
-  assert.match(body, /bump\('kept'\)/, '保留代码要单独记一笔（否则日志里说不清为什么没写）');
-  assert.match(USERSCRIPT, /覆盖会把代码弄丢/, '代码里要写清「为什么不覆盖」（注释或日志文案任一处即可）');
+  assert.match(body, /existing\.kind !== kind/, '交叉类型（代码↔选择）要被认出来');
+  assert.match(body, /bump\('kept'\)/, '保留另一类型要单独记一笔（否则日志里说不清为什么没写）');
+  assert.match(USERSCRIPT, /覆盖会把主体答案.*弄丢/, '代码里要写清「为什么不覆盖」（注释或日志文案任一处即可）');
 });
 
 test('篡改猴脚本：答案不可用（跳过）与页面坏了（停队）必须分开，不能混成一种', () => {
@@ -503,9 +529,28 @@ test('篡改猴脚本：读课堂实验必须带 limit（不带只能拿到默�
 test('篡改猴脚本：代码题必须等编辑器挂载（Monaco 异步插进 DOM，进页面就查会误判没有）', () => {
   assert.match(USERSCRIPT, /async function waitForCodeEditor/, '要有等待函数');
   const body = fnBody(USERSCRIPT, 'async function answerCurrentLevel');
-  assert.match(body, /await waitForCodeEditor\(\)/, '代码分支要等编辑器，不能立刻放弃');
+  assert.match(body, /await waitForCodeEditor\(8000, active\)/, '代码分支等待编辑器期间仍须检查停止状态');
   assert.match(body, /describeEditorScene\(\)/, '失败时要把现场（monaco 模型 / textarea / iframe 数量）打出来');
   // 动作判定前也要等：否则「没编辑器也没选项」会把代码题误判成虚拟机题跳过
   const teach = USERSCRIPT.indexOf('async function processTeachLevel');
-  assert.match(fnBody(USERSCRIPT, 'async function processTeachLevel'), /await waitForCodeEditor\(2500\)/, '动作判定前也要等编辑器');
+  assert.match(fnBody(USERSCRIPT, 'async function processTeachLevel'), /await waitForCodeEditor\(2500, \(\) => queueCanContinue\(queue\)\)/, '动作判定前也要等编辑器并检查队列停止状态');
+});
+
+test('篡改猴脚本：回捞入库有「标准答案或已通过」双门槛，actual_output 不能冒充平台答案', () => {
+  const start = USERSCRIPT.indexOf('async function exportExperimentAnswers');
+  assert.ok(start > 0, '应有 exportExperimentAnswers');
+  const end = USERSCRIPT.indexOf('function finishExportExperiment', start);
+  const body = USERSCRIPT.slice(start, end);
+  assert.match(body, /row\.fromActual/, '答案行要带来源标记');
+  assert.match(body, /levelPassedOf\(data\) \|\| standard\.every\(\(row\) => !row\.fromActual\)/,
+    '未通过的关卡只收平台标准答案，actual_output 一律不收');
+  assert.match(body, /当前关是选择题且未确认通过/, '兜底路径同样要过这道门槛');
+});
+
+test('篡改猴脚本：按名索引合并必须走冲突即删，不许直接 spread', () => {
+  assert.match(USERSCRIPT, /function mergeTitleIndexes/, '要有冲突合并实现');
+  const spreads = USERSCRIPT.match(/state\.title(?:Only)?Index = \{ \.\.\.state\.title(?:Only)?Index, \.\.\./g) || [];
+  assert.equal(spreads.length, 0, `titleIndex/titleOnlyIndex 不许 spread 合并（会跨文件串答案），实际 ${spreads.length} 处`);
+  assert.match(USERSCRIPT, /mergeTitleIndexes\(state\.titleIndex,/, 'titleIndex 走冲突合并');
+  assert.match(USERSCRIPT, /mergeTitleIndexes\(state\.titleOnlyIndex,/, 'titleOnlyIndex 走冲突合并');
 });

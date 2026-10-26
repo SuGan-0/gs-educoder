@@ -40,6 +40,7 @@
  */
 
 const path = require('node:path');
+const { safeFileName } = require('./file-name');
 
 /** 当前格式版本。读到更大版本时拒绝解析（不猜）。 */
 const SCHEMA_VERSION = 2;
@@ -77,9 +78,58 @@ function taskIndexOf(levelId) {
   return match ? Number(match[1]) : 0;
 }
 
+// -------------------------------------------------------- 任务 URL 解析
+//
+// 头歌的任务 URL 有两种形态（解析错是历史 bug 的重灾区，全部收敛到这里）：
+// - `/tasks/{关卡标识}?homework_common_id={作业号}`（单段式）
+// - `/tasks/{课程码}/{作业号}/{关卡标识}`（三段式；早期只取第一段拿到的是课程码，接口全 404）
+
+/** `/tasks/…` 捕获段（不含查询串），无匹配返回 null。 */
+function taskUrlSegments(url) {
+  const raw = String(url || '').match(/\/tasks\/([^/?#]+(?:\/[^/?#]+)*)/)?.[1] || '';
+  const segments = raw.split('/').filter(Boolean);
+  return segments.length ? segments : null;
+}
+
+/**
+ * 任务 URL 里的**关卡标识**（最后一段）。三段式里前两段是课程码/作业号，只有最后一段是关卡标识。
+ * 单段式与三段式同口径；无 /tasks/ 路径时返回 ''。
+ */
+function identifierFromTaskUrl(url) {
+  const segments = taskUrlSegments(url);
+  return segments ? segments[segments.length - 1] : '';
+}
+
+/**
+ * 任务 URL 里的**作业号**（homework_common_id）。支持三种形态：
+ * 查询串 `homework_common_id=`、三段式倒数第二段（数字）、`/shixun_homework/{作业号}` 详情页。
+ * 看不出作业号时返回 ''（调用方自行决定是否兜底），不是 0——与空字符串的语义区分开。
+ */
+function homeworkIdFromTaskUrl(url) {
+  const value = String(url || '');
+  const quick = /[?&]homework_common_id=(\d+)/.exec(value)?.[1];
+  if (quick) return quick;
+  const detail = /\/shixun_homework\/(\d+)(?:\/|$|\?)/.exec(value)?.[1];
+  if (detail) return detail;
+  const segments = taskUrlSegments(value);
+  if (segments && segments.length >= 2 && /^\d+$/.test(segments[segments.length - 2])) {
+    return segments[segments.length - 2];
+  }
+  return '';
+}
+
+/**
+ * 三段式任务 URL 里的**课堂码**（`/tasks/{课程码}/{作业号}/…`）。
+ * 单段式 URL 里没有课堂码，返回 ''。
+ */
+function classroomCodeFromTaskUrl(url) {
+  const segments = taskUrlSegments(url);
+  return segments && segments.length >= 3 ? segments[0] : '';
+}
+
 /** 文件名安全化：非法字符换全角波浪线，避免不同班级/实验撞名。 */
 function safeFilePart(value) {
-  return text(value).replace(/[\\/:*?"<>|]/g, '～').trim() || 'untitled';
+  return safeFileName(text(value), { replacement: '～', collapseWhitespace: false });
 }
 
 /**
@@ -186,8 +236,8 @@ function normalizeAnswer(levelIdValue, raw, fallback = {}) {
     task_identifier: text(entry.task_identifier || fallback.taskIdentifier),
     title: text(entry.title || fallback.title),
     kind: kind === KINDS.CHOICE ? KINDS.CHOICE : KINDS.CODE,
-    source: SOURCES.includes(text(entry.source)) ? text(entry.source) : (fallback.source || 'unknown'),
-    verified: entry.verified === undefined ? Boolean(fallback.verified) : Boolean(entry.verified)
+    source: SOURCES.includes(text(entry.source)) ? text(entry.source) : (SOURCES.includes(text(fallback.source)) ? text(fallback.source) : 'unknown'),
+    verified: entry.verified === undefined ? fallback.verified === true : entry.verified === true
   };
 
   if (base.kind === KINDS.CHOICE) {
@@ -266,6 +316,9 @@ function normalizeDocument(raw, fallback = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new AnswerFormatError('答案文件不是一个 JSON 对象。');
   }
+  if (raw.kind === 'class-answers' || Array.isArray(raw.classrooms)) {
+    throw new AnswerFormatError('这是班级发布文件（kind: class-answers），不是单实验工作答案。');
+  }
   const version = Number(raw.schema_version);
   if (Number.isFinite(version) && version > SCHEMA_VERSION) {
     throw new AnswerFormatError(
@@ -273,15 +326,23 @@ function normalizeDocument(raw, fallback = {}) {
     );
   }
 
-  const classroom = classroomBlock(raw.classroom || raw.course || fallback.classroom);
-  const experiment = experimentBlock(raw.experiment || fallback.experiment);
+  const classroomValue = raw.classroom || raw.course;
+  const experimentValue = raw.experiment;
+  const classroom = classroomBlock({
+    ...classroomBlock(fallback.classroom),
+    ...(typeof classroomValue === 'string' ? { name: classroomValue } : classroomValue || {})
+  });
+  const experiment = experimentBlock({
+    ...experimentBlock(fallback.experiment),
+    ...(typeof experimentValue === 'string' ? { name: experimentValue } : experimentValue || {})
+  });
 
   // v1 的 answers 既可能是数组，也可能是以关卡号为键的对象
   const rawAnswers = raw.answers;
   const list = Array.isArray(rawAnswers)
     ? rawAnswers
     : rawAnswers && typeof rawAnswers === 'object'
-      ? Object.entries(rawAnswers).map(([key, value]) => ({ ...(value || {}), level_id: value?.level_id || key }))
+      ? Object.entries(rawAnswers).map(([key, value]) => ({ ...(value && typeof value === 'object' ? value : { answer: value }), level_id: value?.level_id || key }))
       : [];
 
   // v1 没有逐条 source，只有文件级 `model`。按它的取值推断：
@@ -386,6 +447,9 @@ module.exports = {
   AnswerFormatError,
   levelIdOf,
   taskIndexOf,
+  identifierFromTaskUrl,
+  homeworkIdFromTaskUrl,
+  classroomCodeFromTaskUrl,
   safeFilePart,
   classroomFromDirName,
   parseChoiceAnswer,

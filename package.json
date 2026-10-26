@@ -4,7 +4,15 @@
   "version": "1.0.0",
   "description": "Extract Educoder course experiments and task starter materials to local files.",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22.16.0"
+  },
   "scripts": {
+    "pretest": "node tools/build-userscripts.js --check",
+    "build:userscripts": "node tools/build-userscripts.js",
+    "check": "node tools/check.js",
+    "test:browser": "node --test test/userscript-paste.browser.js",
+    "test:ui": "node --test test/console-ui.browser.js",
     "extract": "node extractor/run.js",
     "ui": "node extractor/run.js --ui",
     "reminder": "node extractor/reminder.js",
@@ -16,7 +24,7 @@
     "writer": "node extractor/writer-server.js",
     "crawler": "node extractor/traditional-crawler.js"
   },
-  "zqbe278a6656": {
+  "dependencies": {
     "playwright": "^1.55.0"
   }
 }

@@ -153,6 +153,16 @@ test('文档：班级与实验缺字段时用调用方提供的补上（目录�
   assert.deepStrictEqual(document.experiment, { name: 'CNN', homework_id: 3965745 });
 });
 
+test('文档：旧格式已有名称时仍从目录/存档补齐课堂码和作业号', () => {
+  const document = fmt.normalizeDocument({ course: 'A班', experiment: 'CNN', answers: [] }, {
+    classroom: { name: 'A班', code: 'CODE1', id: 8 }, experiment: { name: 'CNN', homeworkId: 42 }
+  });
+  assert.deepStrictEqual(document.classroom, { name: 'A班', code: 'CODE1', id: 8 });
+  assert.deepStrictEqual(document.experiment, { name: 'CNN', homework_id: 42 });
+  assert.strictEqual(fmt.normalizeAnswer('L001', { verified: 'false', source: 'bogus' }, { source: 'bogus' }).verified, false);
+  assert.strictEqual(fmt.normalizeAnswer('L001', {}, { source: 'bogus' }).source, 'unknown');
+});
+
 test('文档：v2 原样读回，版本比工具新时拒绝解析', () => {
   const v2 = {
     schema_version: 2,
@@ -182,6 +192,7 @@ test('文档：坏输入抛错而不是静默当成空', () => {
   for (const bad of [null, undefined, [], 'string']) {
     assert.throws(() => fmt.normalizeDocument(bad), fmt.AnswerFormatError);
   }
+  assert.throws(() => fmt.normalizeDocument({ version: 2, kind: 'class-answers', classrooms: [] }), /班级发布文件/);
 });
 
 test('落盘：字符串化是稳定且可读的，且带 schema_version', () => {
@@ -244,4 +255,23 @@ test('路径：answerDirFor → 目录名 → classroomFromDirName 往返一致'
       code: classroom.code || ''
     });
   }
+});
+
+test('任务 URL：关卡标识取最后一段（三段式的前两段是课程码/作业号）', () => {
+  assert.strictEqual(fmt.identifierFromTaskUrl('/tasks/zq3cef619ac5?homework_common_id=3962949'), 'zq3cef619ac5');
+  assert.strictEqual(fmt.identifierFromTaskUrl('https://www.educoder.net/tasks/D9Z6O8GR/3962949/abc123'), 'abc123');
+  assert.strictEqual(fmt.identifierFromTaskUrl(''), '');
+  assert.strictEqual(fmt.identifierFromTaskUrl('/classrooms/x/detail'), '', '没有 /tasks/ 路径时为空');
+});
+
+test('任务 URL：作业号支持查询串/三段式/详情页三种形态', () => {
+  assert.strictEqual(fmt.homeworkIdFromTaskUrl('/tasks/abc?homework_common_id=3962949'), '3962949');
+  assert.strictEqual(fmt.homeworkIdFromTaskUrl('https://www.educoder.net/tasks/D9Z6O8GR/3962949/abc123'), '3962949');
+  assert.strictEqual(fmt.homeworkIdFromTaskUrl('/classrooms/D9Z6O8GR/shixun_homework/88000009/detail?tabs=1'), '88000009');
+  assert.strictEqual(fmt.homeworkIdFromTaskUrl('/tasks/abc'), '', '看不出作业号时返回空串');
+});
+
+test('任务 URL：课堂码只认三段式首段', () => {
+  assert.strictEqual(fmt.classroomCodeFromTaskUrl('https://www.educoder.net/tasks/D9Z6O8GR/3962949/abc123'), 'D9Z6O8GR');
+  assert.strictEqual(fmt.classroomCodeFromTaskUrl('/tasks/abc?homework_common_id=1'), '', '单段式没有课堂码');
 });

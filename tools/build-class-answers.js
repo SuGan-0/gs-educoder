@@ -8,7 +8,7 @@
  *
  * 口径与 `extractor/ui/server.js` 的 `exportClassAnswers` **完全一致**（那才是唯一事实来源，
  * 这里只是把它搬到命令行）：
- *   1. `answerer.listTargets()` 扫存档 → 每个实验找到答案文件（**v2 位置优先，回退 v1 扁平**）；
+ *   1. `catalog.listTargets()` 扫存档 → 每个实验找到答案文件（**v2 位置优先，回退 v1 扁平**）；
  *   2. `class-answers.buildClassDocument()` 汇总；
  *   3. 与已有文件 `mergeClassDocuments()`（新一轮没答案的关卡保留旧答案，不丢）；
  *   4. `validateClassDocument()` 校验后落盘。
@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const answerer = require(path.join(ROOT, 'extractor', 'lib', 'answerer'));
+const catalog = require(path.join(ROOT, 'extractor', 'lib', 'archive-catalog'));
 const fmt = require(path.join(ROOT, 'extractor', 'lib', 'answer-format'));
 const classAnswers = require(path.join(ROOT, 'extractor', 'lib', 'class-answers'));
 
@@ -71,7 +71,7 @@ async function main() {
     return;
   }
 
-  const courses = await answerer.listTargets(exportRoot);
+  const courses = await catalog.listTargets(exportRoot);
   if (!courses.length) {
     console.error(`exports/ 下没有可汇总的课程存档：${exportRoot}`);
     process.exitCode = 1;
@@ -82,10 +82,10 @@ async function main() {
     const first = course.experiments[0] || {};
     const block = first.classroom || { name: course.name };
     const experiments = course.experiments.map((experiment) => {
-      let answerDoc = null;
+      let answerDoc = experiment.answerDoc || null;
       try {
         // listTargets 已经算好了 answerPath（v2 优先、v1 回退），照用即可
-        answerDoc = fmt.normalizeDocument(
+        if (!answerDoc) answerDoc = fmt.normalizeDocument(
           JSON.parse(fs.readFileSync(experiment.answerPath, 'utf8')),
           { classroom: experiment.classroom, experiment: { name: experiment.name } }
         );
@@ -112,10 +112,16 @@ async function main() {
   let previous = null;
   try {
     previous = JSON.parse(fs.readFileSync(classPath, 'utf8'));
-  } catch { /* 首次导出 */ }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new Error(`已有班级答案文件无法读取，已保留原文件：${classPath}（${error.message}）`);
+  }
   const merged = previous ? classAnswers.mergeClassDocuments(previous, next) : next;
   const verdict = classAnswers.validateClassDocument(merged);
-
+  if (verdict.errors.length) {
+    console.error(`校验失败，未写入文件；错误 ${verdict.errors.length} 条，首条：${verdict.errors[0]}`);
+    process.exitCode = 1;
+    return;
+  }
   fs.mkdirSync(path.dirname(classPath), { recursive: true });
   fs.writeFileSync(classPath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
 
@@ -124,11 +130,6 @@ async function main() {
     `课堂 ${verdict.stats.classrooms}｜实验 ${verdict.stats.experiments}｜关卡 ${verdict.stats.levels}｜`
       + `有答案 ${verdict.stats.answered}｜缺 ${verdict.stats.missing}`
   );
-  if (verdict.errors.length) {
-    console.error(`校验错误 ${verdict.errors.length} 条，首条：${verdict.errors[0]}`);
-    process.exitCode = 1;
-    return;
-  }
   console.log('下一步：篡改猴菜单「导入答案文件」选这份 JSON 即可（不需要本地控制台）。');
 }
 

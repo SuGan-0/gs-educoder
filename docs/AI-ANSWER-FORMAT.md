@@ -1,321 +1,159 @@
-# AI 答案格式规范
+# Agent 答案格式规范
 
-本文件定义两件事，必须成对使用：
+本文件规定题目存档、工作答案和篡改猴导入文件之间的契约。控制台负责抓取、整理和发布；Agent 读取题目后在本地生成答案，不需要控制台调用模型 API。
 
-1. **题目产物**（抓取工具写出）怎么组织，让模型能稳定读懂；
-2. **答案文件**（AI 产出）长什么样 —— **所有实验的答案集中放一个文件夹**，文件名标清课程与实验。
+完整操作步骤和可复制的 Agent 指令见 [Agent 作答指南](AGENT-ANSWERING.md)。
 
----
-
-## 1. 抓取产物的位置
+## 文件组织
 
 ```text
 exports/
-├── answers/                                       ★ 答案集中在这里，**按班级分目录**
-│   ├── 机器学习_2026年下半年（HCEAP94S）/
-│   │   ├── CNN.answers.json
-│   │   └── 模型评估与选择.answers.json
-│   └── 软件工程导论2026年下半年（2i6ng7vp）/
-│       └── [1、软件工程初体验] 制定进度计划.answers.json
-└── 机器学习_2026年下半年/              # 题目：一个班级一个文件夹
-    └── CNN/                                       # 一个课堂实验一个文件夹
-        ├── levels.jsonl                           # 关卡存档（唯一事实来源，每关一行）
-        ├── CNN.md                                 ★ 题目正文，读它来作答
-        ├── CNN.metadata.json                      # 结构化版本
-        └── assets/L001-image-1.png                # 图片（文件名带关卡号）
+├── 数据库系统原理-软工24级/
+│   └── MySQL-数据的插入、修改与删除(Insert,Update,Delete)/
+│       ├── levels.jsonl                 # 题目存档，每关一行
+│       ├── 实验名.md                    # Agent 阅读的题目视图
+│       ├── 实验名.metadata.json
+│       └── assets/
+└── answers/
+    ├── 数据库系统原理-软工24级（D9Z6O8GR）/
+    │   └── 实验名.answers.json          # 工作答案 schema_version: 2
+    └── 2024级-软工24-15、16班.answers.json # 发布文件 version: 2, kind: class-answers
 ```
 
-**为什么按班级分目录**：班级边界因此是**结构性**的，而不是靠文件名里的一段字符串。
-一个班几十个实验全平铺在 `answers/` 下会有几百个文件，也没法看。
+两个版本号属于不同文件类型。Agent 编辑每实验的工作答案；篡改猴导入一个班级的发布文件。文件名里的课堂码是平台 `course_identifier`；作业号对应 `homework_common_id`。
 
-目录名里的 `（HCEAP94S）` 是**课堂码**。旧位置
-（`answers/{班级}__{实验}.answers.json`）仍然只读兼容，读到就升级。
+题目 Markdown 的 frontmatter 包含 `answer_file`。以该路径为准，不重新拼接文件名；旧的 `answers/{课堂}__{实验}.answers.json` 位置只读兼容。目录名或实验名里的非法字符会安全化，写入时还会核对正文身份，防止不同名称落到同一个路径后互相覆盖。
 
-**批量迁移用 `npm run migrate-answers`**：把旧扁平文件逐个升级到上面这个位置
-（`task_identifier` / `title` 从关卡存档补齐，`source` 由文件级 `model` 推断），
-`--dry-run` 先预演、`--cleanup` 把已被 v2 完整覆盖的旧文件移进 `answers/.legacy-backup/`
-（移动不是删除）。**绝不覆盖已存在的 v2 文件**——平台标准答案与人工改过的条目都比旧文件权威。
+## 只提取答案
 
-读取侧还有一条规矩：**课堂码能从答案目录名反解**（`answer-format.classroomFromDirName()`，
-是 `answerDirFor()` 的逆运算）。早期抓的关卡存档没有 `classroomCode` 字段，只靠存档算路径
-会得到缺班级码的位置（`answers/{班级}/…`），与真实目录对不上——那就会出现
-「答案迁到 v2 了却读不回来，旧文件也不敢删」。
+“只提取答案”读取已通过测评的提交结果，生成同样的工作答案 v2。通过判据是 `game.final_score >= challenge.score` 且满分大于零；未通过、无答案、非编程/选择题都会跳过。
 
-`CNN.md` 的 frontmatter 里直接写了该实验对应的答案文件路径：
+- 编程题取用户仓库里的已提交完整代码；只有已通过的编程题需要额外读取文件。
+- 选择题取 `choose_test_cases.test_sets`，按 `position` 保留每个小问；优先采用非空 `standard_answer`，否则采用 `actual_output`。多选连写如 `CA` 归一化为 `["A", "C"]`。
+- 该模式不生成 `levels.jsonl`、题目 Markdown、metadata 或图片。发布扫描直接识别工作答案目录，关卡身份、标题、题型和作业号从答案文档补齐，不依赖题目存档。
+- 未通过的关卡不会因此获得答案；需要 Agent 解答时，先正常抓取题目。
 
-```yaml
----
-course: 机器学习_2026年下半年
-experiment: CNN
-levels: 5
-generated_at: 2026-10-01T08:00:00.000Z
-answer_file: exports/answers/机器学习_2026年下半年（HCEAP94S）/CNN.answers.json
----
-```
+## Agent 读取与作答
 
-### 题目正文的结构（AI 的输入）
+1. 阅读实验的 Markdown，并按需检查 `levels.jsonl`、初始代码、测试说明和 `assets/` 图片。
+2. 使用原始 `level_id`、`task_identifier`、标题、课堂码和作业号。`L001` 只在当前实验里唯一，不能跨实验单独用它匹配。
+3. 编程题给完整可运行代码，保留题目框架和 begin/end 标记；选择题按原题号逐问回答，所有多选选项都要保留。
+4. 无法确定的关卡写入 `unanswered` 并说明原因。没有平台通过证据时，`verified` 必须为 `false`。
+5. 合并到已有工作文件，保留未处理关卡、人工改过的元信息和平台验证通过的答案；校验后重新导出班级文件供脚本导入。
 
-````markdown
-# CNN
+工作文件的每条答案均使用下面的 v2 结构。程序内部用扁平 `code/language` 或 `questions`；经过 `answer-format.stringifyDocument()` 落盘后才变成嵌套 `answer`，不要把内部结构直接写成发布文件。
 
-> 作答：把这一份文件的答案写成 `answers/示例课程B__CNN.answers.json`（格式见每关的「作答格式」）。
-## 第1关：conv
-- 关卡 id：L001
-- 题型：编程题（code）
-- 来源：https://www.educoder.net/tasks/zq2a7dad921e
-
-### 任务描述 …
-### 编程要求 …
-### 初始代码
-```python
-def corr2d(X, K):
-    ########## begin ##########
-    ########## end ##########
-    return Y
-```
-### 作答格式
-```json
-{ "level_id": "L001", "kind": "code", "language": "python", "answer": "完整代码（保留题目给的框架与 begin/end 标记）" }
-```
-
----
-
-## 第2关：欠拟合与过拟合
-- 关卡 id：L002
-- 题型：选择题（choice）
-
-### 选择题
-1. 下列说法正确的是？
-   A. 甲
-   B. 乙
-   C. 丙
-### 作答格式
-```json
-{ "level_id": "L002", "kind": "choice", "answer": "A" }
-```
-````
-
-| 元素 | 约定 |
-| --- | --- |
-| `## 第N关：名称` | 一个关卡一节，N 是站点上的真实关卡号 |
-| `- 关卡 id：Lxxx` | 答案用它指回关卡（`L001`、`L002`…） |
-| `- 题型：` | `编程题（code）` 或 `选择题（choice）`，决定答案写法 |
-| `### 任务描述 / ### 编程要求 / ### 初始代码 / ### 测试说明 / ### 作答要求` | 只有原文存在的才输出 |
-| `### 选择题` | `N. 题干` + 三空格缩进 `A. / B. / C. …`（多小问按 1、2、3 编号） |
-| `### 作答格式` | 该关的答案模板，照抄结构即可 |
-
-产物**只包含编程题与选择题**：虚拟机/图形化实操、纯问答、阅读材料、空壳关卡一律丢弃，
-并在日志与界面上记 `dropped` 计数（判据见 `docs/ARCHITECTURE.md`）。
-
-正文只抽取 `任务描述 / 编程要求 / 测试说明 / 作答要求` 四类小节；`相关知识` 等教学铺垫被丢弃；
-正文里原有的 `#`/`##` 标题会统一降到 `###`，不破坏关卡层级。
-
----
-
-## 2. 答案格式：一关一条，只要「关卡题号 + 答案」
-
-### 2.1 编程题：关卡题号 + 代码
-
-```json
-{ "level_id": "L001", "kind": "code", "language": "python", "answer": "def corr2d(X, K):\n    ...\n    return Y" }
-```
-
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `level_id` | 是 | 与 md 里 `- 关卡 id：` 一致 |
-| `kind` | 是 | 固定 `"code"` |
-| `language` | 是 | 与 `### 初始代码` 的围栏语言一致（`python`/`java`/…） |
-| `answer` | 是 | **完整代码**：保留题目给的框架与 `########## begin/end ##########` 标记，只补需要补的部分 |
-
-### 2.2 选择题：关卡题号 + 选项字母
-
-```json
-{ "level_id": "L002", "kind": "choice", "answer": "B" }
-```
-
-| 写法 | 用于 | 例子 |
-| --- | --- | --- |
-| `"A"` | 单选题、单小问 | `"answer": "B"` |
-| `"A,C"` | 多选（字母升序） | `"answer": "A,C"` |
-| `"1:A;2:B,D"` | 一关有多个小问（题号从 1 开始，分号分隔） | `"answer": "1:C;2:A,B"` |
-
-> 只有多个小问时才需要写题号；单一小问直接给字母即可。字母必须落在该题的选项范围内
-> （校验脚本会检查，`A`–`H` 有效）。
-
-### 2.3 完整答案文件（落盘格式 v2）
-
-**注意区分两件事**：模型只输出 2.1 / 2.2 的最简写法；**落盘**是这个结构化格式。
-转换由代码完成（`extractor/lib/answer-format.js`），不交给模型。
+## 工作答案 v2
 
 ```json
 {
   "schema_version": 2,
-  "classroom": { "name": "机器学习_2026年下半年", "code": "HCEAP94S", "id": 120386 },
-  "experiment": { "name": "CNN", "homework_id": 3965745 },
-  "generated_at": "2026-10-01T08:00:00.000Z",
-  "model": "deepseek-chat",
+  "classroom": { "name": "数据库系统原理-软工24级", "code": "D9Z6O8GR", "id": 0 },
+  "experiment": { "name": "MySQL练习", "homework_id": 3962949 },
+  "generated_at": "2026-10-25T00:00:00.000Z",
+  "model": "",
   "answers": [
     {
       "level_id": "L001",
-      "task_identifier": "vrtbzlmexi3f",
-      "title": "conv",
+      "task_identifier": "任务URL最后一段",
+      "title": "插入数据",
       "kind": "code",
       "source": "ai",
       "verified": false,
-      "answer": { "language": "python", "code": "def corr2d(X, K):\n    ...\n    return Y" }
+      "answer": { "language": "sql", "code": "INSERT INTO customers (id) VALUES (1);" }
     },
     {
       "level_id": "L002",
-      "task_identifier": "glz47yx2f8vb",
-      "title": "欠拟合与过拟合",
+      "task_identifier": "另一关标识",
+      "title": "选择题",
       "kind": "choice",
-      "source": "platform",
+      "source": "export",
       "verified": true,
-      "answer": { "questions": [{ "number": 1, "selected": ["B"] }] }
+      "answer": {
+        "questions": [
+          { "number": 1, "selected": ["A", "C"] },
+          { "number": 2, "selected": ["B"] }
+        ]
+      }
     }
   ],
-  "unanswered": [
-    { "level_id": "L005", "reason": "题干依赖图片，图未下载成功" }
+  "unanswered": [{ "level_id": "L003", "reason": "题目依赖的图片缺失，无法确认" }]
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `schema_version` | 固定为 `2`；更高版本拒绝写入覆盖 |
+| `classroom.name/code/id` | 平台课堂名称、课堂码和数字 id；没有数字 id 时为 `0` |
+| `experiment.name/homework_id` | 实验名称和作业号；已有非零作业号不得替换成另一个作业号 |
+| `task_identifier` | 任务 URL 最后一段；三段式 `/tasks/{课程}/{作业}/{标识}` 也只取最后一段 |
+| `kind` | 每关独立选择 `code` 或 `choice`，同一实验允许混合 |
+| `source` | `ai`（含 Agent 生成）、`manual`、`platform`、`export` 或兼容旧数据的 `unknown` |
+| `verified` | 真正通过平台测评才写 `true`；Agent 推理或本地测试通过不能代替平台测评 |
+| `model` | 可选的历史来源记录，不配置模型也能使用；不是验证通过的凭据 |
+| `unanswered` | 无法解答的关卡和原因，不能悄悄删去关卡 |
+
+选择题规范落盘使用 `answer.questions`。输入解析仍兼容 `"A"`、`"A,C"`、`"1:A;2:B,D"`，但 Agent 直接编辑文件时应使用上面的结构化数组。题号从 1 开始，每题选项大写、去重并升序排列。
+
+旧 v1 工作文件仍能读入并升级到 v2；目录/存档提供的课堂码和作业号可以补齐旧文件缺少的字段。
+
+## 班级发布文件 v2
+
+发布时把多个实验汇总成一个文件。示例：
+
+```json
+{
+  "version": 2,
+  "kind": "class-answers",
+  "class": { "grade": "2024级", "name": "软工24-15、16班" },
+  "classrooms": [
+    {
+      "name": "数据库系统原理-软工24级",
+      "code": "D9Z6O8GR",
+      "experiments": [
+        {
+          "name": "MySQL练习",
+          "chapter": "",
+          "homework_id": 3962949,
+          "levels": [
+            {
+              "level_id": "L002",
+              "position": 2,
+              "title": "选择题",
+              "kind": "choice",
+              "identifiers": ["另一关标识"],
+              "answered": true,
+              "source": "export",
+              "verified": true,
+              "answer": [{ "number": 1, "selected": ["A", "C"] }, { "number": 2, "selected": ["B"] }]
+            }
+          ]
+        }
+      ]
+    }
   ]
 }
 ```
 
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `schema_version` | 是 | 当前为 `2`。读到**更大**的版本会拒绝解析，不猜未来格式 |
-| `classroom.name` / `classroom.code` | 是 | `code` 是平台课堂码（`course_identifier`）。**篡改猴靠它核对班级** |
-| `experiment.name` / `experiment.homework_id` | 是 | `homework_id` 即 `homework_common_id` |
-| `answers[]` | 是 | 一关一条，字段见下表 |
-| `generated_at` / `model` | 建议 | 便于判断新鲜度与来源 |
-| `unanswered[]` | 可选 | 无法作答的关卡必须显式列出并给 `reason`，**不允许静默跳过** |
-
-每条答案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `level_id` | `L001`，文件内的关卡序号 |
-| `task_identifier` | **平台关卡标识**（任务 URL 最后一段）。答案与关卡之间最稳的对应关系 |
-| `title` | 关卡名，供按内容兜底匹配 |
-| `kind` | `code` / `choice` |
-| `source` | `ai` / `manual` / `platform` / `export` / `unknown` |
-| `verified` | 平台是否确认这条答案能过。抓取端导出与篡改猴回传默认 `true`，AI 产出默认 `false` |
-| `answer` | 编程题 `{ language, code }`；选择题 `{ questions: [{ number, selected: ["A","C"] }] }` |
-
-**选择题为什么不再用 `"1:A;2:B,D"` 字符串**：那种写法在答案文件、控制台、篡改猴里
-各有一套解析，改一处要三处一起改，改漏就静默出错。现在是结构化数组，只有一处定义。
-
-**v1 仍然能读**（自动升级），但只写 v2。
-
-### 2.4 人可读版（可选）
-
-同名 `.answers.md`，便于快速复核：
-
-````markdown
----
-course: 示例课程B
-experiment: CNN
-answered: 3
-generated_at: 2026-09-25T04:00:00.000Z
----
-
-# CNN 参考答案
-
-## 第1关：conv（L001，编程题）
-```python
-def corr2d(X, K):
-    ...
-```
-
-## 第2关：欠拟合与过拟合（L002，选择题）
-1. **B**
-````
-
-### 2.5 校验
+编程关的发布答案仍为 `{ "language": "sql", "code": "完整代码" }`；选择关发布答案是上面展示的数组。发布工具负责转换，Agent 不需要再手工维护一份班级文件。`source/verified`、课堂码、作业号和所有关卡标识都会保留。
 
 ```powershell
-node tools/validate-answers.js               # 校验全部实验
-node tools/validate-answers.js 示例课程B CNN
+npm run build-class-answers -- --grade=2024级 --class=软工24-15、16班
 ```
 
-检查：① 每关都有答案；② 题型与存档一致；③ 选择题字母不越界、小问不缺；
-④ 编程题不是占位文本、保留了题目框架标记；⑤ 班级名/实验名与目录一致。
-退出码 0 通过、1 有问题。
+也可以使用控制台的“导出班级答案文件”。导出后在篡改猴导入生成的 `kind: class-answers` 文件；脚本根据课堂码、作业号和关卡标识定位答案。
 
-### 2.6 班级：为什么答案里必须有课堂码
+## 合并与校验
 
-同一个实验（同名、同关卡名）可能**同时存在于多个班级**里。旧实现只按平台关卡标识、
-或退一步按「实验名__关卡名」匹配——标识对不上时就靠名字兜底，于是可能把**别的班**的
-答案填进来。按名字兜底本身是必要的（平台重新发布实验会换掉一整组标识），
-但兜底之后必须再确认「这份答案确实属于当前班级」。
+- 工作文件按当前实验的 `level_id` 合并并按序号保存，不清空其它关卡。缺失的关卡标识、标题和代码语言沿用已有值。
+- 未验证答案默认不能覆盖平台验证通过的答案；明确需要替换时，程序调用 `mergeAnswers({ ..., overwriteVerified: true })`。
+- 相同路径的写入排队合并，再用临时文件替换，避免并发回传丢掉关卡；内容未变时不重写时间戳和文件。
+- 既有 JSON 损坏、版本过新、课堂身份或作业号冲突时返回错误并保留原文件。不要删掉错误文件后重新运行来绕过身份检查。
+- 班级重新导出时，整关、整实验或整课堂暂时没抓到也保留旧内容。两边课堂码或非零作业号不同时不能仅凭同名套用答案；缺码的旧数据只有唯一同名候选时才兜底。
 
-因此答案里带 `classroom.code`（平台课堂码），三处都会核对：
-
-| 位置 | 核对什么 |
-| --- | --- |
-| 落盘（`answer-store.mergeAnswers`） | 文件里已有课堂码且与本次不同 → **拒绝写入**（说明文件被放错了目录） |
-| 控制台（`POST /api/answer/save`） | 脚本报的课堂码与关卡存档里的不一致 → **拒收** |
-| 篡改猴（作答前） | 答案的 `classroomCode` 与当前页面 `course_identifier` 不一致 → **拒绝作答** |
-
-**班级从哪来**：关卡页 URL（`/tasks/{课程码}/{作业ID}/{关卡标识}`）里**没有**班级码，
-只有关卡数据里有 —— `tasks/{id}.json` 的 `course_identifier` 就是课堂码。
-所以脚本要先读到关卡数据才能核对；还没读到时不拦（只记提示），否则页面刚打开就没法用。
-
-另外两条「不拦只提示」的情况：答案是老答案库（没有班级码）、以及这一关本来就没答案。
-
----
-
-## 3. 生成答案的提示词（可直接复制）
-
-```text
-你是头歌（Educoder）实验题的解题助手。
-
-输入：一个实验的题目文件（frontmatter + 每关一节，含 关卡 id / 题型 / 任务描述 / 编程要求 /
-初始代码 / 选择题 / 作答格式）。
-
-输出：只输出一个 JSON 文件，写到 frontmatter 里 answer_file 指定的路径（answers/{课程}__{实验}.answers.json）：
-
-{
-  "course": "<frontmatter 里的 course>",
-  "experiment": "<frontmatter 里的 experiment>",
-  "answers": [
-    { "level_id": "L001", "kind": "code", "language": "python", "answer": "完整代码" },
-    { "level_id": "L002", "kind": "choice", "answer": "B" }
-  ]
-}
-
-规则：
-1. 一关一条，level_id 必须与题目里的关卡 id 完全一致；
-2. 编程题：给可运行的完整代码，保留题目框架与 begin/end 标记，不要改动无关代码；
-3. 选择题：只给选项字母；多选写成 "A,C"（升序）；一关多小问写成 "1:A;2:B,D"；
-4. 无法确定的关卡写进 unanswered 并说明原因，禁止编造题干、选项或评测结果；
-5. 不要输出理由、讲解或题目重述。
+```powershell
+node tools/validate-answers.js
+node tools/validate-answers.js 数据库系统原理-软工24级 "MySQL-数据的插入、修改与删除(Insert,Update,Delete)"
 ```
 
-## 4. 从答案到自动提交
-
-```text
-题目 CNN.md  ──►  AI  ──►  answers/{班级}（{课堂码}）/{实验}.answers.json
-                                    │
-                    GET /api/answers?token=...（本地控制台，只读汇总）
-                                    ▼
-     篡改猴：核对班级 → 按 level_id 取答案 → 填答 → 提交 → 下一关
-```
-
-答案文件除了「AI 作答」，还有两条**平台侧自动产生**的路径（都写同一个规范文件，合并规则一致：
-同一 `level_id` 覆盖并保持顺序，其它关卡原样保留）：
-
-1. **抓取端**：关卡「已通过测评」（`game.final_score >= challenge.score`）时，抓取时顺手把
-   提交的代码（`rep_content.json`，带签名请求）或所选项
-   （`choose_test_cases.test_sets[].actual_output`）导成答案，不用打开关卡页、也不用重新提交；
-2. **篡改猴**：提交通过后自动把答案回传控制台（`POST /api/answer/save`），选择题优先取平台
-   标准答案（`standard_answer`），编程题取刚提交的编辑器内容。该实验必须先在控制台抓取过
-   （否则控制台不知道关卡属于哪个课程/实验，会明确报错而不猜目录）。
-
-`GET /api/answers` 返回 `{ ok, answers: { 班级__实验__L001: {...} }, experiments, blueprints, files, answerDir }`；
-`answers` 里的每条都是**与磁盘一致的 v2 结构**（`answer: { language, code }` /
-`answer: { questions: [...] }`），并额外带 `course` / `classroomName` / `classroomCode` / `experiment`，
-脚本靠 `classroomCode` 核对班级、确认没拿错实验或班级的答案。
-
-> 键为什么是 `班级__实验__L001` 而不是 `L001`：`level_id` 只在单个实验内唯一，
-> 多个实验聚合到同一个对象时会互相覆盖（实测两个实验的 L001 打架，用户在关卡页上
-> 拿到的是别实验的答案）。
+校验检查题型、覆盖度、小问题号、选项范围和占位代码；未提供题目存档的仅答案产物无法完成依赖原题的检查，但仍能发布和导入。校验通过不等于平台测评通过。

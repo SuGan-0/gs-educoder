@@ -7,12 +7,10 @@
 const path = require('node:path');
 
 const fmt = require('./answer-format');
+const { safeFileName } = require('./file-name');
 
 function safeName(value) {
-  return String(value || 'untitled')
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return safeFileName(value || 'untitled');
 }
 
 function languageFromPath(filePath) {

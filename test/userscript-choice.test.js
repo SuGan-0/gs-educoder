@@ -41,6 +41,11 @@ function loadChoiceHooks(inputs, options = {}) {
   const hooks = {};
   // 默认的 GM 存储是个「读不到就给默认值」的空壳；要测跨标签页行为就传 options.store
   const store = options.store || new Map();
+  if (options.fetch) {
+    const key = Buffer.from(Buffer.from('test-only-signing-key').toString('base64')).toString('base64');
+    store.set('educoder-sign-ak', key);
+    store.set('educoder-sign-sk', key);
+  }
   const fakeDocument = {
     querySelectorAll(selector) {
       // 选项控件查询返回 inputs；分组容器查询返回空（实测页面没有分组容器）
@@ -66,6 +71,7 @@ function loadChoiceHooks(inputs, options = {}) {
       fetch: options.fetch,
       // 仓库代码解码要用（fetchLevelCode：base64 → UTF-8 文本）
       atob: (value) => Buffer.from(String(value), 'base64').toString('binary'),
+      btoa: (value) => Buffer.from(String(value), 'binary').toString('base64'),
       TextDecoder
     },
     document: fakeDocument,
@@ -121,6 +127,19 @@ function fakeStrayInput() {
     parentElement: null
   };
 }
+
+test('VNC 实验中的选择题仍能填写选项，不被虚拟机跳过规则拦截', async () => {
+  const inputs = Array.from({ length: 4 }, () => fakeOptionInput('checkbox'));
+  const hooks = loadChoiceHooks(inputs);
+  hooks.observeTaskJson('/api/tasks/zq3cef619ac5.json', {
+    vnc_url: '/vnc', mirror_name: ['VNC图形化'], challenge: { position: 1 },
+    chooses: [{ position: 1, challenge_question: [1, 2, 3, 4] }]
+  });
+  const outcome = await hooks.answerCurrentLevel({ answer: { kind: 'choice', map: { 1: ['A', 'C'] } } });
+  assert.notEqual(outcome.status, 'skipped');
+  assert.deepEqual(inputs.map(input => input.checked), [true, false, true, false]);
+  assert.match(outcome.text, /找不到提交按钮/, '离线夹具不提供评测按钮，填写后在按钮检查处结束');
+});
 
 /** 3 道题 × 4 选项：前两题单选、第三题多选。 */
 function fakeInputs() {
@@ -938,6 +957,7 @@ test('回捞接口要带 homework_common_id（一实训多作业的课程按作�
       requested.push(String(url));
       return {
         ok: true,
+        text: async () => JSON.stringify({ challenge: { subject: '某关', homework_challenge_index: 2, position: 17 } }),
         json: async () => ({ challenge: { subject: '某关', homework_challenge_index: 2, position: 17 } })
       };
     }
@@ -978,7 +998,7 @@ test('编程题答案回捞：取仓库代码（rep_content.json），语言按�
   const hooks = loadChoiceHooks([], {
     fetch: async (url) => {
       requested.push(String(url));
-      return { ok: true, json: async () => ({ content: { content: codeB64 } }) };
+      return { ok: true, text: async () => JSON.stringify({ content: { content: codeB64 } }) };
     }
   });
   hooks.state.taskContext = { homeworkId: 88000002 };

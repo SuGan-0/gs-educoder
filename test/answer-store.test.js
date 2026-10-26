@@ -67,6 +67,7 @@ test('choiceAnswerText：按 position 排序、优先 standard_answer、多选�
   };
   assert.equal(choiceAnswerText(payload), '1:D;2:AB;3:C');
   assert.equal(choiceAnswerText({}), '', '没有 choose_test_cases 时返回空串');
+  assert.equal(choiceAnswerText({ choose_test_cases: { test_sets: [{ position: 1, actual_output: 'AC', standard_answer: '  ' }] } }), '1:AC', '标准答案空白时仍采用已通过的提交选项');
 });
 
 test('mergeAnswer：新建答案文件写入 v2 格式，且目录按班级分', async (t) => {
@@ -370,4 +371,64 @@ test('classroomCodeFromDir：从已有 v2 目录名认出课堂码', async (t) =
   fs.mkdirSync(path.join(root, 'answers', '没有码的班'), { recursive: true });
   assert.equal(await classroomCodeFromDir(root, '没有码的班'), '', '只有班级名不算认出了课堂码');
   assert.equal(await classroomCodeFromDir(root, '示例课程A'), 'DEMO0001', '不能被别的目录带偏');
+});
+
+test('mergeAnswers：并发回传不同关卡不丢数据，按序号稳定排列', async (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const results = await Promise.all([3, 1, 2].map((number) => mergeAnswer({
+    exportRoot: root, classroom: CLASSROOM, experiment: EXPERIMENT,
+    levelId: `L00${number}`, kind: 'code', answer: `print(${number})`, source: 'export'
+  })));
+  assert.ok(results.every((result) => result.ok));
+  const document = (await loadAnswerDocument(root, CLASSROOM, EXPERIMENT)).document;
+  assert.deepEqual(document.answers.map((entry) => entry.level_id), ['L001', 'L002', 'L003']);
+});
+
+test('mergeAnswers：保留验证通过的答案和缺失元信息，可显式要求覆盖', async (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = { exportRoot: root, classroom: CLASSROOM, experiment: EXPERIMENT, levelId: 'L001', kind: 'code' };
+  await mergeAnswer({ ...input, answer: 'print(1)', source: 'export', language: 'python', taskIdentifier: 'task-one', title: '第一关' });
+  const protectedResult = await mergeAnswers({ ...input, entries: [{ levelId: 'L001', kind: 'code', answer: 'print(2)', source: 'ai' }] });
+  assert.equal(protectedResult.changed, false);
+  assert.match(protectedResult.skipped[0].reason, /验证通过/);
+  const updated = await mergeAnswer({ ...input, answer: 'print(3)', source: 'platform' });
+  const document = (await loadAnswerDocument(root, CLASSROOM, EXPERIMENT)).document;
+  assert.equal(updated.replaced, true);
+  assert.equal(document.answers[0].code, 'print(3)');
+  assert.equal(document.answers[0].task_identifier, 'task-one');
+  assert.equal(document.answers[0].title, '第一关');
+  assert.equal(document.answers[0].language, 'python');
+  const override = await mergeAnswer({ ...input, answer: 'print(4)', source: 'manual', overwriteVerified: true });
+  assert.equal(override.ok, true);
+  assert.equal((await loadAnswerDocument(root, CLASSROOM, EXPERIMENT)).document.answers[0].code, 'print(4)');
+});
+
+test('mergeAnswers：损坏/未来版本和同路径不同实验身份不得覆盖', async (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = answerPathFor(root, CLASSROOM, EXPERIMENT);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const input = { exportRoot: root, classroom: CLASSROOM, experiment: EXPERIMENT, levelId: 'L001', kind: 'code', answer: 'new' };
+  for (const original of ['{broken', JSON.stringify({ schema_version: 99, answers: [] }), fmt.stringifyDocument(fmt.emptyDocument(CLASSROOM, { ...EXPERIMENT, homeworkId: 123 }))]) {
+    fs.writeFileSync(file, original);
+    const result = await mergeAnswer(input);
+    assert.equal(result.ok, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+  }
+  const collisionFile = answerPathFor(root, CLASSROOM, { name: 'A:B' });
+  const collisionOriginal = fmt.stringifyDocument(fmt.emptyDocument(CLASSROOM, { name: 'A:B' }));
+  fs.writeFileSync(collisionFile, collisionOriginal);
+  // 不同名称经过文件名安全化后会重名：必须核对正文身份。
+  const rejected = await mergeAnswer({ ...input, experiment: { name: 'A/B' } });
+  assert.equal(rejected.ok, false);
+  assert.equal(fs.readFileSync(collisionFile, 'utf8'), collisionOriginal);
+});
+
+test('classroomCodeFromDir：同名课堂对应多个码时不任意选择', async (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const code of ['CODE1', 'CODE2']) fs.mkdirSync(fmt.answerDirFor(root, { name: 'A班', code }), { recursive: true });
+  assert.equal(await classroomCodeFromDir(root, 'A班'), '');
 });

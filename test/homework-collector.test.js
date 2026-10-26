@@ -8,6 +8,7 @@
  * 不需要账号、不联网。
  */
 
+require('./helpers/offline-signing');
 const test = require('node:test');
 const assert = require('node:assert');
 

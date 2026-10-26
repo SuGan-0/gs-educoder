@@ -94,7 +94,7 @@ function findAnswerFile(exportRoot, identity) {
  *
  * 早期抓的关卡存档没有 `classroomCode` 字段，只靠它算出的答案路径会缺班级码
  * （`answers/{班级}/…`），与真实位置 `answers/{班级}（{码}）/…` 对不上——
- * 于是明明有 v2 答案却一个都核对不到（`answerer.listTargets` 同样做了这一步）。
+ * 于是明明有 v2 答案却一个都核对不到（`archive-catalog.listTargets` 同样做了这一步）。
  */
 function classroomCodesFromDirs(exportRoot) {
   const codes = new Map();

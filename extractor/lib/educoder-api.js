@@ -223,11 +223,15 @@ function lazyJson(text, url) {
  * 签名头由 Node 侧算好放在 input.headers 里传进来（浏览器里没有 md5，也不该有 AK/SK）。
  */
 async function fetchInPage(input) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs);
   try {
-    const response = await fetch(input.url, { credentials: 'include', headers: input.headers });
+    const response = await fetch(input.url, { credentials: 'include', headers: input.headers, signal: controller.signal });
     return { status: response.status, body: await response.text() };
   } catch (error) {
-    return { error: String((error && error.message) || error) };
+    return { error: controller.signal.aborted ? `请求超时（${input.timeoutMs / 1000} 秒）` : String((error && error.message) || error) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -236,7 +240,7 @@ async function fetchInPage(input) {
  *
  * @param {import('playwright').Page} page
  * @param {string} url
- * @param {{method?: string, headers?: object}} [options]
+ * @param {{method?: string, headers?: object, timeoutMs?: number}} [options]
  * @returns {Promise<{ok: boolean, status: number, text: string, json: () => any}>}
  * 空响应 / 网络异常一律抛出，由调用方决定降级。
  */
@@ -254,7 +258,8 @@ async function apiGet(page, url, options = {}) {
 
   let result;
   try {
-    result = await page.evaluate(fetchInPage, { url, headers });
+    const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 20_000;
+    result = await page.evaluate(fetchInPage, { url, headers, timeoutMs });
   } catch (error) {
     throw new ApiError(`请求失败：${url}（${(error && error.message) || error}）`, { cause: error });
   }

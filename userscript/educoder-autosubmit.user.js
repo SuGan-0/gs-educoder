@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         头歌自动作答与提交（学习测试用）
 // @namespace    local.educoder.autosubmit
-// @version      0.2.7
-// @description  在头歌关卡页填入答案并提交，自动跳到下一关。先「录制」一次真实提交以学到提交接口，之后即可一键自动提交。
+// @version      0.5.6
+// @description  使用本地答案填写代码与选择题，通过后推进；自动跳过虚拟机题，默认解除编辑器粘贴限制。
 // @match        https://www.educoder.net/*
+// @match        https://educoder.net/*
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -23,24 +23,271 @@
 /**
  * 设计说明（读这一节再改代码）
  *
- * 头歌的「运行 / 提交」走的不是页面里的普通 GET 接口，而是关卡页内部的 POST 请求
- * （形如 /api/tasks/{id}/...、/api/games/{id}/... 等，具体路径随版本变化）。
- * 本仓库的网络日志里只有只读抓取留下的 GET 记录，拿不到提交接口的真实形态，
- * 所以脚本不去猜接口，而是分两步：
- *
- *   1) 录制：钩住 window.fetch 与 XMLHttpRequest，把页面自己发出的写请求
- *      （POST/PUT/PATCH/DELETE）连同请求体、响应片段存到 GM 存储里。
- *      使用者手动作答提交一次，脚本就学到了「提交长什么样」。
- *   2) 复用：把录制到的模板里的答案字段替换成本地答案库里的答案后重放，
- *      成功（响应里出现通过/分数）就自动点「下一关」。
+ * 答案由文件或本地控制台导入，脚本负责填入并点击页面现有的提交 / 评测按钮。
+ * 网络钩子只观察当前关卡的数据与选择题提交结果，供题目分组、进度与答案回捞使用。
+ * 不保存请求体，也不重放页面接口；页面没有可用提交按钮时明确停止。
  *
  * 只对使用者自己已登录、有权的账号与其自己已完成的学习任务使用。
  */
 (function () {
   'use strict';
 
+  // BEGIN GENERATED: paste-unlock
+  // Source: userscript/lib/paste-unlock.js; rebuild with npm run build:userscripts.
+  function installEducoderPasteUnlock(host, options = {}) {
+    const key = '__educoderPasteUnlockV1';
+    if (host[key]) return host[key];
+    let enabled = options.enabled !== false;
+    const isEnabled = () => typeof options.isEnabled === 'function' ? options.isEnabled() : enabled;
+    const doc = host.document;
+    const listeners = [];
+    const report = (error) => {
+      if (typeof options.onError === 'function') options.onError(error);
+    };
+    // 写入编辑器失败时必须喊一声——「解除禁止粘贴没效果」最难的排查点就是它静默。
+    const notify = (message) => {
+      if (typeof options.onFail === 'function') options.onFail(message);
+    };
+
+    function inTaskPage() {
+      try {
+        const path = String(host.location.pathname || '');
+        // 任务页与实训壳：新 TPI 的「代码文件」页签挂在这些路径下
+        if (/^\/tasks(?:\/|$)/.test(path)) return true;
+        if (/^\/(?:my)?shixuns\/[^/]+\/challenges(?:\/|$)/.test(path)) return true;
+        if (host.top !== host) {
+          try {
+            const topPath = String(host.top.location.pathname || '');
+            if (/^\/tasks(?:\/|$)/.test(topPath)) return true;
+            if (/^\/(?:my)?shixuns\/[^/]+\/challenges/.test(topPath)) return true;
+            if (/^\/classrooms\//.test(topPath)) return true; // 课堂内嵌实训
+          } catch { /* 跨域 top：按本框继续判断 */ }
+        }
+        // 路径形态再改也不怕：页面上真有代码编辑器就激活——
+        // 拦截的最终目标本来就必须命中编辑器（editableOf），路径只是提示，不是门槛。
+        return Boolean(doc.querySelector('.monaco-editor, .CodeMirror, .ace_editor, .cm-editor'));
+      } catch {
+        return false;
+      }
+    }
+
+    function targetOf(event) {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      const target = path[0] || event.target || doc.activeElement;
+      return target && target.nodeType === 3 ? target.parentElement : target;
+    }
+
+    function editableOf(target) {
+      if (!target || typeof target.closest !== 'function') return null;
+      const editor = target.closest('.monaco-editor, .CodeMirror, .ace_editor, .cm-editor');
+      if (editor) return { kind: 'editor', node: editor };
+      const node = target.closest('textarea, input, [contenteditable]');
+      if (!node || node.disabled || node.readOnly) return null;
+      if (node.tagName === 'INPUT' && !/^(text|search|url|tel|email|password)$/i.test(node.type)) return null;
+      if (node.hasAttribute('contenteditable') && !node.isContentEditable) return null;
+      return { kind: 'native', node };
+    }
+
+    function contextOf(event) {
+      if (!isEnabled() || !inTaskPage()) return null;
+      return editableOf(targetOf(event));
+    }
+
+    function syncMonaco(model) {
+      // Educoder also keeps the current code in React state.
+      try {
+        if (typeof host.updateMonacoValue === 'function') host.updateMonacoValue(model.getValue());
+      } catch (error) {
+        report(error);
+      }
+    }
+
+    function pasteIntoMonaco(container, text) {
+      const monaco = host.Monaco || host.monaco;
+      const api = monaco && monaco.editor;
+      if (!api || typeof api.getEditors !== 'function') return false;
+      const editor = api.getEditors().find((item) => {
+        const node = item.getDomNode();
+        return node && (node === container || container.contains(node));
+      });
+      if (!editor) return false;
+      const raw = typeof editor.getRawOptions === 'function' ? editor.getRawOptions() : {};
+      if (raw.readOnly || raw.domReadOnly) return false;
+      const selections = editor.getSelections();
+      const model = editor.getModel();
+      if (!model || !selections || !selections.length) return false;
+      // executeEdits avoids Educoder's onDidPaste callback, which deletes pasted text.
+      // Each paste is one undo step and replaces only the current selection(s).
+      editor.pushUndoStop();
+      const changed = editor.executeEdits('educoder-paste-unlock', selections.map((range) => ({
+        range, text, forceMoveMarkers: true
+      })), (inverseEdits) => inverseEdits.map(({ range }) => ({
+        selectionStartLineNumber: range.endLineNumber,
+        selectionStartColumn: range.endColumn,
+        positionLineNumber: range.endLineNumber,
+        positionColumn: range.endColumn
+      })));
+      editor.pushUndoStop();
+      if (!changed) return false;
+      syncMonaco(model);
+      return true;
+    }
+
+    function pasteIntoEditor(container, text) {
+      if (container.matches('.monaco-editor')) return pasteIntoMonaco(container, text);
+      if (container.matches('.CodeMirror')) {
+        const cm = container.CodeMirror;
+        if (!cm || cm.getOption('readOnly')) return false;
+        cm.replaceSelection(text, 'end', '+input');
+        return true;
+      }
+      // CodeMirror 6：容器是 .cm-editor，视图实例挂在 cmView 上
+      if (container.matches('.cm-editor')) {
+        const view = container.cmView && container.cmView.view;
+        if (!view || view.state.readOnly) return false;
+        view.dispatch(view.state.replaceSelection(text));
+        return true;
+      }
+      const ace = container.env && container.env.editor;
+      if (!ace || ace.getReadOnly()) return false;
+      ace.insert(text);
+      return true;
+    }
+
+    /**
+     * 兜底通道：把内容当成**打字**塞给当前焦点元素（document.execCommand('insertText')）。
+     *
+     * 为什么需要它：编辑器 API 写入失败（monaco 版本没有 getEditors、容器对不上、
+     * 站点换了编辑器实现）时不至于全军覆没。走输入管线有个额外好处——它不产生 paste
+     * 事件，站点挂在 paste / onDidPaste 上的「删掉粘贴内容」逻辑根本不会触发；
+     * 光标、选区替换和撤销由浏览器与编辑器自己的输入处理维持，光标处的原有选区被替换。
+     */
+    function pasteByTyping(text) {
+      const active = doc.activeElement;
+      if (!active || typeof doc.execCommand !== 'function') return false;
+      let ok = false;
+      try {
+        ok = doc.execCommand('insertText', false, text);
+      } catch (error) {
+        report(error);
+        return false;
+      }
+      return Boolean(ok);
+    }
+
+    function onPaste(event) {
+      const context = contextOf(event);
+      if (!context) return;
+      if (context.kind === 'native') {
+        // Keep the browser's own paste, input events, selection and undo behavior.
+        event.stopImmediatePropagation();
+        return;
+      }
+      const clipboard = event.clipboardData;
+      const text = clipboard ? clipboard.getData('text/plain') : '';
+      if (!text) return;
+      const reasons = [];
+      try {
+        if (pasteIntoEditor(context.node, text)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+      } catch (error) {
+        report(error);
+        reasons.push(error.message);
+      }
+      try {
+        if (pasteByTyping(text)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        reasons.push('execCommand(insertText) 不可用');
+      } catch (error) {
+        report(error);
+        reasons.push(error.message);
+      }
+      // 编辑器 API 与打字通道都失败：别拦默认行为（拦了粘贴就彻底没反应），
+      // 但拦住站点自己的监听器，并把失败喊出来——面板日志里能直接看到原因。
+      event.stopImmediatePropagation();
+      notify(`已拦住站点限制，但两条写入通道都失败（${reasons.join('；') || '原因未知'}），已放行平台默认粘贴`);
+    }
+
+    function onKeyDown(event) {
+      if (event.isComposing || event.altKey) return;
+      const keyName = String(event.key || '').toLowerCase();
+      const pasteShortcut = ((event.ctrlKey || event.metaKey) && keyName === 'v')
+        || (event.shiftKey && keyName === 'insert');
+      if (pasteShortcut && contextOf(event)) event.stopImmediatePropagation();
+    }
+
+    function onBeforeInput(event) {
+      const context = /^insertFromPaste/.test(event.inputType || '') && contextOf(event);
+      if (context && context.kind === 'native') event.stopImmediatePropagation();
+    }
+
+    function onContextMenu(event) {
+      if (contextOf(event)) event.stopImmediatePropagation();
+    }
+
+    const controller = {
+      get enabled() { return isEnabled(); },
+      setEnabled(value) { enabled = Boolean(value); },
+      destroy() {
+        for (const [name, listener] of listeners) host.removeEventListener(name, listener, true);
+        listeners.length = 0;
+        delete host[key];
+      }
+    };
+    host[key] = controller;
+    // One set of capture listeners also covers editors mounted later and SPA navigation.
+    // Tampermonkey injects the script in matching same-origin frames as well.
+    if (typeof host.addEventListener === 'function') {
+      for (const [name, listener] of Object.entries({
+        paste: onPaste, keydown: onKeyDown, beforeinput: onBeforeInput, contextmenu: onContextMenu
+      })) {
+        host.addEventListener(name, listener, true);
+        listeners.push([name, listener]);
+      }
+    }
+    return controller;
+  }
+  // END GENERATED: paste-unlock
+
+  // BEGIN GENERATED: virtual-task
+  // Source: userscript/lib/virtual-task.js; rebuild with npm run build:userscripts.
+  function virtualTaskInfo(payload) {
+    const data = payload || {};
+    const environments = Array.isArray(data.shixun_environments) ? data.shixun_environments : [];
+    const environment = environments.find((item) => item && (item.vnc_url || /(?:\bVNC\b|图形化|远程桌面)/i.test(String(item.name || item.environment_name || ''))));
+    const mirrors = Array.isArray(data.mirror_name) ? data.mirror_name.join(' ') : String(data.mirror_name || '');
+    return {
+      supported: Boolean(data.vnc_url || environment || /(?:\bVNC\b|图形化|远程桌面)/i.test(mirrors)),
+      environmentId: Number(environment && (environment.id || environment.shixun_environment_id)) || 0,
+      classroomCode: String(data.course_identifier || '').trim(),
+      homeworkId: Number(data.homework_common_id) || 0,
+      identifier: String(data.game && data.game.identifier || '').trim()
+    };
+  }
+  // END GENERATED: virtual-task
+
+  /** 先按当前关的选择题数据判断；同实验共用的桌面/Notebook 环境不能代表本关题型。 */
+  function isVirtualTask(payload) {
+    const data = payload || {};
+    const choice = data.choose_test_cases || {};
+    if ((Array.isArray(data.chooses) && data.chooses.length)
+      || Number(choice.challenge_chooses_count) > 0
+      || (Array.isArray(choice.test_sets) && choice.test_sets.length)) return false;
+    if (virtualTaskInfo(data).supported) return true;
+    const names = Array.isArray(data.mirror_name) ? data.mirror_name : [data.mirror_name || ''];
+    const environments = Array.isArray(data.shixun_environments) ? data.shixun_environments : [];
+    return Boolean(data.is_jupyter || data.is_jupyter_lab)
+      || /jupyter|notebook/i.test([...names, ...environments.map(item => item && (item.name || item.environment_name) || '')].join(' '));
+  }
+
   const KEYS = {
-    templates: 'educoder-submit-templates',
+    pasteUnlock: 'educoder-paste-unlock',
     answers: 'educoder-answer-bank',
     levelIndex: 'educoder-level-index',
     log: 'educoder-autosubmit-log',
@@ -86,7 +333,6 @@
   const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   const state = {
-    templates: GM_getValue(KEYS.templates, []),
     answers: GM_getValue(KEYS.answers, {}),
     // 平台关卡标识 → L001 这类 level_id。答案是按 level_id 汇总的，
     // 关卡页上只能拿到 URL 里的平台标识，没有这张表两边永远对不上。
@@ -115,7 +361,6 @@
     // 关卡标识 → 时间戳：页面自己拉这一关数据失败过的记录（失败只能靠刷新重发）。
     // 用映射而不是单个槽位：页面会预取相邻关卡，单个槽位会被邻居的失败覆盖掉。
     taskFetchFailures: {},
-    taskFetchFailureNote: null,
     // level_id → 每道题的选项个数。脚本靠它把页面上的选项按题切分（比 class 名可靠）。
     optionCounts: GM_getValue(KEYS.optionCounts, {}),
     local: GM_getValue(KEYS.local, DEFAULT_LOCAL),
@@ -352,13 +597,12 @@
   /**
    * 缺签名常量时的提示。
    *
-   * 常量已内置，正常情况下**永远走不到这里**（除非内置值本身失效——比如脚本被改坏）。
+   * 发布版不携带真实常量；首次使用可从控制台同步，也可在菜单中手动设置。
    * 文案保留「粘贴覆盖」这条路：平台换常量时用户在菜单里粘新值即可。
    */
   const MISSING_KEYS_HINT =
-    '签名常量不可用（正常不会发生——脚本内置了常量）。若平台换过常量导致 -102：'
-    + '点篡改猴菜单「设置签名常量」粘贴新的双 base64 值覆盖内置值，'
-    + '或更新脚本拿新的内置值。';
+    '尚未配置有效的签名常量：连接本地控制台自动同步，'
+    + '或点篡改猴菜单「设置签名常量」粘贴双 base64 的 AK、SK。解除禁止粘贴无需这些常量。';
 
   /** base64 编/解码走页面上下文（脚本沙箱里不保证有 btoa/atob）。 */
   function base64EncodeAscii(text) {
@@ -483,6 +727,10 @@
     if (payload && Number(payload.status) === -102) {
       throw new Error('签名被拒（-102）：网站可能改版，需更新脚本与 extractor/lib/educoder-sign.js 里的签名常量');
     }
+    const status = Number(payload && payload.status);
+    if (status < 0 || status >= 400) {
+      throw new Error(`接口拒绝（${status}）：${String(payload.message || payload.error || '请检查登录状态及访问权限')}`);
+    }
     return payload;
   }
 
@@ -539,7 +787,7 @@
     return rows
       .map((item, index) => ({
         name: String(item.name || item.subject || '').trim() || `第${index + 1}关`,
-        position: Number(item.position ?? item.homework_challenge_index ?? 0) || index + 1,
+        position: Number(item.homework_challenge_index ?? item.position ?? 0) || index + 1,
         identifier: String(item.identifier || '')
       }))
       .sort((a, b) => a.position - b.position);
@@ -720,18 +968,18 @@
   }
 
   /**
-   * 队列里「当前这一关怎么处理」：顺序即优先级（未选中 → 虚拟机 → 已通过 → 无答案 → 作答）。
-   * @returns {'unselected'|'vm'|'passed'|'missing'|'answer'}
+   * 代码和选择题的队列动作；明确的虚拟机题由调用方直接跳过。
+   * @returns {'unselected'|'unsupported'|'passed'|'missing'|'answer'}
    */
   function teachLevelAction({ selected, hasEditor, hasChoice, passed, hasAnswer }) {
     if (!selected) return 'unselected';
-    if (!hasEditor && !hasChoice) return 'vm';
+    if (!hasEditor && !hasChoice) return 'unsupported';
     if (passed) return 'passed';
     if (!hasAnswer) return 'missing';
     return 'answer';
   }
 
-  /** 队列构建（纯函数）：默认 = 该实验全部关卡；虚拟机实验整体剔除。 */
+  /** 队列构建：默认全部关卡；Notebook 实验剔除，VNC 在关卡页识别后跳过。 */
   function buildTeachQueue(experiments, selection, levelsByExperiment) {
     const selected = new Set((selection && selection.experiments) || []);
     const queue = [];
@@ -846,8 +1094,20 @@
     return GM_getValue(KEYS.teachQueue, null);
   }
 
-  function writeTeachQueue(queue) {
+  function queueCanContinue(queue) {
+    const saved = readTeachQueue();
+    return Boolean(queue && queue.running && saved && saved.running
+      && !state.stopRequested && saved.startedAt === queue.startedAt);
+  }
+
+  function writeTeachQueue(queue, start = false) {
+    if (queue.running && !start) {
+      const saved = readTeachQueue();
+      // 异步任务拿着旧副本醒来时，不得覆盖用户的停止状态或另一轮队列。
+      if (state.stopRequested || (saved && (!saved.running || saved.startedAt !== queue.startedAt))) return false;
+    }
     GM_setValue(KEYS.teachQueue, queue);
+    return true;
   }
 
   function finishTeachQueue() {
@@ -855,7 +1115,7 @@
     if (queue) {
       queue.running = false;
       queue.finishedAt = new Date().toISOString();
-      writeTeachQueue(queue);
+      if (!writeTeachQueue(queue)) return;
     }
     const teach = teachSelection();
     teach.status = '队列完成';
@@ -869,7 +1129,7 @@
     if (queue && queue.running) {
       queue.running = false;
       queue.stoppedReason = reason || '';
-      writeTeachQueue(queue);
+      if (!writeTeachQueue(queue)) return;
     }
     const teach = teachSelection();
     teach.status = reason ? `已停：${reason}` : '已停';
@@ -898,12 +1158,15 @@
    */
   async function ensureLevelData(queue, { gapMs = 10_000, bailAfterMs = 5000 } = {}) {
     const startedAt = Date.now();
+    const active = () => !state.stopRequested && (!readTeachQueue() || queueCanContinue(queue));
+    if (!active()) return { task: null, reloading: false };
     let task = currentTask();
     if (!task) {
       const waitSeconds = Number(state.levelWaitSeconds) || 60;
       log(`还没读到这一关的关卡数据，等页面把它拉回来（最多 ${waitSeconds} 秒）…`, 'warn');
-      task = await waitForLevelData(0, bailAfterMs);
+      task = await waitForLevelData(0, bailAfterMs, active);
     }
+    if (!active()) return { task: null, reloading: false };
     if (task) return { task, reloading: false };
 
     const elapsed = Date.now() - startedAt;
@@ -912,6 +1175,7 @@
       log(`再等 ${Math.ceil(rest / 1000)} 秒后重试（两次重试间隔不少于 ${gapMs / 1000} 秒）…`, 'warn');
       await sleep(rest);
     }
+    if (!active()) return { task: null, reloading: false };
     if (await reloadForLevelData(queue)) return { task: null, reloading: true };
     return { task: null, reloading: false };
   }
@@ -931,7 +1195,7 @@
       if (/^\/tasks\//.test(location.pathname)) {
         // 与 processTeachLevel 共用同一套「等 → 补间隔 → 刷新重试」，别再各写一份。
         const ready = await ensureLevelData(queue);
-        if (ready.reloading) return;
+        if (!queueCanContinue(queue) || ready.reloading) return;
         if (!ready.task) {
           stopTeachQueue(
             `等了 ${Number(state.levelWaitSeconds) || 60} 秒并刷新重试 2 次，还是没读到这一关的关卡数据`
@@ -958,10 +1222,12 @@
         const experiment = queue.experiments[queue.experimentIndex];
         if (!experiment || !location.pathname.includes(`/shixuns/${experiment.identifier}/`)) return;
         await sleep(1500);
+        if (!queueCanContinue(queue)) return;
         let button = null;
         for (let i = 0; i < 12 && !button; i += 1) {
           button = findButton(TEACH_ENTRY_PATTERNS);
           if (!button) await sleep(1000);
+          if (!queueCanContinue(queue)) return;
         }
         if (!button) {
           // 找不到入口不再停整条队列：换号/权限/改版都可能让按钮变样，
@@ -975,12 +1241,12 @@
           queue.experimentIndex += 1;
           queue.visited = [];
           queue.needChainStart = false;
-          writeTeachQueue(queue);
+          if (!writeTeachQueue(queue)) return;
           return enterTeachExperiment(queue);
         }
         log(`进入课程实验「${experiment.name}」：点击「${buttonLabel(button)}」`);
         queue.handoffAt = Date.now();
-        writeTeachQueue(queue);
+        if (!writeTeachQueue(queue)) return;
         const before = location.pathname;
         // 强制在当前标签页跳转：头歌的「开启挑战」「查看实战」会开新标签页（旧标签页会一直留着）
         const popped = clickStayingInThisTab(button);
@@ -996,6 +1262,7 @@
         }
         // 页面没动：控件可能点不动（改版 / 被遮 / 合成事件没接上），
         // 但它的目标地址通常是确定的 —— 直接走过去，别干等超时后停队。
+        if (!queueCanContinue(queue)) return;
         const target = clickTargetOf(button, popped);
         if (target && target !== location.href) {
           log(`点了「${buttonLabel(button)}」页面没动，改用它的目标地址直接跳转：${target}`, 'warn');
@@ -1058,7 +1325,7 @@
    */
   function consoleRequest(pathname, options = {}) {
     // body 收对象（自动序列化）；要发字符串就直接用 rawBody
-    const { method = 'GET', body, rawBody, onload, onerror } = options;
+    const { method = 'GET', body, rawBody, onload, onerror, timeout = 15000 } = options;
     const payload = rawBody !== undefined ? rawBody : (body ? JSON.stringify(body) : undefined);
     const first = consoleEndpoint(pathname);
     if (!first) {
@@ -1072,6 +1339,8 @@
         url,
         headers: payload ? { 'Content-Type': 'application/json' } : undefined,
         data: payload,
+        timeout,
+        ontimeout: () => { if (onerror) onerror({ reason: 'timeout' }); },
         onload: (response) => {
           if (isRetry) {
             // 用默认地址试通了：换过去，免得下次又白试一遍
@@ -1154,6 +1423,15 @@
 
     const pageCode = String((state.taskContext && state.taskContext.classroomCode) || '').trim();
     const answerCode = String(entry.classroomCode || '').trim();
+    if (entry.strictIdentity) {
+      const task = currentTask();
+      if (!task || !pageCode || !task.homeworkId) {
+        return { answerKey, entry: null, blocked: '尚未读到当前关卡的完整课堂和作业身份，暂不提交单实验答案。' };
+      }
+      if (entry.task_identifier !== currentLevelId() || Number(entry.homeworkId) !== Number(task.homeworkId)) {
+        return { answerKey, entry: null, blocked: '单实验答案的关卡标识或作业号与当前页面不一致，请重新抓取当前作业。' };
+      }
+    }
     if (!pageCode) {
       log('关卡数据里没有班级信息，本次跳过班级核对（答案可能来自别的班，请留意）。', 'warn');
     } else if (!answerCode) {
@@ -1170,51 +1448,7 @@
     return { answerKey, entry, blocked: '' };
   }
 
-  /* --------------------------------------------------------- 网络录制（核心） */
-
-  function remember(entry) {
-    // 只关心「写」请求：提交答案、运行评测一定不是 GET。
-    if (!/^(POST|PUT|PATCH|DELETE)$/i.test(entry.method)) return;
-    const key = `${entry.method} ${entry.url.split('?')[0]}`;
-    const list = state.templates.filter((item) => item.key !== key);
-    const record = { key, ...entry, seenAt: Date.now() };
-    list.unshift(record);
-    state.templates = list.slice(0, 30);
-    GM_setValue(KEYS.templates, state.templates);
-    log(`录制到提交接口：${key}`, 'ok');
-    // 提交类接口顺手回传给控制台落盘：这样「录制一次、永久复用」不必再手工搬文件。
-    if (/submit|evaluate|answer|commit|judge/i.test(entry.url)) pushBlueprint(record);
-  }
-
-  /**
-   * 把录制到的提交请求回传给本地控制台，由它写进对应实验目录的 submit.blueprint.json。
-   *
-   * 为什么需要回传：`submit.blueprint.json` 原先**没有任何生成端**，只能靠使用者
-   * 在篡改猴里导出录制结果、再手工挪到实验目录，「免录制」的链路因此名存实亡。
-   * 控制台按关卡标识把蓝图放进正确的实验目录（映射见 server.js 的 levelDirs）。
-   */
-  function pushBlueprint(record) {
-    consoleRequest('/api/blueprint', {
-      method: 'POST',
-      body: {
-        levelId: currentLevelId(),
-        key: record.key,
-        url: record.url,
-        method: record.method,
-        body: record.body
-      },
-      onload: (response) => {
-        try {
-          const payload = JSON.parse(response.responseText || '{}');
-          if (payload.ok) log(`提交蓝图已回传控制台：${payload.path}`, 'ok');
-          else log(`蓝图回传失败：${payload.error || response.status}`, 'warn');
-        } catch (error) {
-          log(`蓝图回传返回无法解析（HTTP ${response.status}）`, 'warn');
-        }
-      },
-      onerror: () => log('蓝图回传连不上本地控制台（不影响本地录制）', 'warn')
-    });
-  }
+  /* ----------------------------------------------------------- 网络响应观察 */
 
   /**
    * 观察页面自己拉的关卡数据，拿到「几道题、每题几个选项」与「标准答案」。
@@ -1249,9 +1483,14 @@
     const standardAnswer = (Array.isArray(ctc.test_sets) ? ctc.test_sets : [])
       .slice()
       .sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0))
-      .map((row) => ({ position: Number(row.position) || 0, answer: String(row.standard_answer ?? row.actual_output ?? '') }))
+      .map((row) => {
+        const standard = String(row.standard_answer ?? '').trim();
+        // fromActual：这一行来自用户作答而非平台标准答案（未通过的关卡平台上没有标准答案）。
+        // 回捞入库时要靠它把关：只有已通过的关卡才允许用 actual_output 兜底。
+        return { position: Number(row.position) || 0, answer: standard || String(row.actual_output ?? '').trim(), fromActual: !standard };
+      })
       .filter((row) => row.position > 0 && row.answer);
-    const position = Number(payload.challenge && payload.challenge.position) || 0;
+    const position = harvestPositionOf(payload);
 
     state.taskContext = {
       id: match[1],
@@ -1263,6 +1502,7 @@
       classroomCode: String(payload.course_identifier || '').trim(),
       classroomId: Number(payload.course_id) || 0,
       homeworkId: Number(payload.homework_common_id) || 0,
+      virtual: isVirtualTask(payload),
       experimentName: String(payload.homework_common_name || '').trim(),
       levelId: position > 0 ? `L${String(position).padStart(3, '0')}` : '',
       // 关卡标题：课堂流程没有教学课程队列的 levelHint，回传答案/导出标准答案时
@@ -1280,7 +1520,7 @@
     if (!prev && sizes.length) {
       log(`读到关卡数据：${sizes.length} 道题，选项数 ${sizes.join('+')}`, 'ok');
     } else if (!prev && position > 0) {
-      log(`读到关卡数据：第${position}关（非选择题，按编程题处理）`, 'ok');
+      log(`读到关卡数据：第${position}关（${state.taskContext.virtual ? '虚拟机题，脚本跳过' : '编程题'}）`, 'ok');
     } else if (standardAnswer.length && !(prev.standardAnswer && prev.standardAnswer.length)) {
       log(`读到标准答案：${standardAnswerText(standardAnswer)}`, 'ok');
     }
@@ -1298,11 +1538,16 @@
     const standardAnswer = (Array.isArray(payload.test_sets) ? payload.test_sets : [])
       .slice()
       .sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0))
-      .map((row) => ({ position: Number(row.position) || 0, answer: String(row.standard_answer ?? row.actual_output ?? '') }))
+      .map((row) => {
+        const standard = String(row.standard_answer ?? '').trim();
+        return { position: Number(row.position) || 0, answer: standard || String(row.actual_output ?? '').trim(), fromActual: !standard };
+      })
       .filter((row) => row.position > 0 && row.answer);
     if (!standardAnswer.length) return;
-    const prev = state.taskContext || { id: match[1], sizes: [] };
-    state.taskContext = { ...prev, id: match[1], standardAnswer, submitted: true };
+    const prev = (state.taskContext && state.taskContext.id === match[1])
+      ? state.taskContext
+      : { id: match[1], sizes: [] };
+    state.taskContext = { ...prev, id: match[1], virtual: false, standardAnswer, submitted: true };
     log(`提交后读到标准答案：${standardAnswerText(standardAnswer)}`, 'ok');
   }
 
@@ -1325,7 +1570,6 @@
     const failures = state.taskFetchFailures || (state.taskFetchFailures = {});
     const first = !failures[identifier];
     failures[identifier] = Date.now();
-    state.taskFetchFailureNote = { identifier, why: String(why || '') };
     if (!first) return; // 同一关只报一次，免得每个 tick 都刷屏
     log(`页面自己拉关卡数据（${identifier}）失败了：${why || '网络错误'}。`
       + '这跟「还没加载完」不同，等是等不到的——稍后会刷新页面重试。', 'warn');
@@ -1341,53 +1585,66 @@
   }
 
   function installNetworkHooks() {
-    // 关键：Tampermonkey 沙箱模式下（脚本用了 @grant），改 `window.fetch` 只会改到
-    // 沙箱里那份，页面自己的请求根本看不见——这正是「读到关卡数据 / 录制到提交接口」
-    // 一直不出现的原因。必须改 unsafeWindow（页面真实上下文）。
-    // 参考 educoder-answers.user.js 用 @grant none 直接跑在页面上下文；
-    // 这里为保留 GM_* 能力，改用 @grant unsafeWindow。没 unsafeWindow（页面上下文 /
-    // 测试）就退回 window。
-    const host = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+    const host = pageWindow();
+    // SPA 接力或重复注入时只装一层，避免重复解析同一响应。
+    if (host.__educoderResponseObserver) return;
+    host.__educoderResponseObserver = true;
+
+    function responseKind(url, method) {
+      const value = String(url || '');
+      if (/__easBatch/.test(value)) return '';
+      const task = /\/api\/tasks\/([\w-]+)\.json(?:[?#]|$)/.exec(value);
+      const submitted = /\/api\/tasks\/([\w-]+)\/choose_build\.json(?:[?#]|$)/.exec(value);
+      const build = /\/api\/tasks\/([\w-]+)\/game_build\.json(?:[?#]|$)/.exec(value);
+      const evaluation = /\/api\/tasks\/([\w-]+)\/game_status\.json(?:[?#]|$)/.exec(value);
+      // 页面会预取相邻关卡：只让当前 URL 的响应更新当前上下文。
+      if (String(method).toUpperCase() === 'GET' && task && task[1] === currentLevelId()) return 'task';
+      if (String(method).toUpperCase() === 'POST' && submitted && submitted[1] === currentLevelId()) return 'submitted';
+      if (String(method).toUpperCase() === 'POST' && build && build[1] === currentLevelId()) return 'build';
+      if (String(method).toUpperCase() === 'GET' && evaluation && evaluation[1] === currentLevelId()) return 'evaluation';
+      return '';
+    }
+
+    const observe = (kind, url, payload, submission) => {
+      if (kind === 'task') observeTaskJson(url, payload);
+      else if (kind === 'submitted') observeSubmitResult(url, payload);
+      observeEvaluationResult(submission, kind, payload);
+    };
+    // 在请求发出时关联本次点击。点击前已在途的响应、上一次提交的迟到响应都不能认领。
+    const captureSubmission = (kind) => {
+      const submission = activeSubmission;
+      if (!submission || submission.id !== currentLevelId()) return null;
+      if ((kind === 'submitted' && submission.kind === 'choice') || (kind === 'build' && submission.kind === 'code')) {
+        submission.requestStarted = true;
+        return submission;
+      }
+      return kind === 'evaluation' && submission.kind === 'code' && submission.requestStarted ? submission : null;
+    };
+    const failedRequest = (submission, text) => {
+      if (submission && submission === activeSubmission && !submission.outcome && submission.id === currentLevelId()) {
+        submission.outcome = { status: 'failed', text };
+      }
+    };
     const originalFetch = host.fetch;
     host.fetch = function patchedFetch(input, init) {
-      const url = typeof input === 'string' ? input : input && input.url;
+      const url = typeof input === 'string' ? input : input && (input.url || input.href);
       const method = (init && init.method) || (input && input.method) || 'GET';
-      const body = init && init.body;
+      const kind = responseKind(url, method);
+      const submission = captureSubmission(kind);
       const promise = originalFetch.apply(this, arguments);
-      const isChooseBuild = /\/api\/tasks\/[\w-]+\/choose_build\.json/.test(String(url || ''));
-      if (/^POST|PUT|PATCH|DELETE$/i.test(method)) {
-        promise
-          .then((response) => {
-            response
-              .clone()
-              .text()
-              .then((text) => {
-                remember({
-                  url: String(url || ''),
-                  method: method.toUpperCase(),
-                  body: typeof body === 'string' ? body : snippet(body),
-                  status: response.status,
-                  response: snippet(text, 600)
-                });
-                if (isChooseBuild) {
-                  try {
-                    observeSubmitResult(url, JSON.parse(text));
-                  } catch (error) {
-                    /* 非 JSON 忽略 */
-                  }
-                }
-              })
-              .catch(() => {});
-          })
-          .catch(() => {});
-      } else if (/^GET$/i.test(method) && /\/api\/tasks\/[\w-]+\.json/.test(String(url || '')) && !/__easBatch/.test(String(url || ''))) {
-        promise
-          .then((response) => {
-            if (response && response.ok) {
-              response.clone().json().then((data) => observeTaskJson(url, data)).catch(() => {});
-            }
-          })
-          .catch((error) => noteTaskFetchFailure(url, (error && error.message) || '请求被拒'));
+      if (kind === 'task' || kind === 'submitted' || submission) {
+        promise.then((response) => {
+          if (!responseKind(url, method)) return;
+          if (!response.ok) { failedRequest(submission, `本次提交或评测请求失败：HTTP ${response.status}`); return; }
+          return response.clone().json().then((payload) => {
+            if (responseKind(url, method)) observe(kind, url, payload, submission);
+          }).catch(() => {});
+        }).catch((error) => {
+          if (kind === 'task' && responseKind(url, method)) {
+            noteTaskFetchFailure(url, (error && error.message) || '请求被拒');
+          }
+          failedRequest(submission, `本次提交或评测请求失败：${error && error.message || '网络错误'}`);
+        });
       }
       return promise;
     };
@@ -1399,38 +1656,25 @@
       this.__eas = { method: String(method || 'GET').toUpperCase(), url: String(url || '') };
       return originalOpen.apply(this, arguments);
     };
-    OriginalXHR.prototype.send = function patchedSend(body) {
+    OriginalXHR.prototype.send = function patchedSend() {
       const meta = this.__eas;
-      if (meta && /^POST|PUT|PATCH|DELETE$/.test(meta.method)) {
-        this.addEventListener('load', () => {
-          remember({
-            url: meta.url,
-            method: meta.method,
-            body: typeof body === 'string' ? body : snippet(body),
-            status: this.status,
-            response: snippet(this.responseText, 600)
-          });
-          if (/\/api\/tasks\/[\w-]+\/choose_build\.json/.test(meta.url)) {
+      const kind = meta && responseKind(meta.url, meta.method);
+      const submission = captureSubmission(kind);
+      if (kind === 'task' || kind === 'submitted' || submission) {
+        // loadend 在成功、失败、超时后都会触发；once 使复用的 XHR 不累积旧监听器。
+        this.addEventListener('loadend', () => {
+          if (!responseKind(meta.url, meta.method)) return;
+          if (this.status === 0 && kind === 'task') {
+            noteTaskFetchFailure(meta.url, '请求未完成（XHR）');
+          } else if (this.status >= 200 && this.status < 300) {
             try {
-              observeSubmitResult(meta.url, JSON.parse(this.responseText));
-            } catch (error) {
-              /* 非 JSON 忽略 */
-            }
+              const payload = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
+              observe(kind, meta.url, payload, submission);
+            } catch (error) { /* 非 JSON 响应忽略 */ }
+          } else {
+            failedRequest(submission, `本次提交或评测请求失败：${this.status ? `HTTP ${this.status}` : '网络错误（XHR）'}`);
           }
-        });
-      } else if (meta && /^GET$/i.test(meta.method) && /\/api\/tasks\/[\w-]+\.json/.test(meta.url) && !/__easBatch/.test(meta.url)) {
-        this.addEventListener('load', () => {
-          if (this.status < 200 || this.status >= 300) return;
-          try {
-            observeTaskJson(meta.url, JSON.parse(this.responseText));
-          } catch (error) {
-            /* 非 JSON 响应忽略 */
-          }
-        });
-        // 关卡数据也可能走 XHR 拉：网络层失败（status 0）时同样要记下来，
-        // 否则脚本会把它当成「还在加载」，白等一整个超时。
-        this.addEventListener('error', () => noteTaskFetchFailure(meta.url, '网络错误（XHR error）'));
-        this.addEventListener('timeout', () => noteTaskFetchFailure(meta.url, '请求超时（XHR timeout）'));
+        }, { once: true });
       }
       return originalSend.apply(this, arguments);
     };
@@ -1479,9 +1723,10 @@
    * `.monaco-editor` 也还没插进 DOM，立刻查就会得到「页面上找不到代码编辑器」
    * （实测就是这么误判的）。所以找不到时**轮询等待**，而不是马上放弃。
    */
-  async function waitForCodeEditor(timeoutMs = 8000) {
+  async function waitForCodeEditor(timeoutMs = 8000, shouldContinue = () => true) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+      if (!shouldContinue()) return null;
       const editor = findCodeEditor();
       if (editor) return editor;
       if (Date.now() >= deadline) return null;
@@ -1499,7 +1744,7 @@
    *
    * 等不到就返回 null，由调用方决定停不停（并说明等了多久）。
    */
-  async function waitForLevelData(timeoutMs, bailAfterMs = 5000) {
+  async function waitForLevelData(timeoutMs, bailAfterMs = 5000, shouldContinue = () => true) {
     const limitMs = Number(timeoutMs) > 0
       ? Number(timeoutMs)
       : (Number(state.levelWaitSeconds) || 60) * 1000;
@@ -1507,6 +1752,7 @@
     const startedAt = Date.now();
     let nextNoticeAt = 10_000;
     for (;;) {
+      if (!shouldContinue()) return null;
       // 用 currentTask() 而不是 state.taskContext：它只认与**当前 URL 标识一致**的数据，
       // 能挡住上一关的残留（否则会拿着上一关的题号去勾这一关的选项）。
       const task = currentTask();
@@ -1548,9 +1794,10 @@
     queue.reloads = budget;
     // 刷新也算一次交接：boot 靠 handoffAt 的新鲜度决定愿不愿意续跑。
     queue.handoffAt = Date.now();
-    writeTeachQueue(queue);
+    if (!writeTeachQueue(queue)) return;
     log(`刷新页面重试（这一关第 ${budget.count}/2 次）…`, 'warn');
     await sleep(600);
+    if (state.stopRequested || !queue.running || (readTeachQueue() && !queueCanContinue(queue))) return false;
     location.reload();
     return true;
   }
@@ -1682,13 +1929,19 @@
    * 都不中才换下一个模式。不能按 DOM 顺序找——否则「运行」排在「评测」前面时
    * 会点错那个（两个都存在时，我们要的是「评测」）。
    */
-  function findButton(patterns) {
+  function isButtonDisabled(node) {
+    return Boolean(node.disabled || node.getAttribute('aria-disabled') === 'true'
+      || node.getAttribute('aria-busy') === 'true' || /\bant-btn-loading\b/.test(node.getAttribute('class') || ''));
+  }
+
+  function findButton(patterns, { allowDisabled = false } = {}) {
     for (const pattern of patterns) {
       const found = buttonNodes().find((node) => {
         const text = buttonMatchText(node);
         if (!text) return false;
-        const disabled = node.disabled || node.getAttribute('aria-disabled') === 'true';
-        if (disabled) return false;
+        if (typeof node.getClientRects === 'function' && !node.getClientRects().length) return false;
+        if (!allowDisabled && isButtonDisabled(node)) return false;
+        if (patterns === SUBMIT_PATTERNS && /自测|调试|停止运行|正在运行|btn-run-self/i.test(text)) return false;
         // 「题目1未提交」「题目2已提交」这类是**状态标签**，不是提交动作——
         // 别因为它们含「提交」二字就点上去（实测就是这么点错了，错过了真正的「评测」）。
         // 「已完成/未完成」同理：进度文案不是按钮动作（「完成」本身是最后一关的按钮）。
@@ -1735,7 +1988,7 @@
   /**
    * 「下一关」类按钮。头歌通关后会弹庆祝弹窗（「恭喜您通过本关」），里面带
    * 「下一关」——最后一关则是「完成」（实测），所以两种都要认。
-   * 页面上出现它 ≈ 本关已通过，用它判定比读文案可靠得多（文案会被过期的输出区带偏）。
+   * 只用于导航。页面底栏可能一直显示这些按钮，不能据此判定本次评测通过。
    */
   const NEXT_LEVEL_PATTERNS = [/下一关/, /下一题/, /继续下一/, /继续挑战/, /完成/];
 
@@ -1892,7 +2145,7 @@
    * 另外两条硬规则：题目数必须与答案数一致；单选不能给多个字母、
    * 勾选后页面没保留，都明确报错，不假装成功。
    */
-  async function answerChoiceLevel(levelAnswers) {
+  async function answerChoiceLevel(levelAnswers, shouldContinue = () => true) {
     const questionKeys = Object.keys(levelAnswers).sort((a, b) => Number(a) - Number(b));
     // 每题选项数：优先页面自己的关卡数据（最权威），其次控制台的 optionCounts（兜底）
     const { pageSizes, consoleSizes } = choiceSizesForCurrentLevel();
@@ -1974,6 +2227,7 @@
       // 拿着旧节点 click 是无效的（之前「勾选没保留」就是这么来的）。
       const freshGroup = () => (usableCounts ? partitionByCounts(visibleChoiceInputs(), usableCounts) : null);
       for (let j = 0; j < size; j += 1) {
+        if (!shouldContinue()) return [];
         const fresh = freshGroup();
         const node = fresh && fresh[i] ? fresh[i][j] : null;
         if (!node) break;
@@ -2016,7 +2270,7 @@
       const pushLetters = (number, value) => {
         const letters = (Array.isArray(value) ? value : String(value ?? '').split(/[,，、\s]+/))
           .map((token) => String(token).trim().toUpperCase())
-          .flatMap((token) => (/^[A-H]+$/.test(token) ? token.split('') : []));
+          .flatMap((token) => (/^[A-Z]+$/.test(token) ? token.split('') : []));
         if (letters.length) map[String(number || Object.keys(map).length + 1)] = letters;
       };
 
@@ -2053,26 +2307,6 @@
     return { kind: 'code', code: String(code ?? '') };
   }
 
-  /** 用录制到的模板重放一次提交（把答案替换进去）。 */
-  async function replayTemplate(template, answerText) {
-    const body = String(template.body || '').replace(
-      /("(?:content|code|answer|source|user_code|program)[^"]*"\s*:\s*")[^"]*(")/gi,
-      (_match, prefix, suffix) => `${prefix}${answerText.replace(/"/g, '\\"').replace(/\n/g, '\\n')}${suffix}`
-    );
-    const response = await window.fetch(template.url, {
-      method: template.method,
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-      body
-    });
-    const text = await response.text();
-    return { status: response.status, text };
-  }
-
-  function looksPassed(text) {
-    return /"status"\s*:\s*(?:true|1|2)\b|通过|成功|passed|accepted|满分|得分/i.test(String(text || ''));
-  }
-
   /* -------------------------------------------------------------- 自动流程 */
 
   /** 抓页面上「结果区」的文本；找不到就返回空串（表示还没有结论）。 */
@@ -2086,12 +2320,15 @@
    */
   function readPageResultText() {
     const clean = (node) => (node.textContent || '').replace(/\s+/g, ' ').trim();
+    const visible = (node) => !isOwnPanelNode(node)
+      && (typeof node.getClientRects !== 'function' || node.getClientRects().length > 0);
     const MODAL_SELECTORS = [
       '.ant-modal-body', '.ant-modal', '[role="dialog"]', '[class*="modal"]',
       '[class*="congrat"]', '[class*="celebrat"]', '[class*="pass-modal"]'
     ];
     for (const selector of MODAL_SELECTORS) {
       for (const node of document.querySelectorAll(selector)) {
+        if (!visible(node)) continue;
         const text = clean(node);
         if (text && text.length <= 2000 && /恭喜|通过|未通过|失败|得分|正确|错误|完成/.test(text)) return text;
       }
@@ -2102,6 +2339,7 @@
     ];
     for (const selector of RESULT_SELECTORS) {
       for (const node of document.querySelectorAll(selector)) {
+        if (!visible(node)) continue;
         const text = clean(node);
         if (text && text.length <= 2000) return text;
       }
@@ -2120,11 +2358,67 @@
     await sleep(2000);
   }
 
+  /** 平台按账号保存的冷却截止时间；只读，跨关卡和整页跳转后仍有效。 */
+  function readSubmitCooldownMs() {
+    try {
+      const storage = pageWindow().localStorage;
+      if (!storage) return 0;
+      const prefix = 'task-evaluate-cooldown:';
+      const remaining = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value) - Date.now()) : 0;
+      if (state.teachLogin) return remaining(storage.getItem(prefix + state.teachLogin));
+      // 刷新后的账号尚未读到时，只采用唯一的有效记录；有多个账号时依靠页面按钮状态。
+      const active = [];
+      for (let index = 0; index < storage.length; index++) {
+        const key = storage.key(index);
+        if (key && key.startsWith(prefix)) {
+          const rest = remaining(storage.getItem(key));
+          if (rest > 0) active.push(rest);
+        }
+      }
+      return active.length === 1 ? active[0] : 0;
+    } catch (error) { return 0; }
+  }
+
+  /** 找到冷却中的评测按钮后继续等待，避免误报缺按钮或退而点击自测运行。 */
+  async function waitForSubmitButton(shouldContinue = () => true, timeoutMs = 60_000) {
+    const identifier = currentLevelId();
+    const deadline = Date.now() + timeoutMs;
+    let seen = false;
+    let nextNotice = 0;
+    for (;;) {
+      if (state.stopRequested || !shouldContinue() || currentLevelId() !== identifier) {
+        return { status: 'stopped', button: null, text: '等待评测按钮期间已停止或切换关卡' };
+      }
+      // 保留高优先级的禁用候选，不能因为它在冷却就选中低优先级的“运行”。
+      const button = findButton(SUBMIT_PATTERNS, { allowDisabled: true });
+      const cooldown = readSubmitCooldownMs();
+      if (button) {
+        seen = true;
+        const countdown = /(\d{1,3})\s*(?:s|秒)(?:后)?(?:[)）]|$)/i.exec(buttonLabel(button));
+        if (!cooldown && !(countdown && Number(countdown[1]) > 0) && !isButtonDisabled(button)) {
+          return { status: 'ready', button, text: '' };
+        }
+      } else if (!seen && !cooldown) {
+        return { status: 'blocked', button: null, text: '' };
+      }
+      if (Date.now() >= deadline) {
+        return { status: 'blocked', button: null,
+          text: `等待 ${Math.round(timeoutMs / 1000)} 秒后评测按钮仍不可用（平台冷却或其他任务仍在运行），已停止；不会强制点击。` };
+      }
+      if (Date.now() >= nextNotice) {
+        log(cooldown > 0 ? `平台评测冷却还剩 ${Math.ceil(cooldown / 1000)} 秒，等待按钮恢复`
+          : `评测按钮暂不可用${button ? `（${buttonLabel(button)}）` : ''}，等待页面恢复`, 'info');
+        nextNotice = Date.now() + 5000;
+      }
+      await sleep(Math.min(250, deadline - Date.now()));
+    }
+  }
+
   /**
    * 从页面上读「最大的测评时间」（秒），读不到返回 0。
    *
    * 编程题的评测耗时差异极大（实测有超过 120 秒的关卡），写死等待上限必然误判。
-   * 页面自己会标明最大测评时间（如 300 秒），取它的一半作为等待上限最稳。
+   * 页面自己会标明最大测评时间（如 300 秒），按页面标注的完整时长作为等待上限。
    */
   function readMaxEvalSeconds() {
     try {
@@ -2136,21 +2430,48 @@
       return 0;
     }
   }
-  /**
-   * 等提交结果。
-   *
-   * 原来是固定 `sleep(3000)` 然后**不管结果就点「下一关」**——提交失败时也会往下跳，
-   * 于是后面的关卡全部错位。这里改为轮询结果信号，拿不到结论就不往下走。
-   *
-   * 等待上限：优先用**页面标注的「最大的测评时间」的一半**（编程题实测有跑 120 多秒
-   * 的关卡，写死上限必然误判）；页面读不到才退回面板里的设置。
-   *
-   * @returns {{status: 'passed'|'failed'|'unknown'|'timeout', text: string}}
-   */
+  let activeSubmission = null;
+
+  /** 点击前建立本次提交的身份；网络钩子只认此后发出的当前关卡评测请求。 */
+  function beginSubmissionAttempt(kind = 'code') {
+    activeSubmission = { id: currentLevelId(), kind, beforeText: readPageResultText(), requestStarted: false, outcome: null };
+    return activeSubmission;
+  }
+
+  function observeEvaluationResult(submission, kind, payload) {
+    if (!submission || submission !== activeSubmission || submission.outcome || submission.id !== currentLevelId()
+      || !payload || typeof payload !== 'object') return;
+    const status = payload.status === null || payload.status === '' ? NaN : Number(payload.status);
+    const sets = Array.isArray(payload.test_sets) ? payload.test_sets : [];
+    const failureText = [payload.message, payload.last_compile_output, payload.running_code_message,
+      ...sets.filter((row) => row.result === false).map((row) => row.actual_output)]
+      .filter((value) => typeof value === 'string' && value.trim()).join('\n');
+    if (status === 401 || status === 403 || ((kind === 'build' || kind === 'submitted') && status === -1)) {
+      submission.outcome = { status: 'failed', text: failureText || '平台拒绝了本次提交' };
+    } else if (kind === 'evaluation' && Number.isFinite(status) && status >= 0) {
+      // 与页面 game_status 的处理一致：负数仍在运行，2 通过，其他非负数为本次失败。
+      submission.outcome = status === 2
+        ? { status: 'passed', text: '收到本次代码评测结果：通过' }
+        : { status: 'failed', text: failureText || '本次代码评测未通过' };
+    } else if (kind === 'submitted') {
+      const total = Number(payload.challenge_chooses_count);
+      const correct = payload.choose_correct_num == null || payload.choose_correct_num === '' ? NaN : Number(payload.choose_correct_num);
+      if (Number.isSafeInteger(total) && total > 0 && Number.isSafeInteger(correct) && correct >= 0) {
+        submission.outcome = { status: correct === total ? 'passed' : 'failed', text: `本次选择题评测：${correct}/${total} 题正确` };
+      } else if (sets.some((row) => row.result === false)) {
+        submission.outcome = { status: 'failed', text: failureText || '本次选择题评测未通过' };
+      } else if (payload.had_all_submmit === true || (sets.length && sets.every((row) => row.result === true
+        || String(row.actual_output ?? '').trim()))) {
+        submission.outcome = { status: 'passed', text: '收到本次选择题提交结果：已提交' };
+      }
+    }
+  }
+
   /** 「评测还在跑」的文案。中文平台文案很花，尽量列全——漏一个词就等于把「进行中」误判成「未知终态」。 */
   const EVAL_RUNNING_PATTERN = /评测中|执行中|运行中|正在运行|正在执行|计算中|判题中|等待|排队|loading|请稍候|测评中/i;
 
-  async function waitForSubmitResult(timeoutMs) {
+  /** 只以本次请求的响应确认成功；常驻导航按钮、旧结果和自动保存提示都不是依据。 */
+  async function waitForSubmitResult(timeoutMs, submission = activeSubmission || beginSubmissionAttempt(), shouldContinue = () => !state.stopRequested) {
     const pageMax = readMaxEvalSeconds();
     // 上限取**完整的**「最大测评时间」，不是一半：一半是赌"评测不会超过上限的一半"，
     // 实测有关卡超过（编程风格 语句构造：页面标 30 秒、一半 15 秒，它 15 秒还没出结果）。
@@ -2160,44 +2481,26 @@
       : (pageMax > 0
         ? Math.min(pageMax, 600) * 1000
         : (Number(state.evalWaitSeconds) || 30) * 1000);
-    log(`等评测结果（最多 ${Math.round(limitMs / 1000)} 秒${pageMax > 0 ? `＝页面最大测评时间 ${pageMax} 秒` : '＝面板设置'}）`);
+    log(`等本次评测的新结果（最多 ${Math.round(limitMs / 1000)} 秒${pageMax > 0 ? `＝页面最大测评时间 ${pageMax} 秒` : '＝面板设置'}）`);
     const deadline = Date.now() + limitMs;
-    let text = '';
-    while (Date.now() < deadline) {
-      // 最高优先：通关弹窗里的「下一关 / 完成」按钮出现了 → 本关一定通过了。
-      // 实测页面已经弹「恭喜您通过本关」时，测试输出区可能还停在过期的
-      // 「自测输入运行结果代码执行中…」，光读文案会被带偏、判成"没结论"。
-      const nextButton = findButton(NEXT_LEVEL_PATTERNS);
-      // 但「完成提交」这类既含"完成"又像提交的按钮要排除，否则刚点完提交就会
-      // 被自己当成通关信号，答案还没真正判就往下跳。
-      if (nextButton && !SUBMIT_PATTERNS.some((pattern) => pattern.test(buttonMatchText(nextButton)))) {
-        return { status: 'passed', text: `页面上出现了「${buttonLabel(nextButton)}」按钮（本关已通过）` };
-      }
-      const current = readPageResultText();
-      if (current) {
-        text = current;
-        // 评测还没出结果 → 继续等。
-        // 实测文案有「自测输入运行结果代码执行中…」「自测输入无运行结果代码执行中…」等，
-        // 「执行中」以前不在词表里，一读到就被当成 unknown 放弃、队列中断。
-        if (EVAL_RUNNING_PATTERN.test(current)) {
-          await sleep(500);
-          continue;
+    try {
+      while (Date.now() < deadline) {
+        if (!shouldContinue() || currentLevelId() !== submission.id || activeSubmission !== submission) {
+          return { status: 'stopped', text: '作答已停止或页面关卡已变化' };
         }
-        if (/未通过|不通过|失败|异常|Traceback|编译错误|运行错误/i.test(current)) return { status: 'failed', text };
-        // 通过 / 正确 / 满分 是编程题的信号；「恭喜您通过本关」是通关弹窗；
-        // 「已提交 / 提交成功 / 已保存」是**选择题**的信号——选择题提交后没有
-        // 通过/失败，只有「当前状态已提交，将按照最新提交的答案计算成绩」这类文案。
-        if (/通过|恭喜|正确|Accepted|满分|全部通过|得分[:：]?\s*100|已提交|提交成功|已保存/i.test(current)) {
-          return { status: 'passed', text };
+        if (submission.outcome) {
+          log(submission.outcome.text, submission.outcome.status === 'passed' ? 'ok' : 'error');
+          return submission.outcome;
         }
-        return { status: 'unknown', text };
+        const current = readPageResultText();
+        if (current && current !== submission.beforeText && !EVAL_RUNNING_PATTERN.test(current)
+          && /未通过|不通过|失败|异常|Traceback|编译错误|运行错误/i.test(current)) return { status: 'failed', text: current };
+        await sleep(500);
       }
-      await sleep(500);
+      return { status: 'timeout', text: '未收到当前关卡本次提交的新评测结果，已停止；旧结果和自动保存提示不会作为通过依据。' };
+    } finally {
+      if (activeSubmission === submission) activeSubmission = null;
     }
-    // 到点还没结论：如果最后读到的是「进行中」，那是**评测超时**（跑太慢），
-    // 与「读到了看不懂的终态」（unknown）要分开——两者处理方式完全不同。
-    const wasRunning = Boolean(text) && EVAL_RUNNING_PATTERN.test(text);
-    return { status: wasRunning ? 'timeout' : (text ? 'unknown' : 'timeout'), text };
   }
 
   /** 等 URL 路径变化（点了「下一关」之后用它确认真的动了）。 */
@@ -2289,7 +2592,6 @@
       host.open = function patchedOpen(url) {
         if (url) {
           intercepted = String(url);
-          state.lastPopupUrl = intercepted;
           host.location.href = intercepted;
         }
         return host;
@@ -2333,21 +2635,21 @@
   /**
    * 作答当前这一关的**共同内核**：填答案 → 点提交 → 等结论 →（通过就）回传答案。
    *
-   * 曾经「手动单关」与教学队列各写了一份，逻辑 90% 相同，改一边忘一边——
-   * "点到自己的面板按钮"那个 bug 就是这么被放大成「两条流程抢同一个页面」的。
-   * 现在只剩教学队列一条流程（手动单关已删），差异全部收进 options：
-   *  - allowEditorFallback：没有本地答案时，是否拿编辑器当前内容兜底提交
-   *  - allowReplay：找不到提交按钮时，是否重放录制到的接口
-   *
-   * @returns {Promise<{status:'passed'|'failed'|'unknown'|'timeout'|'blocked', text:string}>}
-   *   blocked = 没走到提交（没答案/没编辑器/没按钮），调用方按自己的方式停下并说明。
+   * @returns {Promise<{status:'passed'|'failed'|'unknown'|'timeout'|'blocked'|'stopped'|'skipped', text:string}>}
+   *   blocked = 没走到提交（没答案/没编辑器/没按钮）。
    */
-  async function answerCurrentLevel({ answer = null, allowEditorFallback = false, allowReplay = false } = {}) {
+  async function answerCurrentLevel({ answer = null, shouldContinue = () => true } = {}) {
+    const identifier = currentLevelId();
+    const active = () => !state.stopRequested && shouldContinue() && currentLevelId() === identifier;
+    const stopped = () => ({ status: 'stopped', text: '作答已停止或页面关卡已变化' });
+    if (!active()) return stopped();
+    if (currentTask() && currentTask().virtual) return { status: 'skipped', text: '当前是虚拟机题，篡改猴不处理，已跳过' };
     let answerText = '';
 
     // ① 填答案
     if (answer && answer.kind === 'choice') {
-      const picked = await answerChoiceLevel(answer.map);
+      const picked = await answerChoiceLevel(answer.map, active);
+      if (!active()) return stopped();
       if (!picked.length) {
         // 具体原因（分组数对不上、单选给了多字母…）已经由 answerChoiceLevel 打到日志里
         return { status: 'blocked', text: '没有成功勾选任何题目（原因见上面的日志）' };
@@ -2362,48 +2664,40 @@
         return { status: 'blocked', unusableAnswer: true, text: '答案里没有代码内容' };
       }
       // 等编辑器挂载：Monaco 是异步插进 DOM 的，进页面就查会误判成"没有编辑器"
-      const editor = await waitForCodeEditor();
+      const editor = await waitForCodeEditor(8000, active);
+      if (!active()) return stopped();
       if (!editor) {
         return { status: 'blocked', text: `页面上找不到代码编辑器（等了 8 秒也没有。现场：${describeEditorScene()}）` };
       }
       editor.write(answerText);
       log(`已把答案写入 ${editor.kind} 编辑器（${answerText.length} 字符）`, 'ok');
-    } else if (allowEditorFallback) {
-      const editor = await waitForCodeEditor(3000);
-      if (!editor) {
-        return { status: 'blocked', text: `没有本地答案，页面上也没有代码编辑器（现场：${describeEditorScene()}）` };
-      }
-      answerText = editor.read();
-      log('答案库里没有这一关，使用编辑器当前内容提交', 'warn');
     } else {
       // 没本地答案也是「答案不可用」，同样按缺答案跳过（调用方负责记账）
       return { status: 'blocked', unusableAnswer: true, text: '没有本地答案' };
     }
 
-    // ② 提交：优先点页面按钮（走页面自己的逻辑，最稳）；没有按钮再重放录制到的接口。
-    let inlineResult = null;
-    const submitButton = findButton(SUBMIT_PATTERNS);
-    if (submitButton) {
-      await settleBeforeSubmit();
-      log(`点击页面按钮「${buttonLabel(submitButton)}」`);
-      submitButton.click();
-    } else if (allowReplay && state.templates.length) {
-      const template = state.templates.find((item) => /submit|evaluate|answer|commit|code/i.test(item.url)) || state.templates[0];
-      log(`页面上没有提交按钮，改为重放录制接口：${template.key}`, 'warn');
-      const result = await replayTemplate(template, answerText);
-      inlineResult = { status: looksPassed(result.text) ? 'passed' : 'unknown', text: result.text };
-      log(`提交响应 HTTP ${result.status}：${snippet(result.text, 160)}`, inlineResult.status === 'passed' ? 'ok' : 'warn');
-    } else {
+    // ② 编辑同步的 2 秒和平台的评测冷却分别等待；每轮重新定位当前页面按钮。
+    await settleBeforeSubmit();
+    if (!active()) return stopped();
+    const ready = await waitForSubmitButton(active);
+    if (!active() || ready.status === 'stopped') return stopped();
+    const submitButton = ready.button;
+    if (!submitButton) {
       const candidates = describeButtons();
       return {
         status: 'blocked',
-        text: '页面上找不到提交按钮'
+        text: ready.text || '页面上找不到提交按钮'
           + (candidates.length ? `。当前页面可见的按钮：${candidates.join(' / ')}` : '（连按钮都没扫到：页面可能还在加载，或内容在 iframe 里）')
       };
     }
+    const submission = beginSubmissionAttempt(answer.kind);
+    log(`点击页面按钮「${buttonLabel(submitButton)}」`);
+    try { submitButton.click(); }
+    catch (error) { if (activeSubmission === submission) activeSubmission = null; throw error; }
 
-    // ③ 等真实结论（拿不到「通过」就由调用方决定停不停）
-    const outcome = inlineResult || (await waitForSubmitResult());
+    // ③ 已提交则等待真实结论；停止请求会阻止后续导航。
+    const outcome = await waitForSubmitResult(undefined, submission, active);
+    if (!active()) return stopped();
     if (outcome.status === 'passed') {
       // 通过后把这一关的答案回传控制台落盘（写进 exports/answers/ 的规范文件）。
       // 实验得先被抓取过，否则控制台会明确说明原因，不会猜目录。
@@ -2422,23 +2716,13 @@
   }
 
 
-  /** 请求停止连续作答（当前这一关做完就停）。 */
-  /**
-   * 停止：同时管两条链路。
-   *
-   * - 手动流程（一键作答并提交）：置 `stopRequested`，当前这一关做完就停。
-   * - 教学课程队列：直接停队列（它每关是一次整页跳转，不停就会一直往下跑）。
-   * 之前只置标志、没人读（删「连续作答」时把唯一读取点删掉了），按钮是死的。
-   */
+  /** 立即停止队列；已发出的评测继续等待结果，但不再提交或跳转。 */
   function requestStop() {
+    state.stopRequested = true;
     const queue = readTeachQueue();
-    const queueRunning = Boolean(queue && queue.running);
-    if (queueRunning) requestTeachStop();
-    if (state.busy) {
-      state.stopRequested = true;
-      log('已请求停止：当前这一关处理完就停', 'warn');
-    }
-    if (!queueRunning && !state.busy) log('当前没有在作答', 'warn');
+    if (queue && queue.running) requestTeachStop();
+    else if (state.busy) log('已停止准备任务', 'warn');
+    else log('当前没有在作答', 'warn');
   }
 
   /* -------------------------------------------------------------- 教学课程面板 */
@@ -2495,7 +2779,7 @@
     // 课堂实验拿不到进度（progressKnown === false）→ 只报总关数。
     if (experiment.progressKnown === false) return `${experiment.name}（${experiment.challenges} 关）`;
     const parts = [`${experiment.name}（${experiment.finished}/${experiment.challenges}）`];
-    if (experiment.jupyter) parts.push('虚拟机');
+    if (experiment.jupyter) parts.push('Notebook（脚本跳过）');
     return parts.join(' ');
   }
 
@@ -2807,7 +3091,7 @@
             reject(new Error('控制台拒绝：地址里的 token 不对'));
             return;
           }
-          if (!payload || !payload.ok) {
+          if (response.status < 200 || response.status >= 300 || !payload || !payload.ok) {
             reject(new Error((payload && payload.error) || `HTTP ${response.status}`));
             return;
           }
@@ -2882,6 +3166,7 @@
 
   /** 进入指定课程实验：把 handoff 写好再跳转，落地由 maybeContinueTeachQueue 接手。 */
   function enterTeachExperiment(queue) {
+    if (!queueCanContinue(queue)) return;
     const experiment = queue.experiments[queue.experimentIndex];
     if (!experiment) {
       finishTeachQueue();
@@ -2896,7 +3181,7 @@
     queue.startHops = 0;
     queue.hopTrail = [];
     queue.handoffAt = Date.now();
-    writeTeachQueue(queue);
+    if (!writeTeachQueue(queue)) return;
     location.href = `https://www.educoder.net/shixuns/${experiment.identifier}/challenges`;
   }
 
@@ -2931,9 +3216,9 @@
       log(`直接跳到第 ${firstPosition} 关（${targetId}），不再逐关回退`);
       queue.startHops = 0;
       queue.hopTrail = [];
-      queue.expected = { identifier: targetId, position: 0 };
+      queue.expected = { identifier: targetId, position: firstPosition, url: urlForLevelIdentifier(targetId) };
       queue.handoffAt = Date.now();
-      writeTeachQueue(queue);
+      if (!writeTeachQueue(queue)) return;
       location.href = urlForLevelIdentifier(targetId);
       return false;
     }
@@ -2956,9 +3241,9 @@
     log(`当前不在第 1 关，沿 prev_game 回退：${previous}`);
     queue.startHops = (queue.startHops || 0) + 1;
     queue.hopTrail = [...trail, previous].slice(-6);
-    queue.expected = { identifier: previous, position: 0 };
+    queue.expected = { identifier: previous, position: 0, url: urlForLevelIdentifier(previous) };
     queue.handoffAt = Date.now();
-    writeTeachQueue(queue);
+    if (!writeTeachQueue(queue)) return;
     location.href = urlForLevelIdentifier(previous);
     return false;
   }
@@ -2968,7 +3253,7 @@
     // 关卡数据是异步拉的，进页面立刻查常常查不到——先等一会儿，别急着停队。
     // 与 maybeContinueTeachQueue 共用 ensureLevelData（等 → 补足 10 秒间隔 → 刷新重试）。
     const ready = await ensureLevelData(queue);
-    if (ready.reloading) return;
+    if (!queueCanContinue(queue) || ready.reloading) return;
     if (!ready.task) {
       stopTeachQueue(
         `等了 ${Number(state.levelWaitSeconds) || 60} 秒并刷新重试 2 次，还是没读到这一关的关卡数据`
@@ -2990,8 +3275,10 @@
     if (queue.activeTabId !== TAB_ID) {
       queue.activeTabId = TAB_ID;
       queue.activeTabAt = Date.now();
-      writeTeachQueue(queue);
     }
+    // expected 同时保存当前断点；作答失败、用户停止或刷新后都能直达本关。
+    queue.expected = { identifier: task.id, position, url: location.href };
+    if (!writeTeachQueue(queue)) return;
     // 供 answerKeyForCurrentLevel 兜底：平台换了关卡标识时按「实验名__关卡名」匹配
     state.levelHint = { experimentName: experiment ? experiment.name : '', levelName };
 
@@ -3000,16 +3287,19 @@
     if (shouldBacktrack(queue)) {
       if (!(await goToChainStart(queue))) return; // 已发起回退跳转，等下一轮 boot 接力
       queue.needChainStart = false;
-      writeTeachQueue(queue);
+      if (!writeTeachQueue(queue)) return;
     }
 
     log(`关卡上下文：${currentLevelId()}｜第${position || '?'}关｜prev=${task.prevGame || '无'}｜next=${task.nextGame || '无'}｜已通过=${task.passed ? '是' : '否'}`, 'info');
 
     const selected = experiment ? experiment.positions.includes(position) : true;
-    // 编辑器（Monaco）是**异步挂载**的：进页面立刻查会查不到，于是代码题被判成
-    // 「没有编辑器也没有选项」→ 当成虚拟机题跳过（实测就这么漏做的）。
-    // 判定前先等一小会儿；真虚拟机题只多花这点时间，代价可接受。
-    const editor = await waitForCodeEditor(2500);
+    if (task.virtual) {
+      log(`${label}：虚拟机题，篡改猴不处理，已跳过`);
+      return advanceTeachQueue(queue);
+    }
+    // Monaco 异步挂载；没有编辑器不能据此认定是虚拟机题并跳过。
+    const editor = await waitForCodeEditor(2500, () => queueCanContinue(queue));
+    if (!queueCanContinue(queue)) return;
     const hasChoice = Boolean(document.querySelector('input[type="radio"], input[type="checkbox"]'));
     // 队列路径同样要核对班级：对不上就停队，绝不给别班的关卡填答案。
     const resolved = resolveAnswerForCurrentLevel();
@@ -3027,16 +3317,13 @@
       hasAnswer: Boolean(parsedAnswer)
     });
 
-    queue.expected = { identifier: '', position: 0 };
-    writeTeachQueue(queue);
-
     if (action === 'unselected') {
       log(`${label}：未选中，路过`);
       return advanceTeachQueue(queue);
     }
-    if (action === 'vm') {
-      log(`${label}：没有编辑器也没有选项（虚拟机题？），跳过。现场：${describeEditorScene()}`, 'warn');
-      return advanceTeachQueue(queue);
+    if (action === 'unsupported') {
+      stopTeachQueue(`${label}：未识别到代码编辑器或选择题，已停止。现场：${describeEditorScene()}`, 'warn');
+      return;
     }
     if (action === 'passed') {
       log(`${label}：已通过，跳过`, 'ok');
@@ -3065,8 +3352,9 @@
       }
     }
 
-    // 作答：与手动单关**共用同一个内核**；这里不做「编辑器内容兜底」——没答案就上报缺答案。
-    const outcome = await answerCurrentLevel({ answer: parsedAnswer });
+    // 仅提交答案库中属于当前关卡的答案；没有答案则上报缺答案。
+    const outcome = await answerCurrentLevel({ answer: parsedAnswer, shouldContinue: () => queueCanContinue(queue) });
+    if (!queueCanContinue(queue) || outcome.status === 'stopped') return;
     if (outcome.status === 'blocked') {
       // **答案本身不可用**（库里这一关只存了语言没存代码、或压根没条目）→ 按缺答案处理：
       // 记账 + 跳过。与「答案对不上这一关」同一条原则——一关的残缺答案不该拖垮整条队列
@@ -3098,6 +3386,7 @@
 
   /** 推进：能点「下一关」就点；本实验选中的都做完了或链到头就换下一个实验。 */
   async function advanceTeachQueue(queue) {
+    if (!queueCanContinue(queue)) return;
     const task = currentTask();
     const experiment = queue.mode === 'course' ? queue.experiments[queue.experimentIndex] : null;
     const position = Number(task && task.levelPosition) || 0;
@@ -3107,6 +3396,24 @@
       if (position && !queue.visited.includes(position)) queue.visited.push(position);
       const done = experiment.positions.every((item) => queue.visited.includes(item));
       if (done || !task || !task.nextGame) {
+        const remaining = experiment.positions.filter((item) => !queue.visited.includes(item));
+        // 没做完就要走（链尾没有下一关 / 关卡数据丢了）：关卡清单里带着每关的标识，
+        // **直接跳到第一个没走的关卡**——不能把剩余关卡静默丢进下一个实验。
+        const jumpId = remaining.length && experiment.levelIdentifiers
+          ? experiment.levelIdentifiers[remaining[0]]
+          : '';
+        if (!done && jumpId) {
+          log(`${experiment.name}：还有 ${remaining.length} 关未走`
+            + `（${!task ? '关卡数据已不在上下文' : '平台说没有下一关'}），按关卡清单直达第 ${remaining[0]} 关`, 'warn');
+          queue.expected = { identifier: jumpId, position: remaining[0], url: urlForLevelIdentifier(jumpId) };
+          queue.handoffAt = Date.now();
+          if (!writeTeachQueue(queue)) return;
+          location.href = urlForLevelIdentifier(jumpId);
+          return;
+        }
+        if (!done) {
+          log(`${experiment.name}：还有 ${remaining.length} 关未走，但关卡清单里拿不到它们的标识，跳到下一个实验`, 'warn');
+        }
         queue.experimentIndex += 1;
         queue.visited = [];
         return enterTeachExperiment(queue);
@@ -3118,7 +3425,7 @@
         return;
       }
       queue.handoffAt = Date.now();
-      writeTeachQueue(queue);
+      if (!writeTeachQueue(queue)) return;
       log(`按清单再答：前往下一关（${queue.index + 1}/${queue.items.length}）`);
       location.href = queue.items[queue.index].url;
       return;
@@ -3126,12 +3433,32 @@
 
     const nextButton = findButton(NEXT_LEVEL_PATTERNS);
     if (!nextButton) {
-      queue.experimentIndex += 1;
-      queue.visited = [];
-      return enterTeachExperiment(queue);
+      // 按钮找不到**绝不能**静默跳实验：剩余选中关会被无声丢弃（未通过的路过关上
+      // 本来就没有「下一关」按钮，这里恰恰是常走的路）。关卡数据里有 next_game——
+      // 直接走过去，与「直达链首」同一条已验证的路；真拿不到才停队并说明原因。
+      const nextId = task && task.nextGame ? String(task.nextGame) : '';
+      const target = nextId && urlForLevelIdentifier(nextId);
+      if (target) {
+        log(`「下一关」按钮没找到，改用关卡数据的 next_game 直达：${nextId}`, 'warn');
+        queue.expected = { identifier: nextId, position: 0, url: target };
+        queue.handoffAt = Date.now();
+        if (!writeTeachQueue(queue)) return;
+        location.href = target;
+        return;
+      }
+      stopTeachQueue(
+        `「下一关」按钮没找到，关卡数据里也没有可用的 next_game。可见按钮：`
+          + `${describeButtons().slice(0, 8).join(' / ') || '(没扫到)'}`,
+        'warn'
+      );
+      return;
+    }
+    // 先保存下一关，再点按钮；跳转过程中停止或刷新也不会丢失目标。
+    if (task && task.nextGame) {
+      queue.expected = { identifier: task.nextGame, position: 0, url: urlForLevelIdentifier(task.nextGame) };
     }
     queue.handoffAt = Date.now();
-    writeTeachQueue(queue);
+    if (!writeTeachQueue(queue)) return;
     log('进入下一关');
     const before = location.pathname;
     // 强制在当前标签页跳转：头歌的「下一关」会开新标签页——每关一个，上百关就是上百个标签页
@@ -3141,6 +3468,7 @@
     }
     // 点了「下一关」页面却没跳转：**绝不能静默卡住**——实测就是这么"断"的：
     // 日志停在「进入下一关」之后再无输出，也没有「已停」。重试一次，还不行就明确停队列。
+    if (!queueCanContinue(queue)) return;
     const retryButton = findButton(NEXT_LEVEL_PATTERNS);
     const retryPopped = retryButton ? clickStayingInThisTab(retryButton) : '';
     if (retryButton) {
@@ -3148,6 +3476,7 @@
       if (await waitForPathChange(before, 5000)) return handoffToNextLevel(queue);
     }
     // 两次都没动：控件可能点不动，但目标地址一般是确定的 —— 自己走过去。
+    if (!queueCanContinue(queue)) return;
     const target = clickTargetOf(retryButton || nextButton, retryPopped || popped);
     if (target && target !== location.href) {
       log(`「下一关」点了没反应，改用它的目标地址直接跳转：${target}`, 'warn');
@@ -3164,11 +3493,12 @@
   /** 点完「下一关」且页面确实跳转后的交接：清掉回退计数，再接力跑下一关。 */
   async function handoffToNextLevel(queue) {
     await sleep(1500);
+    if (!queueCanContinue(queue)) return;
     // 进入正常推进阶段：清掉回退链首的计数，避免影响下一轮。
     queue.startHops = 0;
     queue.hopTrail = [];
     queue.needChainStart = false;
-    writeTeachQueue(queue);
+    if (!writeTeachQueue(queue)) return;
     // 接力就是「再进一次 maybeContinueTeachQueue」，先放行重入标志，别被自己的防重入挡掉。
     teachQueueChecking = false;
     await maybeContinueTeachQueue();
@@ -3188,24 +3518,101 @@
     if (!button) return;
     const queue = readTeachQueue();
     const running = Boolean(queue && queue.running);
-    button.textContent = queue && queue.stoppedReason ? '继续答题（跳过已通过）' : '一键答题（选中）';
+    const stopped = Boolean(queue && queue.stoppedReason);
+    button.textContent = stopped ? '继续答题（跳过已通过）' : '一键答题（选中）';
 
     // 没选实验、也没有在跑的队列 → 点了只会弹一句「先点读取课程实验」。
     // 能做的事才让点，别让按钮亮着骗人（截图里就是这样：课程都没选，它还是绿的）。
+    // 停过的队列例外：实验清单存在队列里，刷新后没重选也能直接继续（resumeStoppedQueue）。
     const teach = teachSelection();
     const picked = Object.keys(teach.selectedExperiments || {})
       .filter((key) => teach.selectedExperiments[key]).length;
-    button.disabled = !running && (state.busy || !picked);
+    button.disabled = running || state.busy || (!picked && !stopped);
     button.title = button.disabled && !running
       ? '先在上面选好实验（和关卡）'
-      : '按当前选择开始/继续答题';
+      : stopped && !picked
+        ? '按上次停下的位置继续，无需重新选课/实验'
+        : '按当前选择开始/继续答题';
+  }
+
+  /** 读取断点；旧存档没有地址时，利用当前关卡或已访问序号定位，避免重新走链首。 */
+  function resumeLevelForQueue(queue) {
+    const experiment = queue.experiments[queue.experimentIndex];
+    if (!experiment) return null;
+    const identifiers = experiment.levelIdentifiers || {};
+    const visited = Array.isArray(queue.visited) ? queue.visited : [];
+    let target = queue.expected;
+    if (!target || !target.identifier) {
+      const task = currentTask();
+      const position = Number(task && task.levelPosition) || 0;
+      const belongs = task && (identifiers[position] === task.id
+        || (task.experimentName && task.experimentName === experiment.name));
+      if (belongs && !visited.includes(position)) {
+        target = { identifier: task.id, position, url: location.href };
+      } else {
+        const remaining = experiment.positions.find((item) => !visited.includes(item));
+        target = { identifier: identifiers[remaining], position: remaining };
+      }
+    }
+    if (!target.identifier) return null;
+    return {
+      identifier: target.identifier,
+      position: Number(target.position) || Number(Object.keys(identifiers).find((key) => identifiers[key] === target.identifier)) || 0,
+      url: target.url || urlForLevelIdentifier(target.identifier)
+        || `https://www.educoder.net/tasks/${encodeURIComponent(target.identifier)}`
+    };
+  }
+
+  /** 按保存的关卡直达续跑；刷新后不要求重新读取面板，也不重新进入实验或回退链首。 */
+  function resumeStoppedQueue(saved) {
+    const queue = {
+      ...saved,
+      running: true,
+      stoppedReason: '',
+      // 新一轮运行让停止前仍在等待的异步副本失效。
+      startedAt: new Date().toISOString(),
+      needChainStart: false,
+      startHops: 0,
+      hopTrail: [],
+      handoffAt: Date.now()
+    };
+    queue.experimentIndex = Math.min(
+      Math.max(Number(queue.experimentIndex) || 0, 0),
+      Math.max(queue.experiments.length - 1, 0)
+    );
+    const target = resumeLevelForQueue(queue);
+    if (!target) {
+      log('存档没有可定位的关卡。请打开上次中断的关卡后再点继续答题，或清空答题进度重新选择范围。', 'warn');
+      return;
+    }
+    queue.expected = target;
+    state.stopRequested = false;
+    writeTeachQueue(queue, true);
+    const experiment = queue.experiments[queue.experimentIndex];
+    const teach = teachSelection();
+    const level = target.position ? `第 ${target.position} 关` : `关卡 ${target.identifier}`;
+    teach.status = `继续答题：${experiment.name} ${level}`;
+    renderTeach();
+    log(`继续答题：直达「${experiment.name}」${level}（${target.identifier}），已通过的关卡自动跳过`, 'ok');
+    location.href = target.url;
   }
 
   async function startTeachRun() {
     const teach = teachSelection();
-    if (state.busy) {
+    if (state.busy || teachQueueChecking || (readTeachQueue() || {}).running) {
       log('已有任务在执行（等它结束或点停止）', 'warn');
       return;
+    }
+    const selectedIds = Object.keys(teach.selectedExperiments).filter((key) => teach.selectedExperiments[key]);
+    // 常规路径需要「选了课、读了实验、勾了实验」三样齐全才能重建队列。
+    const canRebuild = Boolean(teach.courseValue && teach.experiments.length && selectedIds.length);
+    // 停过的队列可以直接续：实验清单（identifier/关卡序号/关卡名）都存在队列里，
+    // 而 GM 只恢复勾选状态、不恢复课程/实验列表——页面一刷新列表就空了。
+    // 不能因此逼用户重新选课、重新读实验（「继续答题」还要重新选课就是这个 bug）。
+    const stoppedQueue = readTeachQueue();
+    if (!canRebuild && stoppedQueue && stoppedQueue.mode === 'course' && stoppedQueue.stoppedReason
+      && Array.isArray(stoppedQueue.experiments) && stoppedQueue.experiments.length) {
+      return resumeStoppedQueue(stoppedQueue);
     }
     if (!teach.courseValue) {
       log('先点「刷新课程」', 'warn');
@@ -3215,113 +3622,126 @@
       log('先点「读取课程实验」', 'warn');
       return;
     }
-    const selectedIds = Object.keys(teach.selectedExperiments).filter((key) => teach.selectedExperiments[key]);
     if (!selectedIds.length) {
       log('至少勾选一个课程实验', 'warn');
       return;
     }
 
     // 关卡列表以「现读」为准（面板里的可能过期），顺便拿到上报要用的关卡名。
-    teach.busy = true;
-    teach.status = '读取关卡…';
-    renderTeach();
-    const levelsByExperiment = {};
-    for (const experiment of teach.experiments) {
-      if (!teach.selectedExperiments[experiment.identifier] || experiment.jupyter) continue;
-      try {
-        levelsByExperiment[experiment.identifier] = await loadTeachChallenges(experiment.identifier);
-      } catch (error) {
-        teach.busy = false;
-        teach.status = '关卡列表读取失败';
+    state.busy = true;
+    state.stopRequested = false;
+    try {
+      teach.busy = true;
+      teach.status = '读取关卡…';
+      renderTeach();
+      const levelsByExperiment = {};
+      for (const experiment of teach.experiments) {
+        if (!teach.selectedExperiments[experiment.identifier] || experiment.jupyter) continue;
+        try {
+          levelsByExperiment[experiment.identifier] = await loadTeachChallenges(experiment.identifier);
+          if (state.stopRequested) return;
+        } catch (error) {
+          teach.busy = false;
+          teach.status = '关卡列表读取失败';
+          renderTeach();
+          log(`关卡列表读取失败（${experiment.name}）：${error.message}`, 'error');
+          return;
+        }
+      }
+      teach.levelsByExperiment = levelsByExperiment;
+      teach.busy = false;
+
+      const built = buildTeachQueue(teach.experiments, { experiments: selectedIds, levels: teach.selectedLevels }, levelsByExperiment);
+      if (built.skippedJupyter.length) log(`Notebook 属于虚拟机环境，篡改猴已跳过：${built.skippedJupyter.join('、')}`, 'warn');
+      if (!built.total) {
+        teach.status = '没有可作答的关卡';
         renderTeach();
-        log(`关卡列表读取失败（${experiment.name}）：${error.message}`, 'error');
+        log('没有可作答的关卡（是不是全被跳过/全没勾？）', 'warn');
         return;
       }
-    }
-    teach.levelsByExperiment = levelsByExperiment;
-    teach.busy = false;
 
-    const built = buildTeachQueue(teach.experiments, { experiments: selectedIds, levels: teach.selectedLevels }, levelsByExperiment);
-    if (built.skippedJupyter.length) log(`虚拟机实验已跳过：${built.skippedJupyter.join('、')}`, 'warn');
-    if (!built.total) {
-      teach.status = '没有可作答的关卡';
+      const course = teach.courses.find((item) => courseValueOf(item) === teach.courseValue);
+      // 面板列表已经恢复时，也必须走同一条断点续跑路径。
+      const saved = readTeachQueue();
+      const savedIds = saved && saved.mode === 'course' && Array.isArray(saved.experiments)
+        ? saved.experiments.map((item) => item.identifier).join(',')
+        : '';
+      const resume = Boolean(savedIds && savedIds === built.experiments.map((item) => item.identifier).join(',') && saved.stoppedReason);
+      if (resume) return resumeStoppedQueue({ ...saved, experiments: built.experiments });
+
+      const queue = {
+        mode: 'course',
+        courseName: course ? course.name : '',
+        experiments: built.experiments,
+        experimentIndex: 0,
+        visited: [],
+        expected: { identifier: '', position: 0 },
+        running: true,
+        handoffAt: Date.now(),
+        startedAt: new Date().toISOString()
+      };
+      state.stopRequested = false;
+      writeTeachQueue(queue, true);
+      teach.status = `一键答题：0/${built.total}`;
       renderTeach();
-      log('没有可作答的关卡（是不是全被跳过/全没勾？）', 'warn');
-      return;
-    }
-
-    const course = teach.courses.find((item) => courseValueOf(item) === teach.courseValue);
-    // 存档续跑：上次**停下来**（stoppedReason 有值）的队列，如果和这次选的是同一批实验，
-    // 就接着上次的实验序号与已访问关卡跑——不必从第一个实验重来（重来虽也不会错，
-    // 但每个已通过的关卡都要再走一遍页面，整门课跑下来很费时间）。
-    const saved = readTeachQueue();
-    const savedIds = saved && saved.mode === 'course' && Array.isArray(saved.experiments)
-      ? saved.experiments.map((item) => item.identifier).join(',')
-      : '';
-    const resume = Boolean(savedIds && savedIds === built.experiments.map((item) => item.identifier).join(',') && saved.stoppedReason);
-
-    const queue = {
-      mode: 'course',
-      courseName: course ? course.name : '',
-      experiments: built.experiments,
-      experimentIndex: resume ? Math.min(Math.max(Number(saved.experimentIndex) || 0, 0), built.experiments.length - 1) : 0,
-      visited: resume && Array.isArray(saved.visited) ? saved.visited : [],
-      expected: { identifier: '', position: 0 },
-      running: true,
-      handoffAt: Date.now(),
-      startedAt: new Date().toISOString()
-    };
-    writeTeachQueue(queue);
-    teach.status = `一键答题：0/${built.total}`;
-    renderTeach();
-    if (resume) {
-      log(`续跑：从第 ${queue.experimentIndex + 1}/${built.experiments.length} 个实验接着跑（已通过的关卡自动跳过）`, 'ok');
-    } else {
       log(`一键答题开始：${built.experiments.length} 个实验 / ${built.total} 关`, 'ok');
+      enterTeachExperiment(queue);
+    } finally {
+      state.busy = false;
+      teach.busy = false;
+      renderTeach();
     }
-    enterTeachExperiment(queue);
   }
 
   /** 「按清单再答」：直接照缺答案清单里的 URL 逐条跑。 */
   async function startMissingRun() {
-    if (state.busy) {
+    if (state.busy || teachQueueChecking || (readTeachQueue() || {}).running) {
       log('已有任务在执行（等它结束或点停止）', 'warn');
       return;
     }
-    let items = [];
+    state.busy = true;
+    state.stopRequested = false;
     try {
-      items = await fetchTeachMissing();
-    } catch (error) {
-      log(`读取缺答案清单失败：${error.message}`, 'error');
-      return;
+      let items = [];
+      try {
+        items = await fetchTeachMissing();
+        if (state.stopRequested) return;
+      } catch (error) {
+        log(`读取缺答案清单失败：${error.message}`, 'error');
+        return;
+      }
+      const usable = items.filter((item) => item.url);
+      if (!usable.length) {
+        log(items.length ? '清单里的条目没有关卡 URL（旧数据？），无法直达' : '缺答案清单是空的', 'warn');
+        return;
+      }
+      const queue = {
+        mode: 'missing',
+        items: usable.map((item) => ({
+          id: item.id,
+          course: item.course,
+          experiment: item.experiment,
+          level: item.level,
+          level_id: item.level_id,
+          identifier: item.identifier,
+          url: item.url
+        })),
+        index: 0,
+        running: true,
+        handoffAt: Date.now(),
+        startedAt: new Date().toISOString()
+      };
+      state.stopRequested = false;
+      writeTeachQueue(queue, true);
+      const teach = teachSelection();
+      teach.status = `按清单再答：0/${queue.items.length}`;
+      renderTeach();
+      log(`按清单再答：共 ${queue.items.length} 关`, 'ok');
+      location.href = queue.items[0].url;
+    } finally {
+      state.busy = false;
+      renderTeach();
     }
-    const usable = items.filter((item) => item.url);
-    if (!usable.length) {
-      log(items.length ? '清单里的条目没有关卡 URL（旧数据？），无法直达' : '缺答案清单是空的', 'warn');
-      return;
-    }
-    const queue = {
-      mode: 'missing',
-      items: usable.map((item) => ({
-        id: item.id,
-        course: item.course,
-        experiment: item.experiment,
-        level: item.level,
-        level_id: item.level_id,
-        identifier: item.identifier,
-        url: item.url
-      })),
-      index: 0,
-      running: true,
-      handoffAt: Date.now(),
-      startedAt: new Date().toISOString()
-    };
-    writeTeachQueue(queue);
-    const teach = teachSelection();
-    teach.status = `按清单再答：0/${queue.items.length}`;
-    renderTeach();
-    log(`按清单再答：共 ${queue.items.length} 关`, 'ok');
-    location.href = queue.items[0].url;
   }
 
   /* ------------------------------------------------------------------- 面板 */
@@ -3456,20 +3876,6 @@
     stopButton.disabled = !state.busy && !(queue && queue.running);
   }
 
-  /** 一个开关：状态写进 GM 存储，刷新页面后保留。 */
-  function toggleOption(label, key) {
-    const input = el('input', { type: 'checkbox' });
-    input.checked = Boolean(state[key]);
-    input.addEventListener('change', () => {
-      state[key] = input.checked;
-      GM_setValue(KEYS[key], input.checked);
-      log(`${label}：${input.checked ? '开' : '关'}`);
-    });
-    const wrap = el('label', { className: 'eas-opt' });
-    wrap.append(input, el('span', { textContent: label }));
-    return wrap;
-  }
-
   /** 数字输入选项（如「评测最多等几秒」）。 */
   function numberOption(label, key, { min, max, fallback }) {
     const input = el('input', {
@@ -3574,6 +3980,14 @@
         })
       ]),
       el('div', { className: 'eas-body' }, [
+        el('div', { className: 'eas-teach-row' }, [
+          el('button', {
+            id: 'eas-paste-unlock',
+            textContent: pasteUnlock.enabled ? '粘贴解锁：开' : '粘贴解锁：关',
+            title: '恢复实验编辑器的 Ctrl/Cmd+V、Shift+Insert 和右键粘贴',
+            onclick: togglePasteUnlock
+          })
+        ]),
         // ---- 课堂：读课程 → 选实验 → 选关卡，**一条流水线** ----
         // 三步是顺序的，同一时刻只有一步是活的。原来三块竖着堆，前两块做完就只剩占地方；
         // 现在一条步骤指示 + 单步内容，与控制台的「提取」面板同构。
@@ -3638,7 +4052,7 @@
           // 上一轮我按「一次性配置」把它撤了，是错的判断。
           el('button', { id: 'eas-connect', textContent: '连接本地控制台', onclick: setLocalAddress }),
           el('button', { id: 'eas-pull', textContent: '从本地加答案', onclick: loadAnswersFromLocal }),
-          el('button', { id: 'eas-export-answers', textContent: '导出本实验全部答案', onclick: exportExperimentAnswers }),
+          el('button', { id: 'eas-export-answers', textContent: '回捞本实验答案', onclick: exportExperimentAnswers }),
           el('button', { id: 'eas-export-all', textContent: '导出全部答案', onclick: exportAllAnswers }),
           el('button', { id: 'eas-export-logs', textContent: '导出日志到本地', onclick: exportLogs })
         ]),
@@ -3671,13 +4085,13 @@
   }
 
   /**
-   * 导入答案文件。支持两种形态：
+   * 导入答案文件。支持三种形态：
    *
-   * ① **控制台的完整导出**（`GET /api/answers` 的响应）：`{ answers, levelIds, blueprints }`
+   * ① **控制台的完整导出**（`GET /api/answers` 的响应）：`{ answers, levelIds, optionCounts }`
    *    —— 会连关卡映射一起导入，离线也能对上；
-   * ② **答案文件本身**（`exports/answers/xxx.answers.json`）：`{ answers: [{level_id, kind, answer}] }`
-   *    —— **不含关卡映射**。答案按 `L001` 编号存，而关卡页上只有 URL 里的平台标识，
-   *    所以这种文件单独导入是用不上的，这里会明确提示。
+   * ② 班级汇总（version: 2, kind: "class-answers"）或 Agent 的单实验 v2 答案文件；
+   *    task_identifier / identifiers 与课堂、实验身份会一起转成内部索引。
+   * ③ 历史答案数组仍可读取；未带关卡身份时明确提示需要关卡映射。
    */
   /**
    * 把**班级答案文件**（`kind: "class-answers"`，控制台「导出班级答案文件」的产物）
@@ -3693,7 +4107,7 @@
    *   - `titleOnlyIndex['关卡名']`：**只收全局唯一**的关卡名。同名关卡在两个实验里都出现时
    *     绝不能收——那会把答案勾到另一个实验的关卡上。
    */
-  function flattenClassAnswers(doc) {
+  function flattenClassAnswers(doc, { strictIdentity = false } = {}) {
     const answers = {};
     const levelIndex = {};
     const titleIndex = {};
@@ -3707,13 +4121,16 @@
       const classroomCode = String((classroom && classroom.code) || '').trim();
       for (const experiment of (classroom && classroom.experiments) || []) {
         const experimentName = String((experiment && experiment.name) || '').trim();
+        const homeworkId = Number(experiment && experiment.homework_id) || 0;
         const bareName = experimentName.replace(/^\[[^\]]*\]\s*/, '');
         for (const level of (experiment && experiment.levels) || []) {
           const levelId = String((level && level.level_id) || '').trim();
           if (!classroomName || !experimentName || !levelId) continue;
-          const composite = `${classroomName}__${experimentName}__${levelId}`;
+          const composite = strictIdentity
+            ? `${classroomName}（${classroomCode}）__${experimentName}（作业${homeworkId}）__${levelId}`
+            : `${classroomName}__${experimentName}__${levelId}`;
           levels += 1;
-          if (level.answered) answered += 1;
+          if (entryHasAnswer(level)) answered += 1;
           answers[composite] = {
             level_id: levelId,
             title: String(level.title || '').trim(),
@@ -3721,6 +4138,9 @@
             source: level.source,
             verified: level.verified,
             answer: level.answer,
+            homeworkId,
+            task_identifier: String(level.task_identifier || ''),
+            strictIdentity,
             // 与 `/api/answers` 同形的班级上下文：脚本作答前要核对自己填的是哪个班
             course: classroomName,
             classroomName,
@@ -3758,6 +4178,56 @@
     };
   }
 
+  /** 班级汇总与 Agent 的单实验 v2 文件共用同一套身份索引。 */
+  function flattenAnswerImport(doc) {
+    if (doc && doc.kind === 'class-answers') {
+      if (Number(doc.version) > 2) throw new Error(`不支持班级答案版本 ${doc.version}，请更新脚本`);
+      if (!Array.isArray(doc.classrooms)) throw new Error('班级答案缺少 classrooms 数组');
+      return flattenClassAnswers(doc);
+    }
+    if (!doc || !doc.schema_version) return null;
+    if (Number(doc.schema_version) !== 2) throw new Error(`不支持答案版本 ${doc.schema_version}，请更新脚本`);
+    const classroom = doc.classroom || {};
+    const experiment = doc.experiment || {};
+    if (!classroom.name || !classroom.code || !experiment.name || !(Number(experiment.homework_id) > 0) || !Array.isArray(doc.answers)) {
+      throw new Error('单实验 v2 答案需要 classroom.name/code、experiment.name/homework_id 和 answers 数组；也可导入班级汇总文件');
+    }
+    if (doc.answers.some((entry) => !entry || !String(entry.task_identifier || '').trim())) {
+      throw new Error('单实验 v2 的每关必须带 task_identifier，不能只按 L001 匹配');
+    }
+    return flattenClassAnswers({ classrooms: [{
+      name: classroom.name,
+      code: classroom.code,
+      experiments: [{ name: experiment.name, homework_id: experiment.homework_id, levels: doc.answers.map((entry) => ({
+        ...entry,
+        identifiers: entry.task_identifier ? [entry.task_identifier] : []
+      })) }]
+    }] }, { strictIdentity: true });
+  }
+
+  /**
+   * 合并「按名匹配」的两级索引（titleIndex / titleOnlyIndex）。
+   *
+   * 为什么**不能直接 spread**：唯一性只在**单份文件内**成立（flatten 按一份文档计数，
+   * 控制台的 titleIds 也只保证它扫描的那批文件全局唯一）。两份文件各自含同名关卡
+   * （不同实验、甚至不同班级）时，spread 会让键静默指向最后导入那份——按名兜底就把
+   * 答案填到**另一个实验的同名关**上，且班级核对拦不住同班级跨实验的错配。
+   * 与控制台同一条原则：按名匹配宁缺毋滥——同一键指向不同关卡时删掉，宁可匹配不上。
+   * 重复导入同一份文件（值相同）不受影响。
+   */
+  function mergeTitleIndexes(base, incoming) {
+    const merged = { ...base };
+    for (const [key, composite] of Object.entries(incoming || {})) {
+      if (merged[key] && merged[key] !== composite) {
+        delete merged[key];
+        log(`关卡名「${key}」在多份答案里指向不同关卡，放弃按名匹配（宁可不匹配也不串答案）`, 'warn');
+        continue;
+      }
+      merged[key] = composite;
+    }
+    return merged;
+  }
+
   function importAnswers() {
     const input = el('input', { type: 'file', accept: '.json,application/json' });
     // **必须挂进 DOM 再点**：不在文档里的 <input type=file> 调 .click() 会被浏览器忽略，
@@ -3782,27 +4252,27 @@
         const fileName = input.files[0].name;
         const parsed = JSON.parse(await input.files[0].text());
 
-        // ① 班级答案文件（`kind: "class-answers"`）：不装控制台时的主要导入格式。
-        if (parsed && parsed.kind === 'class-answers') {
-          const flat = flattenClassAnswers(parsed);
+        // 班级汇总与 Agent 的单实验 v2 文件均包含完整身份信息。
+        const flat = flattenAnswerImport(parsed);
+        if (flat) {
           state.answers = { ...state.answers, ...flat.answers };
           state.levelIndex = { ...state.levelIndex, ...flat.levelIndex };
-          state.titleIndex = { ...state.titleIndex, ...flat.titleIndex };
-          state.titleOnlyIndex = { ...state.titleOnlyIndex, ...flat.titleOnlyIndex };
+          state.titleIndex = mergeTitleIndexes(state.titleIndex, flat.titleIndex);
+          state.titleOnlyIndex = mergeTitleIndexes(state.titleOnlyIndex, flat.titleOnlyIndex);
           GM_setValue(KEYS.answers, state.answers);
           GM_setValue(KEYS.levelIndex, state.levelIndex);
           GM_setValue(KEYS.titleIds, state.titleIndex);
           GM_setValue(KEYS.titleOnlyIds, state.titleOnlyIndex);
           const classLabel = parsed.class
             ? `${parsed.class.grade || ''}${parsed.class.name || ''}`.trim()
-            : '未命名班级';
+            : String((parsed.classroom && parsed.classroom.name) || '未命名班级');
           // 记住班级块：导出时原样写回，来回不失真
           if (parsed.class && typeof parsed.class === 'object') {
             state.classInfo = { grade: String(parsed.class.grade || ''), name: String(parsed.class.name || '') };
             GM_setValue(KEYS.classInfo, state.classInfo);
           }
           log(
-            `班级答案文件已导入（${fileName}）：${classLabel}｜${flat.stats.levels} 关（有答案 ${flat.stats.answered}）`
+            `答案文件已导入（${fileName}）：${classLabel}｜${flat.stats.levels} 关（有答案 ${flat.stats.answered}）`
               + `，关卡标识映射 ${Object.keys(flat.levelIndex).length} 条`
               + `、唯一关卡名 ${flat.stats.uniqueTitles} 个`,
             'ok'
@@ -3831,16 +4301,12 @@
           GM_setValue(KEYS.optionCounts, state.optionCounts);
         }
         if (parsed && parsed.titleIds && typeof parsed.titleIds === 'object') {
-          state.titleIndex = { ...state.titleIndex, ...parsed.titleIds };
+          state.titleIndex = mergeTitleIndexes(state.titleIndex, parsed.titleIds);
           GM_setValue(KEYS.titleIds, state.titleIndex);
         }
         if (parsed && parsed.titleOnlyIds && typeof parsed.titleOnlyIds === 'object') {
-          state.titleOnlyIndex = { ...state.titleOnlyIndex, ...parsed.titleOnlyIds };
+          state.titleOnlyIndex = mergeTitleIndexes(state.titleOnlyIndex, parsed.titleOnlyIds);
           GM_setValue(KEYS.titleOnlyIds, state.titleOnlyIndex);
-        }
-        if (parsed && Array.isArray(parsed.blueprints) && parsed.blueprints.length) {
-          state.templates = parsed.blueprints;
-          GM_setValue(KEYS.templates, state.templates);
         }
         log(
           `答案库已导入（${fileName}）：新增 ${Object.keys(map).length} 关（共 ${Object.keys(state.answers).length} 关）`
@@ -3854,7 +4320,7 @@
             `这份文件没有解析出任何答案（${fileName}）。它的顶层字段是：`
               + `${Object.keys(parsed || {}).slice(0, 12).join(' / ') || '（空）'}。`
               + '需要的是「班级答案文件」（`kind: "class-answers"`，用 npm run build-class-answers 生成）'
-              + '或本地控制台 /api/answers 的响应。',
+              + '、单实验 v2 .answers.json 或本地控制台 /api/answers 的响应。',
             'error'
           );
         } else if (!mapped) {
@@ -3872,30 +4338,11 @@
         cleanup();
       }
     };
-    log('请在弹出的文件框里选一份答案文件（班级答案文件，或控制台 /api/answers 的响应）');
+    log('请选择答案 JSON：班级汇总、单实验 v2 .answers.json，或控制台 /api/answers 响应');
     input.click();
   }
 
-  /**
-   * 从本地控制台拉答案库与提交蓝图。
-   *
-   * `npm run ui` 会在终端打印带 token 的地址（http://127.0.0.1:PORT/?token=xxx），
-   * 把那串 token 粘进「本地地址」输入框即可；之后这里会一次拿到
-   * `exports/课程/实验/answers/*.answers.json` 与 `submit.blueprint.json`。
-   */
-  /**
-   * 「从本地加答案」——**一个入口，两条路**。
-   *
-   * 对用户来说这是同一件事（「把答案弄进来」），原来却拆成两个菜单项
-   * （「从本地控制台拉取答案与蓝图」和「导入答案文件」），还得自己判断属于哪种情况；
-   * 更糟的是没连控制台时点「拉取」只弹一句「还没配本地控制台」就完了，等于死路——
-   * 明明手上就有一份班级答案文件。
-   *
-   * 所以：
-   *   - 配了控制台地址 → 先拉（顺带带回关卡映射、每题选项数、提交蓝图）；
-   *   - 没配 → 直接选文件导入；
-   *   - 配了但连不上（控制台没开 / 端口变了）→ 也退到选文件导入（见 pullFromLocal 的 onerror）。
-   */
+  /** 从已连接的本地控制台加载答案与关卡映射；未连接或连接失败时改用文件导入。 */
   function loadAnswersFromLocal() {
     if (!consoleEndpoint('/api/answers')) {
       log('没连本地控制台：改为从本地文件导入答案（选一份班级答案文件 .json 即可）', 'warn');
@@ -3942,11 +4389,11 @@
           }
           // 「实验名__关卡名」兜底表：平台换关卡标识时靠它匹配（见 answerKeyForCurrentLevel）
           if (payload.titleIds && typeof payload.titleIds === 'object') {
-            state.titleIndex = { ...state.titleIndex, ...payload.titleIds };
+            state.titleIndex = mergeTitleIndexes(state.titleIndex, payload.titleIds);
             GM_setValue(KEYS.titleIds, state.titleIndex);
           }
           if (payload.titleOnlyIds && typeof payload.titleOnlyIds === 'object') {
-            state.titleOnlyIndex = { ...state.titleOnlyIndex, ...payload.titleOnlyIds };
+            state.titleOnlyIndex = mergeTitleIndexes(state.titleOnlyIndex, payload.titleOnlyIds);
             GM_setValue(KEYS.titleOnlyIds, state.titleOnlyIndex);
           }
           // 每道题的选项个数：选择题分组靠它，比猜 class 名可靠
@@ -3954,13 +4401,9 @@
             state.optionCounts = { ...state.optionCounts, ...payload.optionCounts };
             GM_setValue(KEYS.optionCounts, state.optionCounts);
           }
-          if (Array.isArray(payload.blueprints) && payload.blueprints.length) {
-            state.templates = payload.blueprints;
-            GM_setValue(KEYS.templates, state.templates);
-          }
           const mapped = Object.keys(state.levelIndex).length;
           log(
-            `已拉取答案 ${count} 关、关卡映射 ${mapped} 条、蓝图 ${(payload.blueprints || []).length} 个`
+            `已拉取答案 ${count} 关、关卡映射 ${mapped} 条`
             + `（共扫描 ${(payload.files || []).length} 个文件）`,
             'ok'
           );
@@ -4007,7 +4450,7 @@
 
     state.local = value;
     GM_setValue(KEYS.local, state.local);
-    // 顺手把 token 抽出来存一份：之后拼别的接口（如回传蓝图）时接着用。
+    // 顺手把 token 抽出来存一份：之后加载答案或回传日志时接着用。
     try {
       const url = new URL(state.local);
       const token = url.searchParams.get('token') || '';
@@ -4020,22 +4463,6 @@
     }
     log(`本地控制台地址已保存：${state.local}${state.token ? '' : '（未带 token，接口会返回 403）'}`, 'ok');
     pullFromLocal();
-  }
-
-  /** 把本地已录制的全部蓝图回传给控制台（补录/换机器时用）。 */
-  function pushAllBlueprints() {
-    if (!state.templates.length) {
-      log('本地还没有录制到任何提交接口', 'warn');
-      return;
-    }
-    for (const record of state.templates) pushBlueprint(record);
-    log(`已回传 ${state.templates.length} 个蓝图到控制台`, 'ok');
-  }
-
-  function clearTemplates() {
-    state.templates = [];
-    GM_setValue(KEYS.templates, []);
-    log('已清空录制到的提交接口');
   }
 
   /**
@@ -4237,13 +4664,6 @@
   }
 
   /**
-   * 取某一关的原始关卡数据（批量导出用）。
-   *
-   * 必须走页面的 fetch（`unsafeWindow.fetch`）——头歌的签名头是页面自己的拦截器加的，
-   * 直接调原生 fetch 会 401。带上 `__easBatch=1` 标记，让本脚本的网络钩子跳过它，
-   * 免得把别的关卡的数据当成「当前关」写进 state.taskContext。
-   */
-  /**
    * 回捞时的关卡序号：**本作业内的序号优先**（homework_challenge_index）。
    * 一个实训挂多个作业的课程（实测软件工程导论）里，`challenge.position`
    * 是实训内的全局序号，直接用它回填关卡号（L###）会整体错位。
@@ -4253,31 +4673,42 @@
     return Number(challenge && (challenge.homework_challenge_index ?? challenge.position)) || 0;
   }
 
+  /**
+   * 取某一关的原始关卡数据（批量导出用）。
+   *
+   * 和课程发现共用 signedGet：页面的 fetch 不会自动补签名，裸请求会返回 HTTP 200 / -102。
+   * 带上 __easBatch=1，让网络钩子跳过它，避免邻关数据污染当前关卡上下文。
+   */
   async function fetchTaskData(identifier) {
-    const host = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
     // **必须带 homework_common_id**：一个实训挂多个作业的课程（实测软件工程导论），
     // 不带它拿到的 challenge.position 是实训内的全局序号、不是本作业内的序号，
     // 导出回填的关卡号会整体错位。当前作业号就在本关数据里（state.taskContext）。
     const homeworkId = Number(state.taskContext && state.taskContext.homeworkId) || 0;
     const query = homeworkId ? `&homework_common_id=${homeworkId}` : '';
-    const response = await host.fetch(
-      `/api/tasks/${encodeURIComponent(identifier)}.json?__easBatch=1${query}`,
-      { credentials: 'include' }
-    );
-    if (!response || !response.ok) throw new Error(`HTTP ${(response && response.status) || '?'}`);
-    return response.json();
+    const payload = await signedGet(`${TEACH_ORIGIN}/api/tasks/${encodeURIComponent(identifier)}.json?__easBatch=1${query}`);
+    if (!payload || !payload.challenge || typeof payload.challenge !== 'object') {
+      throw new Error(`关卡 ${identifier} 返回的数据缺少 challenge，无法读取关卡数据`);
+    }
+    return payload;
   }
 
-  /** 从一份关卡数据里取标准答案行（[{position, answer}]）。 */
+  /** 从一份关卡数据里取标准答案行（[{position, answer, fromActual}]）。 */
   function standardAnswerOf(payload) {
     const sets = (payload && payload.choose_test_cases && payload.choose_test_cases.test_sets) || [];
     return (Array.isArray(sets) ? sets : [])
       .slice()
       .sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0))
-      .map((row) => ({
-        position: Number(row.position) || 0,
-        answer: String(row.standard_answer ?? row.actual_output ?? '')
-      }))
+      .map((row) => {
+        const standard = String(row.standard_answer ?? '').trim();
+        return {
+          position: Number(row.position) || 0,
+          answer: standard || String(row.actual_output ?? '').trim(),
+          // fromActual：这一行是**用户自己的作答**，不是平台给的标准答案。只有
+          // 「已通过测评」的关卡才可信（通过＝全对）；未通过的收进库并标 verified
+          // 就是污染——之后拿它作答必然错。
+          fromActual: !standard
+        };
+      })
       .filter((row) => row.position > 0 && row.answer);
   }
 
@@ -4306,12 +4737,7 @@
     const homeworkId = Number(state.taskContext && state.taskContext.homeworkId) || 0;
     const query = `?path=${encodeURIComponent(filePath)}`
       + `&homework_common_id=${homeworkId}&exercise_id=&__easBatch=1`;
-    const response = await host.fetch(
-      `/api/tasks/${encodeURIComponent(identifier)}/rep_content.json${query}`,
-      { credentials: 'include' }
-    );
-    if (!response || !response.ok) throw new Error(`HTTP ${(response && response.status) || '?'}`);
-    const payload = await response.json();
+    const payload = await signedGet(`${TEACH_ORIGIN}/api/tasks/${encodeURIComponent(identifier)}/rep_content.json${query}`);
     const encoded = String((payload && payload.content && payload.content.content) || '');
     if (!encoded) return '';
     // base64 → UTF-8 文本：代码里有中文注释，直接 atob 得到的是 latin1 乱码
@@ -4327,6 +4753,7 @@
    */
   function currentLevelAnswer() {
     const ctx = state.taskContext;
+    if (ctx && ctx.virtual) return null;
     const levelId = (ctx && ctx.levelId) || '';
     const levelName = (ctx && ctx.levelTitle) || (state.levelHint && state.levelHint.levelName) || '';
     if (ctx && ctx.standardAnswer && ctx.standardAnswer.length) {
@@ -4412,6 +4839,7 @@
       if (!classroom.experiments.has(experiment)) {
         classroom.experiments.set(experiment, {
           name: experiment,
+          homework_id: Number(entry.homeworkId) || undefined,
           chapter: (experiment.match(/^\[([^\]]+)\]/) || [])[1] || '',
           levels: []
         });
@@ -4537,10 +4965,7 @@
     }
     const code = String(payload.answer || '');
     if (!code.trim()) return false;
-    const key = state.levelIndex[identifier]
-      || (experiment ? state.titleIndex[`${experiment}__${levelName}`] : '')
-      || state.titleOnlyIndex[levelName]
-      || '';
+    const key = locateAnswerKey(identifier, experiment, levelName);
     if (!key) return false;
     const entry = state.answers[key] || {};
     const language = String(payload.language || entry.language || '');
@@ -4568,114 +4993,96 @@
   }
 
   /**
-   * 把一行「从平台回捞到的标准答案」并进本地答案库（导出的文件里才会有它）。
+   * 三级定位（与作答时同口径）：关卡标识 → 「实验名__关卡名」 → 全局唯一关卡名。
+   * 后两级只在有名字时参与；全部落空返回 ''——宁可不写，也不能猜一个条目写进去。
+   */
+  function locateAnswerKey(identifier, experimentName, levelName) {
+    return state.levelIndex[identifier]
+      || (levelName
+        ? (experimentName ? state.titleIndex[`${experimentName}__${levelName}`] : '')
+          || state.titleOnlyIndex[levelName]
+        : '')
+      || '';
+  }
+
+  /**
+   * 把一行「从平台回捞到的答案」并进本地答案库（choice / code 两个公开入口共用）。
    *
-   * **是覆盖，不是跳过**：库里这一关已经有答案时，用平台标准答案**盖掉**旧值——
+   * **是覆盖，不是跳过**：库里这一关已经有答案时，用平台收下的那份**盖掉**旧值——
    * 平台那份就是判分依据，比导入来的（或从编辑器抓来的）更权威，留旧的反而是错的。
-   * 唯一的例外见下面「代码 vs 选择」那段。
+   * 唯一的例外是**交叉类型**：库里是代码答案而回捞到选择题（含选择小题的编程题），
+   * 或反过来——一个条目只能存一种 kind，覆盖会把主体答案（通常是代码）弄丢，所以保留。
    *
-   * 定位顺序与作答时一致：**先按关卡标识查映射，再按「实验名__关卡名」兜底**——
-   * 平台重发实验会换掉一整组标识，只认标识会把答案丢在门外。
-   *
-   * @param {{identifier:string,position:number,title:string,answer:string}} row
+   * @param {{identifier:string,position:number,title:string,answer:string,language?:string}} row
    * @param {string} experimentName
    * @param {{added?:number,overwritten?:number,kept?:number,unplaced?:number}|null} stats
    *   传了就往里累加，好让调用方分清「新补了几关 / 覆盖了几关 / 保留了几关 / 没处放几关」。
-   * @returns {boolean} true = 真的写进答案库了；false = 没写（没匹配到条目，或保留了原有的代码）
+   * @returns {boolean} true = 真的写进答案库了
    */
-  function mergeStandardAnswer(row, experimentName = '', stats = null) {
+  function mergeHarvestedAnswer(row, experimentName, stats, kind) {
     const bump = (field) => { if (stats) stats[field] = (stats[field] || 0) + 1; };
     const identifier = String((row && row.identifier) || '');
     const levelName = String((row && row.title) || '');
     const text = String((row && row.answer) || '');
-    if (!text) { bump('unplaced'); return false; }
-    const shaped = answerToClassShape({ kind: 'choice', answer: text });
-    if (!shaped || !shaped.filled) { bump('unplaced'); return false; }
+    if (!text.trim()) { bump('unplaced'); return false; }
 
-    let key = state.levelIndex[identifier] || '';
-    if (!key && levelName) {
-      key = (experimentName ? state.titleIndex[`${experimentName}__${levelName}`] : '')
-        || state.titleOnlyIndex[levelName]
-        || '';
+    // 选择题先规范化成班级文件的 answer 形状（`[{number, selected}]`）；
+    // 规范化不出内容（串里的字母都不合法）等同没拿到答案。
+    let shaped = null;
+    if (kind === 'choice') {
+      shaped = answerToClassShape({ kind: 'choice', answer: text });
+      if (!shaped || !shaped.filled) { bump('unplaced'); return false; }
     }
+
+    const key = locateAnswerKey(identifier, experimentName, levelName);
     if (!key) { bump('unplaced'); return false; }
     const entry = state.answers[key] || {};
 
-    // ★ 唯一不覆盖的情况：库里是**代码**答案，而回捞到的是选择题标准答案
-    //   （「含选择小题的编程题」就是这种——既要交代码，又有选择题）。
-    //   答题时一个条目只能是一种 kind，覆盖会把那份代码彻底弄丢，
-    //   而代码通常才是这一关的主体答案。所以保留代码，只记一笔让日志说清楚。
     const existing = readAnswer(entry);
-    if (existing && existing.kind === 'code' && entryHasAnswer(entry)) {
+    if (existing && existing.kind !== kind && entryHasAnswer(entry)) {
       bump('kept');
       return false;
     }
 
     const overwrite = entryHasAnswer(entry);
-    state.answers[key] = {
-      ...entry,
-      level_id: entry.level_id || (row.position ? `L${String(row.position).padStart(3, '0')}` : ''),
-      title: entry.title || levelName,
-      kind: 'choice',
-      answer: shaped.answer,
-      // 这是**平台给的标准答案**，不是推导出来的：标记清楚，回传/复核时能分辨
-      source: 'platform',
-      verified: true
-    };
+    const fallbackLevelId = row.position ? `L${String(row.position).padStart(3, '0')}` : '';
+    state.answers[key] = kind === 'choice'
+      ? {
+          ...entry,
+          level_id: entry.level_id || fallbackLevelId,
+          title: entry.title || levelName,
+          kind: 'choice',
+          answer: shaped.answer,
+          // 这是**平台给的标准答案**，不是推导出来的：标记清楚，回传/复核时能分辨
+          source: 'platform',
+          verified: true
+        }
+      : {
+          ...entry,
+          level_id: entry.level_id || fallbackLevelId,
+          title: entry.title || levelName,
+          kind: 'code',
+          language: String(row.language || entry.language || ''),
+          answer: { language: String(row.language || entry.language || ''), code: text },
+          source: 'platform',
+          verified: true
+        };
     GM_setValue(KEYS.answers, state.answers);
     bump(overwrite ? 'overwritten' : 'added');
     return true;
   }
 
+  /** 回捞链路的 **choice 分支**（选择题标准答案）。 */
+  function mergeStandardAnswer(row, experimentName = '', stats = null) {
+    return mergeHarvestedAnswer(row, experimentName, stats, 'choice');
+  }
+
   /**
-   * 把一行「已通过编程题的代码答案」并进答案库（回捞链路的 **code 分支**）。
-   *
-   * 编程题在平台上没有 standard_answer，答案就是仓库里那份被平台收下的代码——
-   * 同样是「平台确认过的」，覆盖语义与 mergeStandardAnswer 一致。
-   * 镜像的例外：库里已有**选择题**答案时保留（纯编程题不该有选择题条目，
-   * 这是兜异常数据的；覆盖会把选择题答案弄丢）。
-   *
-   * @param {{identifier:string,position:number,title:string,answer:string,language?:string}} row
-   * @param {string} experimentName
-   * @param {{added?:number,overwritten?:number,kept?:number,unplaced?:number}|null} stats
+   * 回捞链路的 **code 分支**（已通过编程题的仓库代码）。
+   * 编程题在平台上没有 standard_answer，仓库里那份被平台收下的代码就是答案。
    */
   function mergeCodeAnswer(row, experimentName = '', stats = null) {
-    const bump = (field) => { if (stats) stats[field] = (stats[field] || 0) + 1; };
-    const identifier = String((row && row.identifier) || '');
-    const levelName = String((row && row.title) || '');
-    const code = String((row && row.answer) || '');
-    if (!code.trim()) { bump('unplaced'); return false; }
-
-    let key = state.levelIndex[identifier] || '';
-    if (!key && levelName) {
-      key = (experimentName ? state.titleIndex[`${experimentName}__${levelName}`] : '')
-        || state.titleOnlyIndex[levelName]
-        || '';
-    }
-    if (!key) { bump('unplaced'); return false; }
-    const entry = state.answers[key] || {};
-
-    const existing = readAnswer(entry);
-    if (existing && existing.kind === 'choice' && entryHasAnswer(entry)) {
-      bump('kept');
-      return false;
-    }
-
-    const overwrite = entryHasAnswer(entry);
-    const language = String(row.language || entry.language || '');
-    state.answers[key] = {
-      ...entry,
-      level_id: entry.level_id || (row.position ? `L${String(row.position).padStart(3, '0')}` : ''),
-      title: entry.title || levelName,
-      kind: 'code',
-      language,
-      answer: { language, code },
-      source: 'platform',
-      verified: true
-    };
-    GM_setValue(KEYS.answers, state.answers);
-    bump(overwrite ? 'overwritten' : 'added');
-    return true;
+    return mergeHarvestedAnswer(row, experimentName, stats, 'code');
   }
 
   /**
@@ -4703,6 +5110,7 @@
     const pending = [startId];
     const rows = [];
     const missing = [];
+    const failed = [];
     let guard = 0;
     while (pending.length && guard < 200) {
       const id = pending.shift();
@@ -4713,6 +5121,7 @@
       try {
         data = await fetchTaskData(id);
       } catch (error) {
+        failed.push(id);
         log(`取关卡 ${id} 的数据失败：${error.message}`, 'warn');
         continue;
       }
@@ -4721,8 +5130,17 @@
       if (data.prev_game) pending.push(String(data.prev_game));
       const position = harvestPositionOf(data);
       const title = String((data.challenge && data.challenge.subject) || '').trim();
+      if (isVirtualTask(data)) {
+        log(`${position ? `第${position}关` : id}：虚拟机题，篡改猴不处理，已跳过回捞`);
+        continue;
+      }
       const standard = standardAnswerOf(data);
-      if (standard.length) {
+      // 选择题入库的**双门槛**：平台标准答案（standard_answer）随时可信；
+      // 兜底的 actual_output 是用户自己的作答，只有「已通过测评」才可信——
+      // 未通过的关卡把它标成 platform/verified 收进库，之后谁用谁错。
+      const standardTrusted = standard.length
+        && (levelPassedOf(data) || standard.every((row) => !row.fromActual));
+      if (standardTrusted) {
         rows.push({ identifier: id, position, title, kind: 'choice', answer: standardAnswerText(standard) });
         continue;
       }
@@ -4746,10 +5164,17 @@
             continue;
           }
         } catch (error) {
+          failed.push(id);
           log(`取关卡 ${id} 的代码文件失败：${error.message}`, 'warn');
         }
       }
       missing.push(position ? `第${position}关` : id);
+    }
+    if (pending.some((id) => id && !seen.has(id))) {
+      log(`关卡链超过 200 关上限，还有 ${pending.filter((id) => id && !seen.has(id)).length} 关没拉到（导出停在链中段）`, 'warn');
+    }
+    if (failed.length) {
+      log(`回捞有 ${failed.length} 关读取失败，结果不完整；请看前面的接口错误，这不表示实验没有答案`, 'warn');
     }
 
     // ① 叠加进答案库（**覆盖**已有答案：平台标准答案就是判分依据，比导入来的更权威）
@@ -4789,16 +5214,32 @@
     const missText = missing.length
       ? `；${missing.length} 关没有可导出的答案（未提交过/未通过；纯编程题只有「已通过」的才有代码答案）：${missing.slice(0, 8).join('、')}${missing.length > 8 ? '…' : ''}`
       : '';
+    if (!rows.length && currentTask() && currentTask().virtual) {
+      finishExportExperiment({ experimentName, harvested: 0, stats,
+        extra: '；虚拟机操作题已跳过，本实验未读到可保存的选择题或代码答案' });
+      return;
+    }
     if (!rows.length) {
       // 一关都没抓到（比如拉别的关卡失败）：至少把**当前这一关**并进去，别白点一下。
       // 安全边界：选择题只认页面提交后平台才给的 standard_answer；编程题只认
       // **已通过测评**的关卡（此时编辑器里那份就是平台收下的答案）——
       // 未通过的编程题编辑器里可能是没交的草稿，标成 platform/verified 会污染答案库。
+      const chainNote = failed.length
+        ? `有 ${failed.length} 关读取失败，未能确认完整的实验答案`
+        : '已读取关卡数据，但没有可写入的答案（未提交/未通过或代码为空）';
       const fallback = currentLevelAnswer();
       const fallbackPosition = Number((state.taskContext && state.taskContext.levelPosition)
         || String(fallback && fallback.levelId || '').replace(/^L0*/i, '')) || 0;
       if (fallback && fallback.kind === 'choice') {
-        log('没抓到整条链的关卡数据，改为只写入当前这一关', 'warn');
+        // 与主循环同一道门槛：actual_output 是用户自己的作答，未通过的关卡不能当标准答案入库。
+        const trusted = Boolean(state.taskContext && state.taskContext.passed)
+          || (state.taskContext && state.taskContext.standardAnswer || []).every((row) => !row.fromActual);
+        if (!trusted) {
+          log(`${chainNote}；当前关是选择题且未确认通过——页面上的作答不是标准答案，不写入`, 'warn');
+          finishExportExperiment({ experimentName, harvested: 0, stats: { added: 0, overwritten: 0, kept: 0, unplaced: 0 } });
+          return;
+        }
+        log(`${chainNote}，改为只写入当前这一关`, 'warn');
         const solo = { added: 0, overwritten: 0, kept: 0, unplaced: 0 };
         mergeStandardAnswer({
           identifier: startId,
@@ -4817,11 +5258,11 @@
       if (fallback && fallback.kind === 'code') {
         const passed = Boolean(state.taskContext && state.taskContext.passed);
         if (!passed) {
-          log('没抓到整条链的关卡数据；当前关是编程题且未确认通过——编辑器里的内容不一定是答案，不写入', 'warn');
+          log(`${chainNote}；当前关是编程题且未确认通过——编辑器里的内容不一定是答案，不写入`, 'warn');
           finishExportExperiment({ experimentName, harvested: 0, stats: { added: 0, overwritten: 0, kept: 0, unplaced: 0 } });
           return;
         }
-        log('没抓到整条链的关卡数据；当前关已通过测评，编辑器里那份就是平台收下的答案，写入', 'warn');
+        log(`${chainNote}；当前关已通过测评，编辑器里那份就是平台收下的答案，写入`, 'warn');
         const solo = { added: 0, overwritten: 0, kept: 0, unplaced: 0 };
         mergeCodeAnswer({
           identifier: startId,
@@ -4913,6 +5354,8 @@
       NEXT_LEVEL_PATTERNS,
       readAnswer,
       flattenClassAnswers,
+      flattenAnswerImport,
+      mergeTitleIndexes,
       answerToClassShape,
       buildClassAnswersDoc,
       mergeStandardAnswer,
@@ -4925,6 +5368,9 @@
       resolveAnswerForCurrentLevel,
       consoleEndpoint,
       consoleRequest,
+      consoleJson,
+      virtualTaskInfo,
+      processTeachLevel,
       pageWindow,
       pickEditorModel,
       findCodeEditor,
@@ -4936,9 +5382,19 @@
       isOptionInput,
       observeTaskJson,
       observeSubmitResult,
+      installNetworkHooks,
+      readTeachQueue,
+      writeTeachQueue,
+      queueCanContinue,
+      requestStop,
+      advanceTeachQueue,
+      startTeachRun,
+      startMissingRun,
+      teachSelection,
       standardAnswerText,
       standardAnswerOf,
       fetchTaskData,
+      exportExperimentAnswers,
       harvestPositionOf,
       currentExperimentName,
       currentLevelAnswer,
@@ -4955,9 +5411,12 @@
       answerChoiceLevel,
       answerCurrentLevel,
       waitForSubmitResult,
+      beginSubmissionAttempt,
       readPageResultText,
       readMaxEvalSeconds,
       settleBeforeSubmit,
+      readSubmitCooldownMs,
+      waitForSubmitButton,
       sleep,
       md5,
       signature,
@@ -4991,26 +5450,45 @@
   // 必须在 document-start 就装钩子：页面的关卡数据请求发生在脚本加载之后，
   // 钩子晚一步（比如 document-idle）就观察不到「几道题、每题几个选项」，
   // 选题分组就失去了唯一可靠的数据源。
+  const pasteUnlock = installEducoderPasteUnlock(pageWindow(), {
+    enabled: GM_getValue(KEYS.pasteUnlock, true),
+    isEnabled: () => GM_getValue(KEYS.pasteUnlock, true),
+    onError: (error) => log(`粘贴解锁失败：${error.message}`, 'warn'),
+    onFail: (message) => log(`粘贴解锁：${message}`, 'warn')
+  });
+  // 子框架只负责粘贴，不重复创建面板或启动作答队列。
+  if (pageWindow().top !== pageWindow().self) return;
+  if (pageWindow().__educoderAutosubmitStarted) return;
+  pageWindow().__educoderAutosubmitStarted = true;
   installNetworkHooks();
+
+  function togglePasteUnlock() {
+    const enabled = !pasteUnlock.enabled;
+    pasteUnlock.setEnabled(enabled);
+    GM_setValue(KEYS.pasteUnlock, enabled);
+    const button = document.getElementById('eas-paste-unlock');
+    if (button) button.textContent = enabled ? '粘贴解锁：开' : '粘贴解锁：关';
+    log(`解除禁止粘贴：已${enabled ? '开启' : '关闭'}，设置已保存。`, 'ok');
+  }
 
   /** 打印一份「现状总览」：一次刷新就能看清哪里没接上，别再逐条猜。 */
   function dumpStatus() {
     const answers = Object.keys(state.answers).length;
     const mapped = Object.keys(state.levelIndex).length;
     const counts = Object.keys(state.optionCounts).length;
-    // 「有 taskContext」不等于「拿到了每题几个选项」：编程题页面也有 taskContext 但 sizes 为空。
-    const pageHasSizes = Boolean(state.taskContext && state.taskContext.sizes && state.taskContext.sizes.length);
-    const taskCtx = pageHasSizes ? '页面关卡数据✓' : '页面关卡数据✗';
+    const task = currentTask();
+    const taskCtx = task ? `页面关卡数据✓（${task.sizes.length ? '选择题' : '编程题'}）` : '页面关卡数据未到';
     const consoleCounts = counts ? `控制台选项数✓(${counts}关)` : '控制台选项数✗';
     const keys = hasSigningKeys() ? '签名常量✓' : '签名常量✗';
     log(
       `状态总览：答案 ${answers} 关｜关卡映射 ${mapped} 条｜${taskCtx}｜${consoleCounts}｜`
-        + `${keys}｜提交蓝图 ${state.templates.length} 个`,
+        + `${keys}`,
       'ok'
     );
     if (!answers) log('   ↳ 还没有答案库：点面板「从本地加答案」', 'warn');
-    if (!mapped) log('   ↳ 没有关卡映射：答案按 L001 存、页面按标识查，对不上', 'warn');
-    if (!pageHasSizes && !counts) log('   ↳ 「每题几个选项」两个来源都空：无法给选择题分组', 'warn');
+    if (answers && !mapped && !Object.keys(state.titleIndex).length) {
+      log('   ↳ 没有关卡身份映射：请导入班级汇总、单实验 v2 文件或控制台完整响应', 'warn');
+    }
     if (!hasSigningKeys()) log(`   ↳ ${MISSING_KEYS_HINT}`, 'error');
   }
 
@@ -5019,10 +5497,10 @@
     // 签名常量优先从本地控制台同步（用户就不用手动粘了）。
     // 放在最前面：后面任何一次接口调用都可能需要它。
     syncSigningKeysFromConsole();
-    log('脚本已就绪：先在页面上手动作答并提交一次，脚本会记住提交接口。');
-    if (state.templates.length && Object.keys(state.answers).length) {
-      log(`已有 ${state.templates.length} 个提交蓝图、${Object.keys(state.answers).length} 关答案，可直接「一键答题」`, 'ok');
-    } else if (!Object.keys(state.answers).length) {
+    log('脚本已就绪：导入答案，选择课程、实验和关卡后开始作答。');
+    if (Object.keys(state.answers).length) {
+      log(`已有 ${Object.keys(state.answers).length} 关答案，将使用页面的提交 / 评测按钮`, 'ok');
+    } else {
       log('还没有答案库：点「从本地加答案」（连得上控制台就拉，否则直接选文件导入）', 'warn');
     }
     dumpStatus();
@@ -5032,37 +5510,26 @@
     renderTeach();
     refreshTeachMissingCount();
 
-    GM_registerMenuCommand('状态总览', dumpStatus);
+    GM_registerMenuCommand('切换解除禁止粘贴（默认开启）', togglePasteUnlock);
     GM_registerMenuCommand('回捞本实验标准答案（叠加进答案库，不下载文件）', exportExperimentAnswers);
     GM_registerMenuCommand('导出日志到本地', exportLogs);
-    GM_registerMenuCommand('设置签名常量（平台换常量时覆盖内置值）', promptSigningKeys);
+    GM_registerMenuCommand('设置签名常量（首次使用或平台更新）', promptSigningKeys);
     GM_registerMenuCommand('清空答题进度（下次从头跑）', () => {
       const queue = readTeachQueue();
       if (queue) {
         queue.stoppedReason = '';
         queue.experimentIndex = 0;
         queue.visited = [];
-        writeTeachQueue(queue);
+        if (!writeTeachQueue(queue)) return;
       }
       renderTeach();
       log('已清空答题进度：下次点「一键答题」会从头跑（不清空的话会接着上次停下的实验续跑）', 'ok');
     });
-    // 原来这里又注册了一遍「导出本实验全部关卡的标准答案」，与上面那条重复（同一函数两个入口，
-    // 用户还得自己猜点哪个）。改成补上真正缺的那个：**一键导出全部答案到本地文件**。
     GM_registerMenuCommand('导出全部答案到本地文件（与导入同一格式，可原样导回）', exportAllAnswers);
     GM_registerMenuCommand('从本地加答案（连得上控制台就拉，连不上就选文件）', loadAnswersFromLocal);
-    GM_registerMenuCommand('导入答案文件（班级答案文件 / 控制台响应）', importAnswers);
     GM_registerMenuCommand('面板回到左下角', resetPanelPosition);
-    GM_registerMenuCommand('停止连续作答', requestStop);
+    GM_registerMenuCommand('停止作答与队列', requestStop);
     GM_registerMenuCommand('设置本地控制台地址', setLocalAddress);
-    GM_registerMenuCommand('回传录制到的蓝图到控制台', pushAllBlueprints);
-    GM_registerMenuCommand('清空录制到的接口', clearTemplates);
-    GM_registerMenuCommand('导出录制结果', () => {
-      const blob = new Blob([JSON.stringify(state.templates, null, 2)], { type: 'application/json' });
-      const link = el('a', { href: URL.createObjectURL(blob), download: 'educoder-submit-templates.json' });
-      link.click();
-      log('已导出录制结果（把文件发给我即可做成免录制的版本）', 'ok');
-    });
 
     maybeContinueTeachQueue().catch((error) => log(`队列续跑失败：${error.message}`, 'error'));
   }

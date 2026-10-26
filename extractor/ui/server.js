@@ -22,11 +22,12 @@ const { spawn } = require('node:child_process');
 
 const { mergeAnswer } = require('../lib/answer-store');
 const fmt = require('../lib/answer-format');
+const { safeFileName } = require('../lib/file-name');
 const { signingKeysEncoded, SIGNING_VERSION, MISSING_KEYS_HINT } = require('../lib/educoder-sign');
-const { describeAiConfig, MISSING_KEY_HINT: AI_MISSING_KEY_HINT } = require('../lib/ai-config');
 const { readMissingDocument, addMissing, removeMissing, clearMissing } = require('../lib/missing-store');
 const classAnswers = require('../lib/class-answers');
-const answerer = require('../lib/answerer');
+const { listTargets, identifierFromSource } = require('../lib/archive-catalog');
+const { resolveLevelSelection } = require('../lib/selection-model');
 
 const MAX_LOGS = 500; // 内存中最多保留的日志条数
 
@@ -38,22 +39,24 @@ const consoleLogFile = () => path.join(exportRootDir(), 'logs', '控制台日志
 let consoleLogReady = false;
 async function exportClassAnswers({ exportRoot, grade, className } = {}) {
   const root = exportRoot || exportRootDir();
-  const courses = await answerer.listTargets(root);
+  const courses = await listTargets(root);
   if (!courses.length) {
     return { ok: false, message: 'exports/ 下还没有任何可汇总的课程存档。' };
   }
-  const classrooms = courses.map((course) => {
+  const classrooms = [];
+  for (const course of courses) {
     const first = course.experiments[0] || {};
     const classroomBlock = first.classroom || { name: course.name };
-    const experiments = course.experiments.map((experiment) => {
-      let answerDoc = null;
+    const experiments = [];
+    for (const experiment of course.experiments) {
+      let answerDoc = experiment.answerDoc || null;
       try {
-        answerDoc = fmt.normalizeDocument(
-          JSON.parse(require('node:fs').readFileSync(experiment.answerPath, 'utf8')),
+        if (!answerDoc) answerDoc = fmt.normalizeDocument(
+          JSON.parse(await fs.readFile(experiment.answerPath, 'utf8')),
           { classroom: experiment.classroom, experiment: { name: experiment.name } }
         );
       } catch { /* 该实验还没答案文件：照常进班级文件（answered=false） */ }
-      return {
+      experiments.push({
         name: experiment.name,
         chapter: (String(experiment.name).match(/^\[([^\]]+)\]/) || [])[1] || '',
         homeworkId: experiment.homeworkId || 0,
@@ -65,19 +68,31 @@ async function exportClassAnswers({ exportRoot, grade, className } = {}) {
           taskIdentifier: level.taskIdentifier || ''
         })),
         answerDoc
-      };
-    });
-    return { name: classroomBlock.name || course.name, code: classroomBlock.code || '', experiments };
-  });
+      });
+    }
+    classrooms.push({ name: classroomBlock.name || course.name, code: classroomBlock.code || '', experiments });
+  }
 
   const next = classAnswers.buildClassDocument({ grade, className, classrooms });
   const classPath = classAnswers.classAnswersPathFor(root, { grade, className });
   let previous = null;
   try {
     previous = JSON.parse(await fs.readFile(classPath, 'utf8'));
-  } catch { /* 首次导出没有旧文件 */ }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new Error(`已有班级答案文件无法读取，已保留原文件：${classPath}（${error.message}）`);
+  }
   const merged = previous ? classAnswers.mergeClassDocuments(previous, next) : next;
   const verdict = classAnswers.validateClassDocument(merged);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      path: classPath,
+      message: `班级答案校验失败，未写入文件：${verdict.errors[0] || '未知格式错误'}`,
+      stats: verdict.stats,
+      errors: verdict.errors.slice(0, 5),
+      warnings: verdict.warnings.slice(0, 5)
+    };
+  }
   await fs.mkdir(path.dirname(classPath), { recursive: true });
   await fs.writeFile(classPath, JSON.stringify(merged, null, 2), 'utf8');
   return {
@@ -112,6 +127,11 @@ const MAX_BODY_BYTES = 64 * 1024; // POST /api/action 请求体上限（字节�
 const HARD_BODY_BYTES = MAX_BODY_BYTES * 16; // 超限后继续 drain 的硬上限，防御性
 const HEARTBEAT_MS = 15_000; // SSE 心跳，防代理/浏览器判定空闲断连
 const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
+const PUBLIC_ASSETS = {
+  '/assets/console.css': { file: path.join(__dirname, 'public', 'console.css'), type: 'text/css; charset=utf-8' },
+  '/assets/console.js': { file: path.join(__dirname, 'public', 'console.js'), type: 'text/javascript; charset=utf-8' },
+  '/assets/selection-model.js': { file: path.join(__dirname, '..', 'lib', 'selection-model.js'), type: 'text/javascript; charset=utf-8' }
+};
 
 const ACTIONS = new Set([
   'select-course',
@@ -156,8 +176,6 @@ function createSnapshot() {
     progress: { saved: 0, skipped: 0, failed: 0, current: 0, total: 0, existing: 0, dropped: 0 },
     // 本次会话已提取的内容（跨多轮累积，直到「开始提取」重置）
     extracted: [],
-    // AI 作答任务的状态（课程/实验/进度/结果），由 /api/answer/* 驱动
-    answer: { running: false, stopped: false, course: '', experiment: '', done: 0, total: 0, message: '', results: [], log: [] },
     logs: [],
     done: null
   };
@@ -318,21 +336,6 @@ function applyEvent(snapshot, evt) {
       );
       return;
     }
-    case 'answer': {
-      // AI 作答进度：整包替换（字段少，直接覆盖最省心）。
-      snapshot.answer = {
-        running: Boolean(evt.running),
-        stopped: Boolean(evt.stopped),
-        course: String(evt.course || ''),
-        experiment: String(evt.experiment || ''),
-        done: toCount(evt.done, snapshot.answer.done),
-        total: toCount(evt.total, snapshot.answer.total),
-        message: String(evt.message || snapshot.answer.message || ''),
-        results: Array.isArray(evt.results) ? evt.results : snapshot.answer.results,
-        log: Array.isArray(evt.log) ? evt.log.slice(-50) : snapshot.answer.log
-      };
-      return;
-    }
     case 'reset': {
       // 「开始提取」：清空上一轮的列表与已提取内容。
       // 选择相关的 pending 由外壳负责置空（否则引擎会等到新的选择）。
@@ -411,10 +414,6 @@ async function startUiServer({
   port = 0,
   token: tokenOption = '',
   onControl,
-  onAnswerRun,
-  onAnswerStop,
-  /** 取「当前 AI 配置」的函数：只用于显示模型名与判断配没配，不含 Key。 */
-  aiConfig,
   open = true
 } = {}) {
   // token 默认随机。调用方可以给一个**稳定值**（见 run.js 的持久化 token）：
@@ -424,61 +423,6 @@ async function startUiServer({
   const snapshot = createSnapshot();
   const clients = new Set();
   const allowedOrigins = new Set();
-  /** AI 作答任务的状态（控制台面板用 /api/state 里的 answer 字段展示）。 */
-  const answerJob = { running: false, stopped: false, course: '', experiment: '', done: 0, total: 0, message: '', results: [], log: [] };
-
-  const exportRootDir = () => process.env.EDUCODER_EXPORT_ROOT || path.join(__dirname, '..', '..', 'exports');
-
-  function answerLog(message, level = 'info') {
-    answerJob.message = message;
-    answerJob.log.push({ time: new Date().toISOString(), level, message });
-    if (answerJob.log.length > 200) answerJob.log.splice(0, answerJob.log.length - 200);
-    appendLog(snapshot, level, message);
-    emit({ type: 'log', level, message });
-  }
-
-  /** 作答进度必须走 emit：它既进快照（刷新页面能恢复）也推 SSE。 */
-  function publishAnswer(phase) {
-    emit({ type: 'answer', phase, ...answerJob });
-  }
-
-  /**
-   * 跑一个作答任务：只负责进度、日志、快照与 SSE，真正的模型调用由外壳（onAnswerRun）干。
-   * 这样假服务（界面实测）与真实外壳都能注入自己的实现。
-   */
-  async function runAnswerJob(dispatch) {
-    answerJob.running = true;
-    answerJob.stopped = false;
-    answerJob.results = [];
-    answerJob.done = 0;
-    answerJob.message = '';
-    publishAnswer('running');
-    try {
-      const result = await dispatch({
-        isStopped: () => answerJob.stopped,
-        report: (patch) => {
-          Object.assign(answerJob, patch);
-          publishAnswer('running');
-        },
-        log: (message, level) => answerLog(message, level)
-      });
-      if (result && Array.isArray(result.results)) {
-        answerJob.results = result.results;
-        // 兜底：即便外壳没逐条上报 done，也按结果条数对齐进度。
-        answerJob.done = Math.max(answerJob.done, result.results.length);
-      }
-      if (result && Number.isFinite(result.total)) answerJob.total = result.total;
-      publishAnswer('done');
-    } catch (error) {
-      answerLog(`AI 作答失败：${error.message}`, 'error');
-      answerJob.results.push({ experiment: answerJob.experiment || '-', ok: false, error: error.message });
-    } finally {
-      answerJob.running = false;
-      answerJob.experiment = '';
-      publishAnswer('done');
-    }
-  }
-
   let listeningPort = 0;
   let heartbeat = null;
   let closePromise = null;
@@ -624,42 +568,8 @@ async function startUiServer({
       return { selectedExperiments: picked };
     }
     if (action === 'select-levels') {
-      // 关卡选择支持两种载荷：
-      // - 新式 { levels: [{identifier, position, challengeId}] }：关卡列表可能没有 identifier，
-      //   只能靠序号/列表 id 表达选择；
-      // - 旧式 { identifiers: [...] }：仅当列表带 identifier 时可用。
-      const byPosition = (item, want) => {
-        const position = Number(want.position != null ? want.position : want.index);
-        if (!Number.isFinite(position) || position <= 0) return false;
-        return Number(item.position != null ? item.position : item.index) === position;
-      };
-      let picked = [];
-      if (Array.isArray(args.levels)) {
-        picked = args.levels.map((want) => {
-          const level = snapshot.levels.find((item) => {
-            if (!item) return false;
-            if (want && typeof want === 'object') {
-              if (want.identifier && String(item.identifier) === String(want.identifier)) return true;
-              if (want.challengeId && String(item.challengeId) === String(want.challengeId)) return true;
-              return byPosition(item, want);
-            }
-            return String(item.identifier) === String(want);
-          });
-          if (!level) throw badRequest(`未找到关卡：${JSON.stringify(want)}`);
-          return level;
-        });
-      } else if (Array.isArray(args.identifiers)) {
-        picked = args.identifiers.map((identifier) => {
-          const level = snapshot.levels.find(
-            (item) => item && String(item.identifier) === String(identifier)
-          );
-          if (!level) throw badRequest(`未找到关卡：${identifier}`);
-          return level;
-        });
-      } else {
-        throw badRequest('levels 或 identifiers 必须是数组');
-      }
-      return { selectedLevels: picked };
+      try { return { selectedLevels: resolveLevelSelection(snapshot.levels, args) }; }
+      catch (error) { throw badRequest(error.message); }
     }
     return null; // start / stop 不改变选择
   }
@@ -715,17 +625,17 @@ async function startUiServer({
 
   // ---------- 静态页 ----------
 
-  async function serveIndex(req, res) {
+  async function serveStatic(req, res, file = INDEX_FILE, contentType = 'text/html; charset=utf-8') {
     try {
-      const html = await fs.readFile(INDEX_FILE);
+      const html = await fs.readFile(file);
       res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Type': contentType,
         'Content-Length': html.length,
         'Cache-Control': 'no-store'
       });
       res.end(req.method === 'HEAD' ? undefined : html);
     } catch {
-      const text = '控制台页面尚未生成：extractor/ui/public/index.html 缺失。\n';
+      const text = '控制台资源不存在，请检查本地项目文件。\n';
       res.writeHead(404, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Content-Length': Buffer.byteLength(text),
@@ -751,7 +661,12 @@ async function startUiServer({
       if (method !== 'GET' && method !== 'HEAD') {
         return sendJson(res, 405, { ok: false, error: '方法不允许' });
       }
-      return serveIndex(req, res);
+      return serveStatic(req, res);
+    }
+    if (Object.hasOwn(PUBLIC_ASSETS, pathname)) {
+      if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { ok: false, error: '方法不允许' });
+      const asset = PUBLIC_ASSETS[pathname];
+      return serveStatic(req, res, asset.file, asset.type);
     }
     if (pathname === '/favicon.ico') {
       res.writeHead(204);
@@ -764,10 +679,7 @@ async function startUiServer({
     if (pathname === '/api/state') {
       if (method !== 'GET') return sendJson(res, 405, { ok: false, error: '方法不允许' });
       if (!isAuthorized(req, requestUrl, null)) return deny(res);
-      // 带上「当前用的是哪个 AI 模型」——界面只显示模型与「配没配」，
-      // 不含 Key（describeAiConfig 保证）。AI 配置本身在 .env 里，界面不收集。
-      const ai = typeof aiConfig === 'function' ? aiConfig() : describeAiConfig();
-      return sendJson(res, 200, { ...cloneSnapshot(snapshot), ai });
+      return sendJson(res, 200, cloneSnapshot(snapshot));
     }
 
     if (pathname === '/api/events') {
@@ -776,58 +688,24 @@ async function startUiServer({
       return openSse(req, res);
     }
 
-    if (pathname === '/api/answer/targets') {
+    if (pathname === '/api/agent/targets') {
       if (method !== 'GET') return sendJson(res, 405, { ok: false, error: '方法不允许' });
       if (!isAuthorized(req, requestUrl, null)) return deny(res);
-      const courses = await require('../lib/answerer').listTargets(exportRootDir());
-      return sendJson(res, 200, { ok: true, courses });
+      const courses = await listTargets(exportRootDir());
+      return sendJson(res, 200, { courses });
     }
 
-    if (pathname === '/api/answer/run') {
-      if (method !== 'POST') return sendJson(res, 405, { ok: false, error: '方法不允许' });
-      if (!isOriginAllowed(req)) return deny(res);
-      const body = await readBody(req);
-      if (body.tooLarge) return sendJson(res, 413, { ok: false, error: '请求体超过 64KB 上限' });
-      let payload = null;
-      try {
-        payload = JSON.parse(body.text || '{}');
-      } catch {
-        payload = null;
-      }
-      if (!tokenMatches(pickToken(req, requestUrl, payload))) return deny(res);
-      if (!payload || typeof payload !== 'object') return sendJson(res, 400, { ok: false, error: '请求体必须是 JSON 对象' });
-      if (answerJob.running) return sendJson(res, 409, { ok: false, error: '已有作答任务在跑，等它结束或先停止' });
-      if (typeof onAnswerRun !== 'function') {
-        return sendJson(res, 500, { ok: false, error: '未配置作答处理器（onAnswerRun）' });
-      }
-      const course = String(payload.course || '');
-      const experiments = Array.isArray(payload.experiments) ? payload.experiments.map(String).filter(Boolean) : [];
-      const levels = Array.isArray(payload.levels) ? payload.levels.map(String).filter(Boolean) : null;
-      if (!course || !experiments.length) return sendJson(res, 400, { ok: false, error: '请指定课程与至少一个实验' });
-      // 接口/模型/Key 一律由外壳从 .env 读（见 run.js 的 resolveAiConfig）。
-      // 这里**不再接收**客户端传来的凭据——界面上填的只活在内存里，关掉就没了。
-      const ai = typeof aiConfig === 'function' ? aiConfig() : describeAiConfig();
-      if (ai && ai.configured === false) {
-        return sendJson(res, 400, { ok: false, error: AI_MISSING_KEY_HINT });
-      }
-      runAnswerJob(() => onAnswerRun({ course, experiments, levels })).catch(() => {});
-      return sendJson(res, 200, { ok: true, started: true, course, experiments });
-    }
-
-    if (pathname === '/api/answer/stop') {
-      if (method !== 'POST') return sendJson(res, 405, { ok: false, error: '方法不允许' });
-      if (!isOriginAllowed(req)) return deny(res);
-      const body = await readBody(req);
-      let payload = null;
-      try {
-        payload = JSON.parse(body.text || '{}');
-      } catch {
-        payload = null;
-      }
-      if (!tokenMatches(pickToken(req, requestUrl, payload))) return deny(res);
-      answerJob.stopped = true;
-      if (typeof onAnswerStop === 'function') await onAnswerStop().catch(() => {});
-      return sendJson(res, 200, { ok: true, stopping: true });
+    if (pathname === '/api/agent/guide') {
+      if (method !== 'GET') return sendJson(res, 405, { ok: false, error: '方法不允许' });
+      if (!isAuthorized(req, requestUrl, null)) return deny(res);
+      const guide = await fs.readFile(path.join(__dirname, '..', '..', 'docs', 'AGENT-ANSWERING.md'));
+      res.writeHead(200, {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="AGENT-ANSWERING.md"',
+        'Content-Length': guide.length,
+        'Cache-Control': 'no-store'
+      });
+      return res.end(guide);
     }
 
     if (pathname === '/api/answers') {
@@ -836,7 +714,7 @@ async function startUiServer({
       // Origin 不是本机地址，用不了下面的同源白名单。因此这里**显式地只校验 token**，
       // 而不是依赖「GM 请求恰好不带 Origin 才放行」这种巧合（原来就是这样，很脆）。
       // 安全性依据：token 由 `npm run ui` 随机生成、只出现在用户自己的终端与本机 URL 里；
-      // 且这些端点只读答案、只往 exports/ 下写蓝图或写缺答案清单，不碰引擎也不碰系统。
+      // 且这些端点只读答案、只往 exports/ 下写答案或缺答案清单，不碰引擎也不碰系统。
       res.setHeader('Access-Control-Allow-Origin', '*');
       if (!tokenMatches(pickToken(req, requestUrl, null))) return deny(res);
       const answers = await collectAnswers();
@@ -857,28 +735,6 @@ async function startUiServer({
       if (!encoded) return sendJson(res, 404, { ok: false, error: MISSING_KEYS_HINT });
       // 返回**编码态**（手动粘贴那串）：篡改猴的存储格式与它一致，不必维护两种。
       return sendJson(res, 200, { ok: true, ak: encoded.ak, sk: encoded.sk, version: SIGNING_VERSION });
-    }
-
-    if (pathname === '/api/blueprint') {
-      if (method !== 'POST') return sendJson(res, 405, { ok: false, error: '方法不允许' });
-      // 与 /api/answers 同样的鉴权口径：只校验 token（理由见上）。
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      if (!tokenMatches(pickToken(req, requestUrl, null))) return deny(res);
-      const raw = await readBody(req);
-      if (raw.tooLarge) {
-        return sendJson(res, 413, { ok: false, error: '请求体超过 64KB 上限' });
-      }
-      let recorded = null;
-      try {
-        recorded = JSON.parse(raw.text || '{}');
-      } catch {
-        recorded = null;
-      }
-      if (!recorded || typeof recorded !== 'object') {
-        return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
-      }
-      const saved = await saveBlueprint(recorded);
-      return sendJson(res, saved.ok ? 200 : 400, saved);
     }
 
     if (pathname === '/api/missing') {
@@ -928,10 +784,10 @@ async function startUiServer({
 
     if (pathname === '/api/answer/save') {
       if (method !== 'POST') return sendJson(res, 405, { ok: false, error: '方法不允许' });
-      // 与 /api/answers、/api/blueprint 同样的鉴权口径：只校验 token（理由见上）。
+      // 与 /api/answers 同样的鉴权口径：只校验 token（理由见上）。
       res.setHeader('Access-Control-Allow-Origin', '*');
       if (!tokenMatches(pickToken(req, requestUrl, null))) return deny(res);
-      // 代码答案可能很长（AI 生成的整份源码），这里给到 256KB。
+      // 代码答案可能包含整份源码，这里给到 256KB。
       const raw = await readBody(req, 256 * 1024);
       if (raw.tooLarge) {
         return sendJson(res, 413, { ok: false, error: '请求体超过 256KB 上限' });
@@ -1000,7 +856,7 @@ async function startUiServer({
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
       const message = (error && error.message) || '内部错误';
-      if (!res.headersSent) sendJson(res, 500, { ok: false, error: message });
+      if (!res.headersSent) sendJson(res, error && (error.status || error.statusCode) ? errorStatus(error) : 500, { ok: false, error: message });
       else {
         try {
           res.end();
@@ -1110,7 +966,7 @@ async function startUiServer({
       clients.clear();
       server.close(() => resolve());
       if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
-    }).then(() => undefined);
+    });
     return closePromise;
   }
 
@@ -1136,9 +992,9 @@ function openInBrowser(url) {
 }
 
 /**
- * 汇总 AI 答案与提交蓝图，供篡改猴一次性拉取。
+ * 汇总本地答案与关卡元信息，供篡改猴一次性拉取。
  *
- * 答案的规范位置是**一个文件夹**：`exports/answers/{课程}__{实验}.answers.json`
+ * 答案的规范位置是**一个文件夹**：`exports/answers/{课堂}（{课堂码}）/{实验}.answers.json`
  * （文件名标清课程与实验，见 docs/AI-ANSWER-FORMAT.md）。
  * 为兼容早期产物，仍然递归匹配 `exports/` 下所有 `*.answers.json`。
  *
@@ -1148,8 +1004,20 @@ async function collectAnswers() {
   const root = process.env.EDUCODER_EXPORT_ROOT || path.join(__dirname, '..', '..', 'exports');
   const answers = {};
   const experiments = [];
-  const blueprints = [];
   const files = [];
+  const answerTargetsByKey = {};
+  const keyForIdentity = (course, experiment, levelId, classroomCode = '', homeworkId = 0) => {
+    const base = compositeKey(course, experiment, levelId);
+    const existing = answers[base];
+    const known = answerTargetsByKey[base];
+    const previousCode = existing?.classroomCode || known?.classroom.code || '';
+    const previousHomework = Number(existing?.homeworkId || known?.experiment.homeworkId) || 0;
+    if ((previousCode && classroomCode && previousCode !== classroomCode)
+      || (previousHomework && homeworkId && previousHomework !== homeworkId)) {
+      return compositeKey(`${course}（${classroomCode || '无课堂码'}）`, `${experiment}（${homeworkId || '无作业号'}）`, levelId);
+    }
+    return base;
+  };
 
   /**
    * 读一份答案文件并汇总进 `answers`。
@@ -1210,7 +1078,8 @@ async function collectAnswers() {
       // 用「班级__实验__level_id」做键：level_id（L001）只在单个实验内唯一，
       // 多个实验聚合到同一个 answers 对象时会互相覆盖（实测两个实验的 L001 打架，
       // 后遍历的答案把先遍历的盖掉，用户在关卡页上会拿到别实验的答案）。
-      const composite = compositeKey(classroom.name, experiment, key);
+      const homeworkId = Number(document.experiment.homework_id) || 0;
+      const composite = keyForIdentity(classroom.name, experiment, key, classroom.code, homeworkId);
       // v2 位置优先：旧位置残留的文件里是升级前的快照，不能反过来盖掉新答案。
       if (servedByV2.has(composite) && legacy) continue;
       if (!legacy) servedByV2.add(composite);
@@ -1222,7 +1091,8 @@ async function collectAnswers() {
         course: classroom.name,
         classroomName: classroom.name,
         classroomCode: classroom.code,
-        experiment
+        experiment,
+        homeworkId
       };
       count += 1;
     }
@@ -1266,19 +1136,8 @@ async function collectAnswers() {
       }
       continue;
     }
-    if (!entry.isFile()) continue;
-    seen.add(full);
-    files.push(path.relative(root, full));
-    try {
-      if (entry.name === 'submit.blueprint.json') {
-        blueprints.push({ path: path.relative(root, full), ...JSON.parse(await fs.readFile(full, 'utf8')) });
-      } else if (/\.answers\.json$/.test(entry.name)) {
-        // 直接摆在 answers/ 下的扁平文件属于旧位置 → 让位于 v2
-        const result = await readAnswerFile(full, { legacy: true });
-        if (result) experiments.push(result);
-      }
-    } catch {
-      /* 单个文件坏了不影响其它文件 */
+    if (entry.isFile() && /\.answers\.json$/.test(entry.name)) {
+      await collectAnswerFile(full, { legacy: true });
     }
   }
 
@@ -1319,6 +1178,24 @@ async function collectAnswers() {
    */
   const titleOnlyIds = {};
   const titleOnlyDupes = new Set();
+  const identifierDupes = new Set();
+  const mapIdentifier = (identifier, key) => {
+    if (!identifier) return;
+    if (levelIds[identifier] && levelIds[identifier] !== key) identifierDupes.add(identifier);
+    else levelIds[identifier] = key;
+  };
+  const mapTitle = (experiment, title, key) => {
+    if (!title) return;
+    const shortExperiment = experiment.replace(/^\[[^\]]*\]\s*/, '');
+    const pairKeys = [`${experiment}__${title}`];
+    if (shortExperiment && shortExperiment !== experiment) pairKeys.push(`${shortExperiment}__${title}`);
+    for (const titleKey of pairKeys) {
+      if (titleIds[titleKey] && titleIds[titleKey] !== key) titleDupes.add(titleKey);
+      else titleIds[titleKey] = key;
+    }
+    if (titleOnlyIds[title] && titleOnlyIds[title] !== key) titleOnlyDupes.add(title);
+    else titleOnlyIds[title] = key;
+  };
   const readLevelIds = async (archivePath) => {
     let text = '';
     try {
@@ -1342,29 +1219,23 @@ async function collectAnswers() {
       if (!identifier) continue;
       const levelId = levelIdOf(record.taskIndex);
       // 与 readAnswerFile 一致的复合键，避免多个实验的 L001 互相覆盖
-      const key = compositeKey(course, experiment, levelId);
-      levelIds[identifier] = key;
+      const classroomCode = String(record.classroomCode || fmt.classroomCodeFromTaskUrl(record && record.source) || '');
+      const homeworkId = Number(record.experimentHomeworkId)
+        || Number(fmt.homeworkIdFromTaskUrl(record && record.source)) || 0;
+      const key = keyForIdentity(course, experiment, levelId, classroomCode, homeworkId);
+      mapIdentifier(identifier, key);
       levelDirs[identifier] = experimentDir;
-      if (record.classroomCode) classroomCodeByDir[experimentDir] = String(record.classroomCode);
-      if (Number(record.experimentHomeworkId) > 0) homeworkIdByDir[experimentDir] = Number(record.experimentHomeworkId);
+      if (classroomCode) classroomCodeByDir[experimentDir] = classroomCode;
+      if (homeworkId > 0) homeworkIdByDir[experimentDir] = homeworkId;
       levelDirsByKey[key] = experimentDir;
+      answerTargetsByKey[key] = {
+        classroom: { name: course, code: classroomCode },
+        experiment: { name: experiment, homeworkId },
+        levelId
+      };
       // 按「实验名__关卡名」建一张兜底表：平台换标识时靠它匹配
       const title = String(record.title || '').trim();
-      if (title) {
-        // 两个键：完整实验目录名，以及**去掉开头 [分类] 前缀**的实验名。
-        // 后者是必需的：脚本从教学课程拿到的是平台侧的实验名（「需求分析的基本概念」），
-        // 而目录名带分类前缀（「[4、需求分析与结构化分析] 需求分析的基本概念」），
-        // 只用一个键两边永远对不上。
-        const shortExperiment = experiment.replace(/^\[[^\]]*\]\s*/, '');
-        const pairKeys = [`${experiment}__${title}`];
-        if (shortExperiment && shortExperiment !== experiment) pairKeys.push(`${shortExperiment}__${title}`);
-        for (const titleKey of pairKeys) {
-          if (titleIds[titleKey] && titleIds[titleKey] !== key) titleDupes.add(titleKey);
-          else titleIds[titleKey] = key;
-        }
-        if (titleOnlyIds[title] && titleOnlyIds[title] !== key) titleOnlyDupes.add(title);
-        else titleOnlyIds[title] = key;
-      }
+      mapTitle(experiment, title, key);
       // 选项个数是**确定**的信息，而页面上的题目分组只能靠 DOM 猜。
       // 把它带给脚本，脚本就能拿「总共多少个选项框」去校验/切分，
       // 而不是纯靠 class 名——这是分组数对不上的唯一可靠判据。
@@ -1377,7 +1248,7 @@ async function collectAnswers() {
     }
   };
 
-  // ② 兼容：实验目录下的 answers/*.answers.json、submit.blueprint.json 与 levels.jsonl
+  // ② 兼容：实验目录下的 answers/*.answers.json 与 levels.jsonl
   const walk = async (dir, depth = 0) => {
     if (depth > 3) return;
     let children = [];
@@ -1397,17 +1268,14 @@ async function collectAnswers() {
         await readLevelIds(full);
         continue;
       }
-      if (!/\.answers\.json$/.test(child.name) && child.name !== 'submit.blueprint.json') continue;
+      if (!/\.answers\.json$/.test(child.name)) continue;
       if (seen.has(full)) continue;
       seen.add(full);
       files.push(path.relative(root, full));
       try {
-        if (child.name === 'submit.blueprint.json') {
-          blueprints.push({ path: path.relative(root, full), ...JSON.parse(await fs.readFile(full, 'utf8')) });
-        } else {
-          // 早期产物（答案直接摆在实验目录下）同样让位于 v2
-          experiments.push(await readAnswerFile(full, { legacy: true }));
-        }
+        // 早期产物（答案直接摆在实验目录下）同样让位于 v2
+        const result = await readAnswerFile(full, { legacy: true });
+        if (result) experiments.push(result);
       } catch {
         /* 忽略坏文件 */
       }
@@ -1415,21 +1283,38 @@ async function collectAnswers() {
   };
   await walk(root);
 
+  // 只抓答案时没有 levels.jsonl，答案文档自身的身份与关卡标识仍可用于读取和回传。
+  for (const [key, entry] of Object.entries(answers)) {
+    answerTargetsByKey[key] ||= {
+      classroom: { name: entry.classroomName, code: entry.classroomCode },
+      experiment: { name: entry.experiment, homeworkId: entry.homeworkId },
+      levelId: entry.level_id
+    };
+    answerTargetsByKey[key].classroom.code ||= entry.classroomCode;
+    answerTargetsByKey[key].experiment.homeworkId ||= entry.homeworkId;
+    mapIdentifier(entry.task_identifier, key);
+    mapTitle(entry.experiment, String(entry.title || '').trim(), key);
+  }
+
   // 同名冲突（同一「实验名__关卡名」指向多个关卡）的条目一律丢弃：
   // 宁可匹配不上让人看到提示，也不能把答案串到别的关卡上。
   for (const dupe of titleDupes) delete titleIds[dupe];
   for (const dupe of titleOnlyDupes) delete titleOnlyIds[dupe];
+  for (const dupe of identifierDupes) {
+    delete levelIds[dupe];
+    delete levelDirs[dupe];
+  }
 
   return {
     answers,
     experiments,
-    blueprints,
     files,
     levelIds,
     titleIds,
     titleOnlyIds,
     levelDirs,
     levelDirsByKey,
+    answerTargetsByKey,
     // 班级核对用：实验目录 → 课堂码 / 作业 ID
     classroomCodeByDir,
     homeworkIdByDir,
@@ -1440,49 +1325,10 @@ async function collectAnswers() {
 }
 
 /**
- * 落盘一份由篡改猴回传的提交蓝图。
- *
- * 为什么需要它：`submit.blueprint.json` 原先**没有任何生成端**——只能靠使用者在
- * 篡改猴里导出录制结果、再手工放到实验目录。「录制一次、永久复用」的免录制链路
- * 因此名存实亡。现在脚本录到写请求就回传到这里，由控制台写进对应实验目录。
- */
-async function saveBlueprint(payload) {
-  const url = String(payload.url || '').trim();
-  if (!url) return { ok: false, error: '缺少 url' };
-  const method = String(payload.method || 'POST').trim().toUpperCase();
-  const entry = {
-    key: `${method} ${url.split('?')[0]}`,
-    url,
-    method,
-    body: typeof payload.body === 'string' ? payload.body : '',
-    recordedAt: new Date().toISOString()
-  };
-
-  const maps = await collectAnswers();
-  const levelId = String(payload.levelId || '');
-  const targetDir = maps.levelDirs[levelId] || path.join(maps.exportRoot, 'answers');
-  const target = path.join(targetDir, 'submit.blueprint.json');
-
-  // 同一 key 覆盖，其余保留；蓝图是数组，与脚本里 state.templates 的结构一致。
-  let existing = [];
-  try {
-    const parsed = JSON.parse(await fs.readFile(target, 'utf8'));
-    existing = Array.isArray(parsed) ? parsed : Array.isArray(parsed.blueprints) ? parsed.blueprints : [parsed];
-  } catch {
-    existing = [];
-  }
-  const merged = [entry, ...existing.filter((item) => item && item.key !== entry.key)].slice(0, 30);
-
-  await fs.mkdir(targetDir, { recursive: true });
-  await fs.writeFile(target, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
-  return { ok: true, path: path.relative(maps.exportRoot, target), count: merged.length, matchedLevel: Boolean(maps.levelDirs[levelId]) };
-}
-
-/**
  * 落盘一条由篡改猴回传的答案（关卡提交通过后自动回传，或手动导出后回传）。
  *
- * 关卡标识 → 课程/实验的映射来自关卡存档（collectAnswers 的 levelIds/levelDirs），
- * 因此**实验必须先被抓取过**，否则控制台不知道该把答案写进哪个课程/实验的文件；
+ * 关卡标识 → 课程/实验的映射来自关卡存档或已有的答案文档。
+ * 因此实验必须先被抓取过，否则控制台不知道该把答案写进哪个课程/实验的文件；
  * 这种情况必须明确报错，而不是猜一个目录写进去。
  *
  * 答案文件的落盘/合并交给 lib/answer-store.js（与抓取端共用同一套规则）：
@@ -1493,13 +1339,12 @@ async function saveAnswer(payload) {
   if (!identifier) return { ok: false, error: '缺少 identifier（关卡页 URL 最后一段）' };
   const maps = await collectAnswers();
   let key = maps.levelIds[identifier] || '';
-  let targetDir = maps.levelDirs[identifier];
 
   // 标识对不上时的兜底：平台**重新发布实验**会换掉一整组关卡标识（实测本地存档
   // `kbfiscelzp9a`、页面 `v4nyrg6lex7q`，标题都是 stride），或同一份实验在课堂与教学
   // 课程各有一份副本。按内容匹配：先「实验名__关卡名」（最精确），再「关卡名」
   // （课堂流程拿不到实验名，该表只收全局唯一的关卡名）。名字由脚本在 payload 里带上来。
-  if (!targetDir || !key) {
+  if (!key) {
     const experimentName = String(payload.experiment || '').trim();
     const levelName = String(payload.levelName || '').trim();
     const byPair = experimentName && levelName ? maps.titleIds[`${experimentName}__${levelName}`] : '';
@@ -1507,11 +1352,11 @@ async function saveAnswer(payload) {
     const hit = byPair || byTitle;
     if (hit) {
       key = hit;
-      targetDir = maps.levelDirsByKey[hit];
     }
   }
 
-  if (!targetDir || !key) {
+  const target = maps.answerTargetsByKey[key];
+  if (!target) {
     return {
       ok: false,
       error: '这个关卡还没有被抓取过，控制台也不知道它属于哪个课程/实验'
@@ -1520,15 +1365,14 @@ async function saveAnswer(payload) {
   }
 
   // 复合键形如 `班级__实验__L001`：关卡号是最后一段（L 编号里没有下划线）。
-  const levelId = key.split('__').pop() || String(payload.levelId || '');
-  const rel = path.relative(maps.exportRoot, targetDir).split(path.sep);
-  const course = rel[0] || '';
-  const experiment = rel[1] || '';
+  const levelId = target.levelId;
+  const course = target.classroom.name;
+  const experiment = target.experiment.name;
 
   // **班级核对**：存档说这一关属于哪个班，脚本所在的页面说自己是哪个班。
   // 两边都有值且不一致 → 拒绝写入。这就是「答案串班」的根因所在：
   // 旧实现只按关卡标识/关卡名匹配，同一份实验在多个班里存在时会把答案写错班。
-  const archivedCode = maps.classroomCodeByDir[targetDir] || '';
+  const archivedCode = target.classroom.code || '';
   const pageCode = String(payload.classroomCode || '').trim();
   if (archivedCode && pageCode && archivedCode !== pageCode) {
     return {
@@ -1541,7 +1385,7 @@ async function saveAnswer(payload) {
   const saved = await mergeAnswer({
     exportRoot: maps.exportRoot,
     classroom: { name: course, code: archivedCode || pageCode },
-    experiment: { name: experiment, homeworkId: maps.homeworkIdByDir[targetDir] || 0 },
+    experiment: { name: experiment, homeworkId: target.experiment.homeworkId || 0 },
     levelId,
     kind: payload.kind,
     language: payload.language,
@@ -1575,7 +1419,7 @@ async function saveLog(payload) {
   const lines = Array.isArray(payload.lines) ? payload.lines.map((line) => String(line)) : [];
   if (!lines.length) return { ok: false, error: '没有新日志内容' };
   const rawName = String(payload.name || '篡改猴日志').trim() || '篡改猴日志';
-  const name = rawName.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60);
+  const name = safeFileName(rawName, { replacement: '_', fallback: '篡改猴日志' }).slice(0, 60);
   // 注意：exportRootDir 是 server 工厂里的闭包，模块级函数取不到，这里自己算一次
   // （与 collectAnswers 用的是同一个口径）。
   const root = process.env.EDUCODER_EXPORT_ROOT || path.join(__dirname, '..', '..', 'exports');
@@ -1598,18 +1442,8 @@ async function saveLog(payload) {
   return { ok: true, path: path.relative(root, file), lines: lines.length, seq, appended: true };
 }
 
-/** 关卡存档的 `source`（任务页 URL）→ 平台关卡标识；三段式 URL 取最后一段。 */
-function taskIdentifierFromSource(source) {
-  const match = /\/tasks\/([^/?#]+(?:\/[^/?#]+)*)/.exec(String(source || ''));
-  if (!match) return '';
-  const segments = match[1].split('/').filter(Boolean);
-  return segments.length ? segments[segments.length - 1] : '';
-}
-
-/** 与 answerer 一致的 level_id 编号规则（taskIndex → L001）。 */
-function levelIdOf(taskIndex) {
-  return `L${String(Number(taskIndex) || 0).padStart(3, '0')}`;
-}
+const taskIdentifierFromSource = identifierFromSource;
+const levelIdOf = fmt.levelIdOf;
 
 /**
  * 全局唯一的关卡键：`课程__实验__level_id`。

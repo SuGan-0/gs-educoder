@@ -1,16 +1,21 @@
 'use strict';
 
+require('./helpers/offline-signing');
+
 /**
  * 签名模块的离线测试。
  *
  * 这些向量是用固定时间戳算出来的**硬编码期望值**——它们的作用是锁死算法：
- * 一旦 AK/SK 常量被换掉、或 base64/md5 的顺序被改错，这里必然红。
+ * 输入是固定的虚构 AK/SK；base64/md5 的顺序被改错时，这里必然红。
  * 不要因为"跑不过就改期望值"，那等于把唯一的安全网拆了。
  *
  * 运行：node --test test/educoder-sign.test.js
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 
 const {
   SIGNING_VERSION,
@@ -43,15 +48,15 @@ test('decodeKey：非法入参抛错，不静默返回空串', () => {
 });
 
 test('测试向量：GET @ 固定时间戳', () => {
-  assert.equal(signature('GET', FIXED), '5b853aab244a2be19154aaabc0a65fdb');
+  assert.equal(signature('GET', FIXED), '0851d22e445467d7599ea5101d606f3b');
 });
 
 test('测试向量：POST @ 固定时间戳（方法参与签名）', () => {
-  assert.equal(signature('POST', FIXED), 'ba80d114b7b1b5863e7bd2527cce1281');
+  assert.equal(signature('POST', FIXED), '5aef2207f5a0be8628b8a61ac2689f4f');
 });
 
 test('测试向量：time=0 是合法入参，不能被当成"未传时间"', () => {
-  assert.equal(signature('GET', 0), 'b9a70328b377bb453efca5ace76f4776');
+  assert.equal(signature('GET', 0), '3a4662c95557d58be4e98482ab7756b0');
   assert.equal(signingHeaders({ method: 'GET', now: 0 })['X-EDU-Timestamp'], '0');
 });
 
@@ -107,4 +112,22 @@ test('requestHeaders：签名方法跟随入参', () => {
 test('常量自检：EDU_TYPE 与 SIGNING_VERSION 已定义', () => {
   assert.equal(EDU_TYPE, 'pc');
   assert.match(SIGNING_VERSION, /^\d{4}-\d{2}-\d{2}$/, '失效时靠它判断是算法变了还是会话掉了');
+});
+
+test('缺少签名配置时明确报错，不因测试夹具而掩盖实际运行行为', () => {
+  const file = require.resolve('../extractor/lib/educoder-sign');
+  const isolated = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
+    module: isolated,
+    __dirname: path.dirname(file),
+    process: { env: {} },
+    Buffer,
+    require(name) {
+      if (name === 'node:fs') return { readFileSync() { throw new Error('No private configuration in this test'); } };
+      return require(name);
+    }
+  }, { filename: file });
+  assert.equal(isolated.exports.hasSigningKeys(), false);
+  assert.equal(isolated.exports.signingKeysEncoded(), null);
+  assert.throws(() => isolated.exports.signature('GET', FIXED), /缺少签名常量 AK\/SK/);
 });

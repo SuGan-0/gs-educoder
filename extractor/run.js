@@ -5,11 +5,7 @@ const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
 
 const { ExtractEngine, DEFAULT_EXPORT_ROOT, DEFAULT_PROFILE_DIR } = require('./lib/extract-engine');
-const {
-  resolveAiConfig,
-  describeAiConfig,
-  MISSING_KEY_HINT: AI_MISSING_KEY_HINT
-} = require('./lib/ai-config');
+const { resolveLevelSelection } = require('./lib/selection-model');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_NETWORK_LOG = path.join(ROOT, '.educoder-network.jsonl');
@@ -278,6 +274,11 @@ async function runUi(options = {}) {
     }
   });
 
+  function applyExtractionOptions(payload) {
+    if (Object.hasOwn(payload, 'answersOnly')) engine.answersOnly = payload.answersOnly === true;
+    if (Object.hasOwn(payload, 'skipExisting')) engine.skipExisting = payload.skipExisting !== false;
+  }
+
   async function onControl(action, payload = {}) {
     if (action === 'select-course') {
       if (!pending.course) throw new Error('当前不在课程选择阶段。');
@@ -285,6 +286,7 @@ async function runUi(options = {}) {
       if (!course) throw new Error('课程编号无效。');
       const { resolve } = pending.course;
       pending.course = null;
+      applyExtractionOptions(payload);
       resolve(course);
       return { ok: true, course: course.name };
     }
@@ -295,35 +297,18 @@ async function runUi(options = {}) {
       if (!selected.length) throw new Error('请至少选择一个实验。');
       const { resolve } = pending.experiments;
       pending.experiments = null;
+      applyExtractionOptions(payload);
       resolve(selected);
       return { ok: true, count: selected.length };
     }
     if (action === 'select-levels') {
       if (!pending.levels) throw new Error('当前不在关卡选择阶段。');
       const all = pending.levels.levels;
-      // 关卡列表常常只有名称（identifier 为空），因此选择项可能只带 position / challengeId。
-      // 三种身份都接受；全部无法匹配时视为「全选」而不是「一个都不抓」。
-      const wantedLevels = Array.isArray(payload.levels) ? payload.levels : null;
-      const identifiers = Array.isArray(payload.identifiers) ? payload.identifiers : [];
-      let selected = null;
-      if (wantedLevels && wantedLevels.length) {
-        selected = all.filter((level) =>
-          wantedLevels.some((want) => {
-            if (!want || typeof want !== 'object') return String(want) === String(level.identifier);
-            if (want.identifier && String(want.identifier) === String(level.identifier)) return true;
-            if (want.challengeId && String(want.challengeId) === String(level.challengeId)) return true;
-            const position = Number(want.position);
-            return Number.isFinite(position) && position > 0 && Number(level.position) === position;
-          })
-        );
-      } else if (identifiers.length) {
-        selected = all.filter((level) => identifiers.includes(level.identifier));
-      } else {
-        selected = all;
-      }
+      const selected = resolveLevelSelection(all, payload);
       const { resolve } = pending.levels;
       pending.levels = null;
-      resolve(selected.length ? selected : null);
+      applyExtractionOptions(payload);
+      resolve(selected);
       return { ok: true, count: selected.length };
     }
     if (action === 'stop') {
@@ -387,53 +372,6 @@ async function runUi(options = {}) {
     port: options.port === undefined ? resolveUiPort() : options.port,
     token: options.token === undefined ? resolveUiToken() : options.token,
     onControl,
-    // AI 作答：真正的模型调用放在外壳里，服务端只管进度与快照。
-    // dispatch 参数（isStopped/report/log）都由服务端提供；缺省时退化成「不报进度」，不抛错。
-    // AI 配置（接口 / 模型 / Key）一律来自 .env，不接界面传值——
-    // 界面上填的只活在进程内存里、关掉就没了，每次都要重填。
-    aiConfig: () => describeAiConfig(),
-    onAnswerRun: async ({ course, experiments, levels, isStopped, report, log } = {}) => {
-      const { answerExperiment } = require('./lib/answerer');
-      const ai = resolveAiConfig();
-      if (!ai.apiKey) throw new Error(AI_MISSING_KEY_HINT);
-      const stopped = typeof isStopped === 'function' ? isStopped : () => false;
-      const report2 = typeof report === 'function' ? report : () => {};
-      const log2 = typeof log === 'function' ? log : (message) => console.log(message);
-      report2({ course, total: experiments.length });
-      log2(`开始 AI 作答：${course}（${experiments.length} 个实验），模型 ${ai.model}`);
-      const results = [];
-      let done = 0;
-      for (const experiment of experiments) {
-        if (stopped()) break;
-        report2({ experiment });
-        try {
-          const result = await answerExperiment({
-            exportRoot: outputRoot(),
-            course,
-            experiment,
-            apiKey: ai.apiKey,
-            baseUrl: ai.baseUrl,
-            model: ai.model,
-            onlyLevelIds: levels,
-            log: log2
-          });
-          results.push({ experiment, ...result });
-        } catch (error) {
-          log2(`实验「${experiment}」作答失败：${error.message}`, 'error');
-          results.push({ experiment, ok: false, error: error.message });
-        }
-        done += 1;
-        report2({ done, results });
-      }
-      log2(
-        stopped() ? `AI 作答已停止（完成 ${done}/${experiments.length}）` : `AI 作答完成（${done}/${experiments.length}）`,
-        stopped() ? 'warn' : 'info'
-      );
-      return { results, total: experiments.length };
-    },
-    onAnswerStop: async () => {
-      console.log('已收到停止 AI 作答的请求。');
-    },
     open: options.open !== false
   });
   console.log(`\n本地控制台已启动：${server.url}`);

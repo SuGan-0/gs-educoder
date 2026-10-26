@@ -26,3 +26,23 @@ userscript/educoder-lite.user.js
 .workbuddy/
 # 只用 npm（package-lock.json 为准），pnpm 的锁文件是本地产物
 pnpm-lock.yaml
+
+# 本地实验版本与私有开发上下文
+*.local.*
+.trae/
+.workbuddy-ai/
+
+# 虚拟环境与图形实验：执行器、生成器、调试工具和交接资料仅留本地
+extractor/lib/virtual-*.js
+extractor/lib/graphic-*.js
+tools/graphic-*.js
+tools/asar-tool.js
+tools/mdj-tool.js
+tools/patch-builders.py
+test/virtual-*.test.js
+examples/virtual-*.json
+docs/GRAPHIC-TASKS.md
+docs/HANDOVER-GRAPHIC.md
+docs/HANDOVER-PROMPT.md
+docs/VIRTUAL-SUBMISSION.md
+tougepj-vm-probe/

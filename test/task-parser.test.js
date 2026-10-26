@@ -43,10 +43,10 @@ test('safeName：空值/假值返回 untitled', () => {
   assert.equal(safeName(false), 'untitled');
 });
 
-test('safeName：纯空白输入（非假值）按 run.js 既有行为返回空串', () => {
-  // 契约只说「空值/假值 → untitled」；纯空白是 truthy，现有实现 trim 后得到 ''。
-  // 此处锁定既有行为，若改为 untitled 属于行为变更，需 Lead 决策。
-  assert.equal(safeName('   '), '');
+test('safeName：纯空白与点目录必须有安全名称，不能丢失目录层级或越过导出根目录', () => {
+  assert.equal(safeName('   '), 'untitled');
+  assert.equal(safeName('.'), 'untitled');
+  assert.equal(safeName('..'), 'untitled');
 });
 
 // -------------------------------------------------------- languageFromPath

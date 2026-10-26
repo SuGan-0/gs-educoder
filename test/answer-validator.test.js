@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const { validateAnswers } = require('../extractor/lib/answer-validator');
+const { validateAnswers, validateAnswerDocument } = require('../extractor/lib/answer-validator');
 const { appendLevel, toArchiveRecord } = require('../extractor/lib/level-store');
 
 const CODE_LEVEL = {
@@ -181,4 +181,87 @@ test('tools/validate-answers.js：集中目录里的答案能通过，course/exp
     assert.equal(mismatch.status, 1);
     assert.match(mismatch.out, /course-mismatch/);
   });
+});
+
+function standaloneDocument() {
+  return {
+    schema_version: 2, classroom: { name: '数据库', code: 'DB1' }, experiment: { name: 'DML', homework_id: 12 },
+    answers: [
+      { level_id: 'L001', task_identifier: 'sql-id', title: '插入', kind: 'code', source: 'export', verified: true, answer: { language: 'sql', code: 'INSERT INTO t VALUES (1);' } },
+      { level_id: 'L002', task_identifier: 'choice-id', title: '选择', kind: 'choice', source: 'ai', verified: false, answer: { questions: [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }] } }
+    ], unanswered: []
+  };
+}
+
+test('validateAnswers：原始 v2 嵌套选择答案不会把对象转成字母误报', () => {
+  const report = validateAnswers({ levels: [CHOICE_LEVEL], answers: [{
+    level_id: 'L002', kind: 'choice', answer: { questions: [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }] }
+  }] });
+  assert.equal(report.ok, true, JSON.stringify(report.issues));
+});
+
+test('validateAnswerDocument：无题目仍检查重复关卡/小问、原始非法选项、题型和验证标记', () => {
+  const document = standaloneDocument();
+  document.answers[0].verified = 'false';
+  document.answers[1].answer.questions.push({ number: 1, selected: ['A', '9'] });
+  document.answers.push({ level_id: 'L001', kind: 'unknown', task_identifier: '' });
+  const report = validateAnswerDocument(document, { standalone: true });
+  const codes = report.issues.map((issue) => issue.code);
+  for (const expected of ['invalid-verified', 'duplicate-level', 'duplicate-question', 'invalid-selection', 'invalid-kind', 'missing-identifier']) assert.ok(codes.includes(expected), expected);
+});
+
+function runValidator(root, ...filters) {
+  try {
+    return { status: 0, output: execFileSync(process.execPath, [path.join(__dirname, '..', 'tools', 'validate-answers.js'), ...filters], { encoding: 'utf8', env: { ...process.env, EDUCODER_EXPORT_ROOT: root } }) };
+  } catch (error) {
+    return { status: error.status, output: String(error.stdout || '') + String(error.stderr || '') };
+  }
+}
+
+test('tools/validate-answers.js：仅答案混合题实际校验，明确没有题干不能核对正确性', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-only-valid-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'answers', '数据库（DB1）', 'DML.answers.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const document = standaloneDocument();
+  fs.writeFileSync(file, JSON.stringify(document));
+  const valid = runValidator(root, '数据库', 'DML');
+  assert.equal(valid.status, 0, valid.output);
+  assert.match(valid.output, /2\/2 关有答案/);
+  assert.match(valid.output, /没有题目存档.*答案正确性/);
+  document.answers[1].answer.questions[0].selected.push('9');
+  fs.writeFileSync(file, JSON.stringify(document));
+  const invalid = runValidator(root);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.output, /invalid-selection/);
+});
+
+test('tools/validate-answers.js：损坏/未来答案文件不能被目录扫描忽略成通过', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-invalid-doc-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'answers', '数据库（DB1）', 'DML.answers.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (const original of ['{broken', JSON.stringify({ ...standaloneDocument(), schema_version: 99 })]) {
+    fs.writeFileSync(file, original);
+    const result = runValidator(root, '数据库', 'DML');
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /答案坏/);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+  }
+});
+
+test('tools/validate-answers.js：仅答案正文课堂码必须与目录身份一致，没有目标不能称通过', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-identity-valid-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const empty = runValidator(root);
+  assert.equal(empty.status, 1);
+  assert.match(empty.output, /未执行校验/);
+  const file = path.join(root, 'answers', '数据库（DB1）', 'DML.answers.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const document = standaloneDocument();
+  document.classroom.code = 'OTHER';
+  fs.writeFileSync(file, JSON.stringify(document));
+  const mismatch = runValidator(root);
+  assert.equal(mismatch.status, 1, mismatch.output);
+  assert.match(mismatch.output, /classroom-code-mismatch/);
 });

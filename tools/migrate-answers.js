@@ -77,7 +77,9 @@ function readLevelIndex(exportRoot, courseName, experimentName) {
     // 追加制、最后一行生效——与 level-store 的读取口径一致
     index.set(fmt.levelIdOf(taskIndex), {
       title: String(record.title || ''),
-      taskIdentifier: record.source ? (String(record.source).match(/\/tasks\/([^/?#]+)/)?.[1] || '') : '',
+      // 取 /tasks/ 的**最后一段**：三段式 /tasks/{课程码}/{作业号}/{标识} 里
+      // 前两段不是关卡标识（旧写法取第一段，拿到的是课程码，迁移出的 task_identifier 全错）。
+      taskIdentifier: fmt.identifierFromTaskUrl(record.source),
       kind: record.type === 'choice' ? fmt.KINDS.CHOICE : fmt.KINDS.CODE,
       language: String(record.codeLanguage || '')
     });
@@ -114,9 +116,7 @@ function collectClassroomCodes(exportRoot, answerDir, overrides) {
         if (!line.trim()) continue;
         try {
           const record = JSON.parse(line);
-          remember(courseName, record.classroomCode || '');
-          const fromSource = String(record.source || '').match(/\/tasks\/([^/?#]+)\/\d+\//)?.[1];
-          remember(courseName, fromSource || '');
+          remember(courseName, record.classroomCode || fmt.classroomCodeFromTaskUrl(record.source));
         } catch { /* 坏行跳过 */ }
       }
     }
@@ -201,8 +201,8 @@ async function main() {
       try {
         for (const line of fs.readFileSync(archive, 'utf8').split('\n')) {
           if (!line.trim()) continue;
-          const hit = String(JSON.parse(line).source || '').match(/homework_common_id=(\d+)/);
-          if (hit) { homeworkId = Number(hit[1]) || 0; break; }
+          const hit = fmt.homeworkIdFromTaskUrl(String(JSON.parse(line).source || ''));
+          if (hit) { homeworkId = Number(hit) || 0; break; }
         }
       } catch { /* 没存档：作业号留 0 */ }
     }

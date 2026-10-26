@@ -132,6 +132,22 @@ test('按钮匹配：什么都不是的页面返回 null（而不是随便点一
   assert.equal(hooks.findButton(hooks.SUBMIT_PATTERNS), null);
 });
 
+test('按钮匹配：冷却中的 30S 评测按钮仍可识别为等待候选，但默认不能点击', () => {
+  const evaluate = fakeButton({ text: '30S', title: '运行评测', class: 'btn-run___main', disabled: true });
+  const hooks = loadHooks([fakeButton({ text: '自测运行', class: 'btn-run-self___self' }), evaluate]);
+  assert.equal(hooks.findButton(hooks.SUBMIT_PATTERNS), null);
+  assert.equal(hooks.findButton(hooks.SUBMIT_PATTERNS, { allowDisabled: true }), evaluate);
+});
+
+test('按钮匹配：隐藏按钮和自测运行不能代替实际评测按钮', () => {
+  const hooks = loadHooks([
+    fakeButton({ text: '评测', title: '运行评测', hidden: true }),
+    fakeButton({ text: '自测运行', class: 'btn-run-self___self' }),
+    fakeButton({ text: '停止运行' })
+  ]);
+  assert.equal(hooks.findButton(hooks.SUBMIT_PATTERNS, { allowDisabled: true }), null);
+});
+
 test('按钮枚举：找不到时要能报出「评测[运行评测]」这种可核对的信息', () => {
   const hooks = loadHooks([
     fakeButton({ text: '评测', title: '运行评测' }),

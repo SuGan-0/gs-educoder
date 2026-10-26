@@ -17,9 +17,9 @@
  *
  * - 抓取端：关卡「已通过测评」时导出提交的代码 / 所选项；
  * - 控制台：篡改猴提交通过后回传（`POST /api/answer/save`）；
- * - AI 作答：模型产出后写入（`answerer.js`）。
+ * - Agent 作答：读取题目后在本地合并答案，不依赖模型 API。
  *
- * 规则：同一 `level_id` 覆盖，其它关卡原样保留——AI 写过的、人工改过的都不会被一次导出抹掉。
+ * 规则：同一 `level_id` 合并，其它关卡原样保留；未验证答案默认不能覆盖已验证答案。
  *
  * ## 班级一致性（安全闸）
  *
@@ -31,6 +31,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const fmt = require('./answer-format');
+const writeQueues = new Map();
 
 /** 答案文件的规范位置（v2）。 */
 function answerPathFor(exportRoot, classroom, experiment) {
@@ -57,12 +58,13 @@ async function classroomCodeFromDir(exportRoot, classroomName) {
   } catch {
     return '';
   }
+  const codes = new Set();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const parsed = fmt.classroomFromDirName(entry.name);
-    if (parsed.code && parsed.name === wanted) return parsed.code;
+    if (parsed.code && parsed.name === fmt.safeFilePart(wanted)) codes.add(parsed.code);
   }
-  return '';
+  return codes.size === 1 ? [...codes][0] : '';
 }
 
 /**
@@ -93,7 +95,7 @@ function choiceAnswerText(payload) {
     .sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0))
     .map((row) => ({
       position: Number(row.position) || 0,
-      answer: String(row.standard_answer ?? row.actual_output ?? '')
+      answer: String(row.standard_answer ?? '').trim() || String(row.actual_output ?? '').trim()
     }))
     .filter((row) => row.position > 0 && row.answer)
     .map((row) => `${row.position}:${row.answer}`)
@@ -101,10 +103,11 @@ function choiceAnswerText(payload) {
 }
 
 /** 读一个答案文件并升级到 v2；不存在 / 坏文件 / 版本太新都返回 null。 */
-async function readAnswerDocument(answerPath) {
+async function readAnswerDocument(answerPath, { strict = false } = {}) {
   try {
     return fmt.normalizeDocument(JSON.parse(await fs.readFile(answerPath, 'utf8')));
-  } catch {
+  } catch (error) {
+    if (strict && error.code !== 'ENOENT') throw new Error(`无法读取已有答案文件，已保留原文件：${answerPath}（${error.message}）`);
     return null;
   }
 }
@@ -113,11 +116,11 @@ async function readAnswerDocument(answerPath) {
  * 读该实验的答案文档：**优先 v2 位置，其次 v1 旧位置**。
  * @returns {Promise<{document: object, path: string, legacy: boolean}|null>}
  */
-async function loadAnswerDocument(exportRoot, classroom, experiment) {
+async function loadAnswerDocument(exportRoot, classroom, experiment, options = {}) {
   const current = fmt.answerPathFor(exportRoot, classroom, experiment);
   const legacy = fmt.legacyAnswerPathFor(exportRoot, classroom, experiment);
   for (const [target, isLegacy] of [[current, false], [legacy, true]]) {
-    const document = await readAnswerDocument(target);
+    const document = await readAnswerDocument(target, options);
     if (document) return { document, path: target, legacy: isLegacy };
   }
   return null;
@@ -134,7 +137,12 @@ function mergeEntryInto(document, entry) {
   document.answers = document.answers.map((item) => {
     if (String(item.level_id) !== entry.level_id) return item;
     replaced = true;
-    return entry;
+    return {
+      ...entry,
+      task_identifier: entry.task_identifier || item.task_identifier,
+      title: entry.title || item.title,
+      ...(entry.kind === fmt.KINDS.CODE ? { language: entry.language || item.language || '' } : {})
+    };
   });
   if (!replaced) document.answers.push(entry);
   document.unanswered = document.unanswered.filter((item) => String(item.level_id) !== entry.level_id);
@@ -152,7 +160,7 @@ function mergeEntryInto(document, entry) {
  * @returns {Promise<{ok:boolean, error?:string, answerPath?:string, count?:number,
  *   changed?:boolean, legacyUpgraded?:boolean, replaced?:string[], skipped?:Array}>}
  */
-async function mergeAnswers({ exportRoot, classroom, experiment, entries, model }) {
+async function mergeAnswersUnlocked({ exportRoot, classroom, experiment, entries, model, overwriteVerified = false }) {
   const classroomBlock = fmt.classroomBlock(classroom);
   const experimentBlock = fmt.experimentBlock(experiment);
   if (classroomBlock.name === '未命名班级' || experimentBlock.name === '未命名实验') {
@@ -192,7 +200,12 @@ async function mergeAnswers({ exportRoot, classroom, experiment, entries, model 
     return { ok: false, error: '没有可写入的答案', skipped };
   }
 
-  const existing = await loadAnswerDocument(exportRoot, classroomBlock, experimentBlock);
+  let existing;
+  try {
+    existing = await loadAnswerDocument(exportRoot, classroomBlock, experimentBlock, { strict: true });
+  } catch (error) {
+    return { ok: false, error: error.message, skipped };
+  }
   const answerPath = fmt.answerPathFor(exportRoot, classroomBlock, experimentBlock);
 
   // 班级一致性：文件里已有课堂码且与本次不同 → 报错，不覆盖。
@@ -204,14 +217,32 @@ async function mergeAnswers({ exportRoot, classroom, experiment, entries, model 
       error: `答案文件属于另一个班级（文件里是 ${existingCode}，本次是 ${classroomBlock.code}）：${existing.path}`
     };
   }
+  const previousExperiment = existing?.document?.experiment;
+  const knownName = (name) => name && name !== '未命名班级' && name !== '未命名实验';
+  if (existing && (
+    (knownName(existing.document.classroom.name) && existing.document.classroom.name !== classroomBlock.name)
+    || (knownName(previousExperiment.name) && previousExperiment.name !== experimentBlock.name)
+    || (previousExperiment.homework_id && experimentBlock.homework_id && previousExperiment.homework_id !== experimentBlock.homework_id)
+  )) {
+    return { ok: false, error: `答案路径发生身份冲突（班级名、实验名或作业号不同），已保留原文件：${existing.path}` };
+  }
 
   const document = existing ? existing.document : fmt.emptyDocument(classroomBlock, experimentBlock);
-  if (classroomBlock.code) document.classroom = classroomBlock;
+  if (classroomBlock.code) document.classroom = { ...classroomBlock, id: classroomBlock.id || document.classroom.id };
   if (experimentBlock.homework_id) document.experiment = experimentBlock;
   document.generated_at = new Date().toISOString();
   document.model = document.model || model || '';
 
-  const replaced = normalized.filter((entry) => mergeEntryInto(document, entry)).map((entry) => entry.level_id);
+  const replaced = [];
+  for (const entry of normalized) {
+    const previous = document.answers.find((item) => item.level_id === entry.level_id);
+    if (previous?.verified && !entry.verified && !overwriteVerified) {
+      skipped.push({ levelId: entry.level_id, reason: '已有平台验证通过的答案，未用未验证答案覆盖' });
+      continue;
+    }
+    if (mergeEntryInto(document, entry)) replaced.push(entry.level_id);
+  }
+  document.answers.sort((a, b) => fmt.taskIndexOf(a.level_id) - fmt.taskIndexOf(b.level_id));
   const count = document.answers.length;
   const text = fmt.stringifyDocument(document);
 
@@ -227,7 +258,13 @@ async function mergeAnswers({ exportRoot, classroom, experiment, entries, model 
   }
 
   await fs.mkdir(path.dirname(answerPath), { recursive: true });
-  await fs.writeFile(answerPath, text, 'utf8');
+  const temporaryPath = `${answerPath}.${process.pid}.${require('node:crypto').randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, text, 'utf8');
+    await fs.rename(temporaryPath, answerPath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true });
+  }
   return {
     ok: true,
     answerPath,
@@ -237,6 +274,19 @@ async function mergeAnswers({ exportRoot, classroom, experiment, entries, model 
     changed: true,
     legacyUpgraded: Boolean(existing && existing.legacy)
   };
+}
+
+/** 同一路径的并发回传串行合并，避免后写者丢掉先写者的关卡。 */
+async function mergeAnswers(options) {
+  const answerPath = fmt.answerPathFor(options.exportRoot, options.classroom, options.experiment);
+  const previous = writeQueues.get(answerPath) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(() => mergeAnswersUnlocked(options));
+  writeQueues.set(answerPath, pending);
+  try {
+    return await pending;
+  } finally {
+    if (writeQueues.get(answerPath) === pending) writeQueues.delete(answerPath);
+  }
 }
 
 /**

@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const http = require('node:http');
+const { safeName } = require('./lib/task-parser');
 
 const ROOT = path.resolve(__dirname, '..');
 const COOKIE_FILE = path.join(ROOT, '.educoder-cookie.json');
@@ -15,13 +16,6 @@ function sendJson(res, status, body) {
     'Access-Control-Allow-Headers': 'Content-Type'
   });
   res.end(JSON.stringify(body));
-}
-
-function safeName(value) {
-  return String(value || 'untitled')
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 async function readCookieFile() {

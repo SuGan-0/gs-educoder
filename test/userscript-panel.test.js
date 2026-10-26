@@ -183,6 +183,20 @@ test('面板：默认展开，点一下能收起，状态记进 GM', () => {
 
 });
 
+test('面板：粘贴解锁默认开启，开关与存储同步并在重载后保留', () => {
+  const built = boot();
+  const button = built.created.find((node) => node.id === 'eas-paste-unlock');
+  assert.ok(button);
+  assert.equal(button.textContent, '粘贴解锁：开');
+  button.click();
+  assert.equal(button.textContent, '粘贴解锁：关');
+  assert.equal(built.store['educoder-paste-unlock'], false);
+  const reloaded = boot({ gm: built.store });
+  assert.equal(reloaded.created.find((node) => node.id === 'eas-paste-unlock').textContent, '粘贴解锁：关');
+  button.click();
+  assert.equal(built.store['educoder-paste-unlock'], true);
+});
+
 test('面板：上次收起过的话，刷新后保持收起（不自己弹开）', () => {
   const built = boot({ gm: { 'educoder-panel-folded': true } });
   const builtPanel = built.created.find((node) => node.id === 'eas-panel');

@@ -180,10 +180,10 @@ test('批量导出：从关卡数据里取各关标准答案（按 position 排�
     }
   });
   assert.deepEqual(JSON.parse(JSON.stringify(rows)), [
-    { position: 1, answer: 'A' },
-    { position: 2, answer: 'B' },
-    { position: 4, answer: 'D' }
-  ], 'standard_answer 优先、空值被过滤、缺 standard_answer 时退回 actual_output');
+    { position: 1, answer: 'A', fromActual: false },
+    { position: 2, answer: 'B', fromActual: false },
+    { position: 4, answer: 'D', fromActual: true }
+  ], 'standard_answer 优先、空值被过滤、缺 standard_answer 时退回 actual_output（fromActual 标记来源，入库门槛靠它）');
 });
 
 test('批量导出：没有 choose_test_cases（纯编程题）时返回空', () => {

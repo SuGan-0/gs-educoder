@@ -22,6 +22,8 @@ function codeLetters(count) {
 
 /** 从原始条目里取出「写出来的字母」，用于发现被规范化过滤掉的非法字母。 */
 function writtenLetters(raw) {
+  if (Array.isArray(raw?.answer?.questions)) return writtenLetters(raw.answer);
+  if (Array.isArray(raw?.answer)) return writtenLetters({ questions: raw.answer });
   if (Array.isArray(raw?.questions)) {
     const joined = raw.questions
       .flatMap((item) => (Array.isArray(item.selected) ? item.selected : []))
@@ -142,4 +144,67 @@ function validateAnswerList(list, levels) {
   return validateAnswers({ levels, answers: map });
 }
 
-module.exports = { validateAnswers, validateAnswerList };
+/** 不依赖题目存档的工作文档检查；保留原始结构，避免规范化掩盖非法字段。 */
+function validateAnswerDocument(raw, { classroom, experiment, standalone = false } = {}) {
+  const issues = [];
+  const add = (level, code, message, kind = '-') => issues.push({ level, kind, code, message });
+  const document = fmt.normalizeDocument(raw, { classroom, experiment });
+  const matchesName = (declared, expected) => !expected || declared === expected || fmt.safeFilePart(declared) === expected;
+  if (!matchesName(document.classroom.name, classroom?.name)) add('-', 'course-mismatch', `答案课堂「${document.classroom.name}」与目录「${classroom.name}」不一致`);
+  if (classroom?.code && document.classroom.code && classroom.code !== document.classroom.code) add('-', 'classroom-code-mismatch', '答案课堂码与目录/存档不一致');
+  if (!matchesName(document.experiment.name, experiment?.name)) add('-', 'experiment-mismatch', `答案实验「${document.experiment.name}」与目录「${experiment.name}」不一致`);
+  const homeworkId = Number(experiment?.homework_id || experiment?.homeworkId) || 0;
+  if (homeworkId && document.experiment.homework_id && homeworkId !== document.experiment.homework_id) add('-', 'homework-mismatch', '答案作业号与题目存档不一致');
+  if (document.classroom.name === '未命名班级') add('-', 'missing-classroom', '缺少课堂名称');
+  if (document.experiment.name === '未命名实验') add('-', 'missing-experiment', '缺少实验名称');
+  if (standalone && !document.classroom.code) add('-', 'missing-classroom-code', '仅答案文档缺少课堂码，无法确认班级身份');
+  if (standalone && document.experiment.homework_id <= 0) add('-', 'missing-homework', '仅答案文档缺少有效作业号');
+  if (Number(raw.schema_version) === 2 && !Array.isArray(raw.answers)) add('-', 'answers-shape', 'v2 answers 必须是数组');
+  const list = Array.isArray(raw.answers) ? raw.answers : Object.entries(raw.answers || {}).map(([level_id, entry]) => ({
+    ...(entry && typeof entry === 'object' ? entry : { answer: entry }), level_id
+  }));
+  const ids = new Set();
+  let covered = 0;
+  for (const entry of list) {
+    const id = String(entry?.level_id || '');
+    const kind = entry?.kind;
+    if (!/^L\d{3,6}$/.test(id)) add(id || '-', 'invalid-level-id', '关卡号必须是 L001 这类格式', kind);
+    if (ids.has(id)) add(id, 'duplicate-level', '同一实验包含重复关卡号', kind);
+    ids.add(id);
+    if (!['code', 'choice'].includes(kind)) add(id, 'invalid-kind', '题型必须为 code 或 choice', kind);
+    if (entry?.source !== undefined && !fmt.SOURCES.includes(entry.source)) add(id, 'invalid-source', '答案来源不在支持列表中', kind);
+    if (entry?.verified !== undefined && typeof entry.verified !== 'boolean') add(id, 'invalid-verified', 'verified 必须是真正的布尔值', kind);
+    if (standalone && !String(entry?.task_identifier || '').trim()) add(id, 'missing-identifier', '仅答案关卡缺少平台 task_identifier', kind);
+    const answer = fmt.normalizeAnswer(id, entry);
+    if (kind === 'code') {
+      if (!answer.code) add(id, 'empty', '编程题答案为空', kind);
+      else {
+        covered += 1;
+        if (PLACEHOLDER.test(answer.code)) add(id, 'placeholder', '编程题答案仍含占位文本', kind);
+      }
+      if (Number(raw.schema_version) === 2 && (typeof entry.answer !== 'object' || Array.isArray(entry.answer) || !entry.answer || typeof entry.answer.code !== 'string')) add(id, 'code-shape', 'v2 编程答案必须为 answer: { language, code }', kind);
+    } else if (kind === 'choice') {
+      if (!answer.questions.length) add(id, 'empty', '选择题答案为空', kind);
+      else covered += 1;
+      const rawQuestions = entry.answer?.questions || entry.questions || (Array.isArray(entry.answer) ? entry.answer : null);
+      if (Number(raw.schema_version) === 2 && !Array.isArray(entry.answer?.questions)) add(id, 'choice-shape', 'v2 选择答案必须为 answer: { questions: [...] }', kind);
+      const numbers = new Set();
+      for (const question of Array.isArray(rawQuestions) ? rawQuestions : answer.questions) {
+        const number = Number(question?.number);
+        if (!Number.isInteger(number) || number <= 0) add(id, 'invalid-question-number', '选择题题号必须为正整数', kind);
+        if (numbers.has(number)) add(id, 'duplicate-question', `第 ${number} 问题号重复`, kind);
+        numbers.add(number);
+        const selected = question?.selected;
+        if (!Array.isArray(selected) || !selected.length || selected.some((letter) => typeof letter !== 'string' || !/^[A-H]$/.test(letter))) add(id, 'invalid-selection', `第 ${number} 问必须包含非空 A–H 选项数组`, kind);
+      }
+    }
+  }
+  for (const entry of document.unanswered) {
+    if (ids.has(entry.level_id)) add(entry.level_id, 'answer-unanswered-conflict', '同一关同时出现在 answers 和 unanswered');
+    else if (standalone) add(entry.level_id, 'missing', entry.reason || '该关仍未作答');
+  }
+  if (!list.length && !document.unanswered.length) add('-', 'empty-document', '答案文档没有任何关卡');
+  return { ok: issues.length === 0, total: list.length + document.unanswered.length, covered, issues, document };
+}
+
+module.exports = { validateAnswers, validateAnswerList, validateAnswerDocument };

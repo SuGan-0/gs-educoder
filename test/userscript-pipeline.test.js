@@ -177,6 +177,12 @@ test('课堂流水线：一键答题与停止在同一行', () => {
   assert.ok(runRow, '「一键答题（选中）」和「停止」必须在同一行——它们是同一件事的两面');
 });
 
+test('课堂流水线：面板不创建虚拟机提交按钮', () => {
+  const built = boot();
+  assert.equal(built.find('eas-virtual-submit'), undefined);
+  assert.ok(!built.created.some(node => /写入并评测本关虚拟题/.test(node.textContent)));
+});
+
 test('课堂流水线：课堂在上面，辅助按钮沉到下面', () => {
   const built = boot();
   const body = built.created.find((node) => node.className === 'eas-body');

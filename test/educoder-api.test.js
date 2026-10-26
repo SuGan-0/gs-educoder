@@ -1,5 +1,7 @@
 'use strict';
 
+require('./helpers/offline-signing');
+
 /**
  * extractor/lib/educoder-api.js 离线单元测试（无网络、无浏览器、无账号）。
  * 用 stub page 模拟 page.evaluate 返回不同响应，验证契约 docs/ARCHITECTURE.md 第 2 节。
@@ -13,6 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const api = require('../extractor/lib/educoder-api');
+const vm = require('node:vm');
 
 const AUTH_USER = 'p8sxailt2';
 const MODULE_PATH = path.join(__dirname, '..', 'extractor', 'lib', 'educoder-api.js');
@@ -44,6 +47,21 @@ const ok = (body) => ({ status: 200, body });
 const courseItem = (id, name, code) => ({ id, name, first_category_url: `/classrooms/${code}/announcement` });
 
 // ---------------------------------------------------------------- apiGet
+
+test('apiGet：请求没有响应时会中止并报告超时，避免永久卡住抓取', async () => {
+  let signal;
+  const page = { evaluate(fn, input) {
+    return vm.runInNewContext(`(${fn.toString()})(input)`, {
+      input, AbortController, setTimeout, clearTimeout,
+      fetch(_url, options) {
+        signal = options.signal;
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+      }
+    });
+  } };
+  await assert.rejects(api.apiGet(page, 'https://data.educoder.net/api/slow.json', { timeoutMs: 10 }), /请求超时/);
+  assert.equal(signal.aborted, true);
+});
 
 test('apiGet：在浏览器上下文 fetch（credentials: include）并返回 {ok,status,text,json}', async () => {
   const page = stubPage(() => ok('{"count":1,"courses":[]}'));

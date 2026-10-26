@@ -6,6 +6,7 @@
  *
  * 运行：node --test "test/**\/*.test.js"
  */
+require('./helpers/offline-signing');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -489,19 +490,25 @@ test('run.js --ui：HTTP 驱动完整流程并落盘', async (t) => {
   assert.equal(state.courses.length, 1);
   assert.equal(state.courses[0].name, COURSE.name);
 
-  const experimentsState = await post(base, token, { action: 'select-course', courseId: COURSE.id }).then(() =>
+  const experimentsState = await post(base, token, { action: 'select-course', courseId: COURSE.id, answersOnly: true, skipExisting: false }).then(() =>
     waitForPhase(base, token, (item) => item.phase === 'waiting-experiments')
   );
+  assert.equal(engine.answersOnly, true, '自动启动后选课时也必须应用答案模式');
+  assert.equal(engine.skipExisting, false);
   assert.equal(experimentsState.experiments.length, 1, 'is_shixun=false 必须被过滤');
   assert.equal(experimentsState.experiments[0].name, 'CNN');
 
-  const levelsState = await post(base, token, { action: 'select-experiments', indices: [0] }).then(() =>
+  const levelsState = await post(base, token, { action: 'select-experiments', indices: [0], answersOnly: false }).then(() =>
     waitForPhase(base, token, (item) => item.phase === 'waiting-levels')
   );
+  assert.equal(engine.answersOnly, false, '选实验时可显式切回题目模式');
+  assert.equal(engine.skipExisting, false, '未传模式字段时应保留当前值');
   assert.equal(levelsState.levels.length, 2);
   assert.equal(levelsState.levels[0].type, 'code');
 
-  await post(base, token, { action: 'select-levels', identifiers: ['conv', 'pool'] });
+  await post(base, token, { action: 'select-levels', identifiers: ['conv', 'pool'], skipExisting: true });
+  assert.equal(engine.answersOnly, false);
+  assert.equal(engine.skipExisting, true, '选关卡时也可显式设置已有内容策略');
 
   // 引擎在抓取前会先读关卡列表、再用 prev_game 回溯确认入口，允许更宽的等待。
   const finished = await waitForPhase(base, token, (item) => item.done || item.phase === 'error', 90000);
@@ -705,14 +712,14 @@ test('run.js --ui：选多个实验时，关卡区必须一次拿到全部实验
   await post(base, token, { action: 'stop' });
 });
 
-test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只读接口）', async (t) => {
+test('run.js --ui：/api/answers 汇总答案库与关卡元信息（篡改猴只读接口）', async (t) => {
   const fake = createFakePlaywright();
   const restoreApi = installFakeApi();
   const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-answers-'));
   const previousExport = process.env.EDUCODER_EXPORT_ROOT;
   process.env.EDUCODER_EXPORT_ROOT = exportRoot;
 
-  // 造两个实验的答案文件 + 一个提交蓝图
+  // 造实验答案文件与关卡存档
   const dirA = path.join(exportRoot, '课程', '实验A', 'answers');
   fs.mkdirSync(dirA, { recursive: true });
   fs.writeFileSync(
@@ -723,11 +730,6 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
         { level_id: 'L002', kind: 'choice', answers: [{ question: 1, answer: ['A'], brief: 'y' }] }
       ]
     }),
-    'utf8'
-  );
-  fs.writeFileSync(
-    path.join(exportRoot, '课程', '实验A', 'submit.blueprint.json'),
-    JSON.stringify({ key: 'POST https://data.educoder.net/api/x', method: 'POST', url: 'https://data.educoder.net/api/x' }),
     'utf8'
   );
   // 关卡存档：提供「平台关卡标识 → L001」的映射。
@@ -782,8 +784,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   assert.deepEqual(payload.answers[keyL002].answer.questions[0].selected, ['A'], '选择题答案原样带出');
   assert.equal(payload.answers[keyL001].kind, 'code');
   assert.ok('classroomCode' in payload.answers[keyL001], '每条答案都要带班级码');
-  assert.equal(payload.blueprints.length, 1, '提交蓝图要一并返回');
-  assert.equal(payload.blueprints[0].method, 'POST');
+  assert.equal(Object.hasOwn(payload, 'blueprints'), false, '不再返回提交请求蓝图');
   assert.equal(payload.levelIds.conv, keyL001, '平台关卡标识必须折算成全局唯一键');
   assert.equal(payload.levelIds.zq94fa325, keyL002, '三段式 URL 只取最后一段作标识');
   assert.deepEqual(payload.optionCounts[keyL002], [4, 2], '选择题每道题的选项个数要传给脚本，供它切分题目');
@@ -791,39 +792,6 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   // 这时只能按内容兜底匹配，所以要给脚本一张「实验名__关卡名」表。
   assert.equal(payload.titleIds['实验A__conv'], keyL001, '兜底表：实验名__关卡名 → 复合键');
   assert.equal(payload.titleIds['实验A__tri'], keyL002);
-
-  // 篡改猴录制到提交请求后回传蓝图：控制台要把它写进对应实验目录
-  const blueprintFile = path.join(exportRoot, '课程', '实验A', 'submit.blueprint.json');
-  const deniedPost = await fetch(`${base}/api/blueprint`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ levelId: 'conv', url: 'https://data.educoder.net/api/tasks/conv/submit.json' })
-  });
-  assert.equal(deniedPost.status, 403, '/api/blueprint 也必须校验 token');
-
-  const posted = await fetch(`${base}/api/blueprint?token=${token}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      levelId: 'conv',
-      url: 'https://data.educoder.net/api/tasks/conv/submit.json',
-      method: 'POST',
-      body: '{"code":"print(2)"}'
-    })
-  });
-  assert.equal(posted.status, 200);
-  const saved = await posted.json();
-  assert.equal(saved.ok, true);
-  assert.equal(saved.matchedLevel, true, '关卡标识应能定位到实验目录');
-  assert.match(saved.path, /submit\.blueprint\.json$/);
-
-  const stored = JSON.parse(fs.readFileSync(blueprintFile, 'utf8'));
-  assert.ok(Array.isArray(stored), '蓝图以数组形式落盘（与篡改猴的 state.templates 同构）');
-  assert.ok(
-    stored.some((item) => item.url.includes('/submit.json')),
-    '回传的蓝图要落进实验目录'
-  );
-  assert.ok(stored.some((item) => item.url === 'https://data.educoder.net/api/x'), '原有的蓝图不能被覆盖掉');
 
   // 篡改猴提交通过后回传答案：控制台写进 exports/answers/{课程}__{实验}.answers.json
   const deniedAnswer = await fetch(`${base}/api/answer/save`, {
@@ -854,10 +822,10 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   assert.equal(answerResult.course, '课程');
   assert.equal(answerResult.experiment, '实验A');
   // v2：答案按班级分目录
-  assert.equal(answerResult.path, path.join('answers', '课程', '实验A.answers.json'));
+  assert.equal(answerResult.path, path.join('answers', '课程（zqf25f66）', '实验A.answers.json'));
 
   const storedAnswers = JSON.parse(
-    fs.readFileSync(path.join(exportRoot, 'answers', '课程', '实验A.answers.json'), 'utf8')
+    fs.readFileSync(path.join(exportRoot, 'answers', '课程（zqf25f66）', '实验A.answers.json'), 'utf8')
   );
   assert.equal(storedAnswers.schema_version, 2);
   assert.equal(storedAnswers.classroom.name, '课程');
@@ -902,7 +870,7 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   const stillUnknown = await fetch(`${base}/api/answer/save?token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: 'brand-new-id', levelName: '根本不存在的关卡名', kind: 'code', answer: 'x' })
+    body: JSON.stringify({ identifier: 'never-seen-again', levelName: '根本不存在的关卡名', kind: 'code', answer: 'x' })
   });
   assert.equal(stillUnknown.status, 400);
   assert.match((await stillUnknown.json()).error, /抓取/, '兜底也失败时要提示先抓取该实验');
@@ -980,101 +948,75 @@ test('run.js --ui：/api/answers 汇总答案库与提交蓝图（篡改猴只�
   );
 });
 
-test('run.js --ui：AI 作答接口（列出目标 / 启动 / 错误落进快照）', async (t) => {
+test('run.js --ui：Agent 目录与说明只读，旧模型端点已移除且不会访问模型', async (t) => {
   const fake = createFakePlaywright();
   const restoreApi = installFakeApi();
-  const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-answer-ui-'));
+  const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-agent-ui-'));
   const previousExport = process.env.EDUCODER_EXPORT_ROOT;
   process.env.EDUCODER_EXPORT_ROOT = exportRoot;
-
-  // 造一份关卡存档，让 /api/answer/targets 有东西可列
   const experimentDir = path.join(exportRoot, '课程A', '实验B');
   fs.mkdirSync(experimentDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(experimentDir, 'levels.jsonl'),
-    `${JSON.stringify({
-      taskIndex: 1,
-      title: 'conv',
-      level: '第1关_conv',
-      type: 'code',
-      course: '课程A',
-      experiment: '实验B',
-      source: 'u',
-      taskDescription: '实现卷积。',
-      programmingRequirements: '补充代码。',
-      starterCode: '',
-      codeLanguage: 'python',
-      choices: [],
-      choiceQuestions: [],
-      imageMap: {},
-      images: [],
-      contentHash: 'h'
-    })}\n`,
-    'utf8'
-  );
+  fs.writeFileSync(path.join(experimentDir, 'levels.jsonl'), `${JSON.stringify({
+    taskIndex: 1, title: 'conv', type: 'code', course: '课程A', experiment: '实验B',
+    source: 'https://www.educoder.net/tasks/conv', codeLanguage: 'python'
+  })}\n`, 'utf8');
 
+  const originalFetch = global.fetch;
+  const unexpectedRequests = [];
+  global.fetch = (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    if (url.hostname !== '127.0.0.1') {
+      unexpectedRequests.push(url.href);
+      throw new Error(`测试禁止外网请求：${url.hostname}`);
+    }
+    return originalFetch(input, init);
+  };
   const { runUi } = freshRunModule();
   t.after(() => {
+    global.fetch = originalFetch;
     restoreApi();
     fake.restore();
     if (previousExport === undefined) delete process.env.EDUCODER_EXPORT_ROOT;
     else process.env.EDUCODER_EXPORT_ROOT = previousExport;
     fs.rmSync(exportRoot, { recursive: true, force: true });
   });
-
   const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
-  t.after(async () => {
-    await server.close().catch(() => {});
-  });
+  t.after(() => server.close());
   const url = new URL(server.url);
   const token = url.searchParams.get('token');
-  const base = `${url.protocol}//${url.host}`;
+  const base = url.origin;
 
-  const denied = await fetch(`${base}/api/answer/targets`);
-  assert.equal(denied.status, 403, '未带 token 必须 403');
-
-  const targets = await (await fetch(`${base}/api/answer/targets?token=${token}`)).json();
-  assert.equal(targets.ok, true);
-  assert.equal(targets.courses.length, 1);
-  assert.equal(targets.courses[0].name, '课程A');
-  assert.equal(targets.courses[0].experiments[0].name, '实验B');
-  assert.deepEqual(targets.courses[0].experiments[0].levels.map((level) => level.id), ['L001']);
-
-  // AI 的 Key 现在只从 .env / 环境变量读，请求体里带什么都不算数。
-  const missingKey = await fetch(`${base}/api/answer/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, course: '课程A', experiments: ['实验B'] })
-  });
-  assert.equal(missingKey.status, 400, '没配 Key 要 400');
-  assert.match((await missingKey.json()).error, /API Key/);
-
-  // 配上一个假 Key 再启动（会因为没有存档而失败，但整条链路要跑通并把错误落进快照）
-  const savedAiKey = process.env.EDUCODER_AI_KEY;
-  process.env.EDUCODER_AI_KEY = 'test-key';
-  t.after(() => {
-    if (savedAiKey === undefined) delete process.env.EDUCODER_AI_KEY;
-    else process.env.EDUCODER_AI_KEY = savedAiKey;
-  });
-
-  const started = await fetch(`${base}/api/answer/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, course: '课程A', experiments: ['不存在的实验'] })
-  });
-  assert.equal(started.status, 200);
-  assert.equal((await started.json()).started, true);
-
-  const deadline = Date.now() + 10000;
-  let state = null;
-  while (Date.now() < deadline) {
-    state = await (await fetch(`${base}/api/state?token=${token}`)).json();
-    if (state.answer && state.answer.done >= 1 && !state.answer.running) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const endpoint of ['/api/agent/targets', '/api/agent/guide']) {
+    assert.equal((await fetch(`${base}${endpoint}`)).status, 403, '未带 token 必须拒绝');
+    assert.equal((await fetch(`${base}${endpoint}?token=${token}`, {
+      headers: { Origin: 'https://untrusted.example' }
+    })).status, 403, '有 token 的跨站请求仍须拒绝');
+    assert.equal((await fetch(`${base}${endpoint}?token=${token}`, { method: 'POST' })).status, 405);
   }
-  assert.ok(state.answer, '快照里要有 answer 状态');
-  assert.equal(state.answer.done, 1, `任务应结束，实际 ${JSON.stringify(state.answer)}`);
-  assert.match(state.answer.results[0].error || '', /没有关卡存档/);
+  const targets = await (await fetch(`${base}/api/agent/targets?token=${token}`)).json();
+  assert.deepEqual(Object.keys(targets), ['courses']);
+  assert.equal(targets.courses[0].name, '课程A');
+  const experiment = targets.courses[0].experiments[0];
+  assert.equal(experiment.name, '实验B');
+  assert.deepEqual(experiment.levels.map((level) => level.id), ['L001']);
+  assert.equal(experiment.mdPath, path.join(experimentDir, '实验B.md'));
+  const guide = await fetch(`${base}/api/agent/guide?token=${token}`);
+  assert.equal(guide.status, 200);
+  assert.match(guide.headers.get('content-type'), /text\/markdown/);
+  assert.match(guide.headers.get('content-disposition'), /attachment.*AGENT-ANSWERING\.md/);
+  assert.equal(await guide.text(), fs.readFileSync(path.join(__dirname, '..', 'docs', 'AGENT-ANSWERING.md'), 'utf8'));
+
+  for (const endpoint of ['/api/answer/run', '/api/answer/stop', '/api/answer/config', '/api/answer/targets', '/api/blueprint']) {
+    const response = await fetch(`${base}${endpoint}?token=${token}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, course: '课程A', experiments: ['实验B'], apiKey: 'unused' })
+    });
+    assert.equal(response.status, 404, `${endpoint} 已删除`);
+  }
+  const state = await (await fetch(`${base}/api/state?token=${token}`)).json();
+  assert.equal(Object.hasOwn(state, 'ai'), false);
+  assert.equal(Object.hasOwn(state, 'answer'), false);
+  assert.deepEqual(unexpectedRequests, [], '启动与只读工作流不可调用模型或访问外网');
 });
 
 test('run.js --ui：select-course 使用无效 id 时返回 4xx', async (t) => {
@@ -1106,78 +1048,132 @@ test('run.js --ui：select-course 使用无效 id 时返回 4xx', async (t) => {
   assert.ok(payload.error);
 });
 
-test('run.js --ui：AI 配置只显示模型，绝不回显 Key', async (t) => {
-  // 临时给一份「假的 Key」，验证它只用于判断「配没配」，不会流到界面上。
-  const savedKey = process.env.EDUCODER_AI_KEY;
-  const savedModel = process.env.EDUCODER_AI_MODEL;
-  process.env.EDUCODER_AI_KEY = 'sk-probe-secret-value';
-  process.env.EDUCODER_AI_MODEL = 'probe-model';
+test('控制台：仅答案存档可读取、回传更新并导出班级文件，不依赖题目目录', async (t) => {
+  const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-answer-only-ui-'));
+  const previousExport = process.env.EDUCODER_EXPORT_ROOT;
+  process.env.EDUCODER_EXPORT_ROOT = exportRoot;
   t.after(() => {
-    if (savedKey === undefined) delete process.env.EDUCODER_AI_KEY; else process.env.EDUCODER_AI_KEY = savedKey;
-    if (savedModel === undefined) delete process.env.EDUCODER_AI_MODEL; else process.env.EDUCODER_AI_MODEL = savedModel;
+    if (previousExport === undefined) delete process.env.EDUCODER_EXPORT_ROOT;
+    else process.env.EDUCODER_EXPORT_ROOT = previousExport;
+    fs.rmSync(exportRoot, { recursive: true, force: true });
   });
+  const answerPath = path.join(exportRoot, 'answers', '数据库（MYSQL01）', 'Insert,Update,Delete.answers.json');
+  fs.mkdirSync(path.dirname(answerPath), { recursive: true });
+  fs.writeFileSync(answerPath, JSON.stringify({
+    schema_version: 2,
+    classroom: { name: '数据库', code: 'MYSQL01' },
+    experiment: { name: 'Insert,Update,Delete', homework_id: 99 },
+    answers: [{
+      level_id: 'L001', title: '插入数据', task_identifier: 'insert-task', kind: 'code', source: 'platform', verified: true,
+      answer: { language: 'sql', code: 'INSERT INTO student VALUES (1);' }
+    }]
+  }), 'utf8');
+  const { startUiServer } = require('../extractor/ui/server');
+  const server = await startUiServer({ open: false, token: 'test-token', onControl: async () => ({ ok: true }) });
+  t.after(() => server.close());
+  const base = new URL(server.url).origin;
+  const token = 'test-token';
+  const targets = await (await fetch(`${base}/api/agent/targets?token=${token}`)).json();
+  assert.equal(targets.courses[0].experiments[0].mdPath, '');
+  assert.equal(targets.courses[0].experiments[0].answered, 1);
+  const before = await (await fetch(`${base}/api/answers?token=${token}`)).json();
+  const key = before.levelIds['insert-task'];
+  assert.ok(key, '答案文档中的平台标识也应进入映射');
+  assert.equal(before.answers[key].classroomCode, 'MYSQL01');
+  assert.equal(before.answers[key].homeworkId, 99);
 
-  const fake = createFakePlaywright();
-  const restoreApi = installFakeApi();
-  const { runUi } = freshRunModule();
-  t.after(() => {
-    restoreApi();
-    fake.restore();
+  const saved = await fetch(`${base}/api/answer/save?token=${token}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier: 'insert-task', classroomCode: 'MYSQL01', kind: 'code', language: 'sql', answer: 'INSERT INTO student VALUES (2);' })
   });
+  assert.equal(saved.status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(answerPath, 'utf8')).answers[0].answer.code, 'INSERT INTO student VALUES (2);');
 
-  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
-  t.after(async () => {
-    await server.close().catch(() => {});
-  });
-
-  const url = new URL(server.url);
-  const token = url.searchParams.get('token');
-  const base = `${url.protocol}//${url.host}`;
-
-  const response = await fetch(`${base}/api/state?token=${token}`);
-  const state = await response.json();
-  assert.ok(state.ai, '/api/state 要带上当前 AI 配置');
-  assert.equal(state.ai.model, 'probe-model', '要能显示当前用的模型');
-  assert.equal(state.ai.configured, true, '配了 Key 就是已配置');
-
-  const text = JSON.stringify(state);
-  assert.ok(!text.includes('sk-probe-secret-value'), '状态里绝不能出现 Key');
-  assert.ok(!/sk-/.test(text), '连 sk- 前缀都不该出现');
+  const exported = await post(base, token, { action: 'export-class-answers', grade: '2026级', className: '数据库班' });
+  assert.equal(exported.ok, true, exported.message);
+  assert.equal(exported.stats.answered, 1);
+  const document = JSON.parse(fs.readFileSync(exported.path, 'utf8'));
+  assert.equal(document.classrooms[0].code, 'MYSQL01');
+  assert.equal(document.classrooms[0].experiments[0].homework_id, 99);
+  assert.equal(document.classrooms[0].experiments[0].levels[0].answer.code, 'INSERT INTO student VALUES (2);');
 });
 
-test('run.js --ui：没配 AI Key 时明确报错，而不是含糊失败', async (t) => {
-  const savedKey = process.env.EDUCODER_AI_KEY;
-  delete process.env.EDUCODER_AI_KEY;
+test('控制台：同名课堂答案保持独立，重复平台标识不给出有歧义的映射', async (t) => {
+  const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-identity-ui-'));
+  const previousExport = process.env.EDUCODER_EXPORT_ROOT;
+  process.env.EDUCODER_EXPORT_ROOT = exportRoot;
   t.after(() => {
-    if (savedKey !== undefined) process.env.EDUCODER_AI_KEY = savedKey;
+    if (previousExport === undefined) delete process.env.EDUCODER_EXPORT_ROOT;
+    else process.env.EDUCODER_EXPORT_ROOT = previousExport;
+    fs.rmSync(exportRoot, { recursive: true, force: true });
   });
-
-  const fake = createFakePlaywright();
-  const restoreApi = installFakeApi();
-  const { runUi } = freshRunModule();
-  t.after(() => {
-    restoreApi();
-    fake.restore();
-  });
-
-  const { server } = await runUi({ open: false, headless: true, port: 0, token: 'test-token' });
-  t.after(async () => {
-    await server.close().catch(() => {});
-  });
-
-  const url = new URL(server.url);
-  const token = url.searchParams.get('token');
-  const base = `${url.protocol}//${url.host}`;
-
-  const state = await (await fetch(`${base}/api/state?token=${token}`)).json();
-  assert.equal(state.ai.configured, false, '没 Key 就该是未配置');
-
-  const response = await fetch(`${base}/api/answer/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, course: '示例课程A', experiments: ['CNN'] })
-  });
-  assert.equal(response.status, 400);
-  const payload = await response.json();
-  assert.match(payload.error, /EDUCODER_AI_KEY/, '要指出该去 .env 里填哪个键');
+  for (const code of ['A', 'B']) {
+    const file = path.join(exportRoot, 'answers', `同名课程（${code}）`, '实验.answers.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      schema_version: 2, classroom: { name: '同名课程', code }, experiment: { name: '实验', homework_id: 10 },
+      answers: [
+        { level_id: 'L001', task_identifier: `task-${code}`, kind: 'code', answer: { code, language: 'sql' } },
+        { level_id: 'L002', task_identifier: 'shared-task', title: '重名关卡', kind: 'code', answer: { code, language: 'sql' } }
+      ]
+    }));
+  }
+  const { startUiServer } = require('../extractor/ui/server');
+  const server = await startUiServer({ open: false, token: 'test-token' });
+  t.after(() => server.close());
+  const base = new URL(server.url).origin;
+  const payload = await (await fetch(`${base}/api/answers?token=test-token`)).json();
+  assert.equal(Object.keys(payload.answers).length, 4, '两个班的答案不能互相覆盖');
+  assert.equal(payload.answers[payload.levelIds['task-A']].answer.code, 'A');
+  assert.equal(payload.answers[payload.levelIds['task-B']].answer.code, 'B');
+  assert.equal(payload.levelIds['shared-task'], undefined, '跨班重名标识应明确标为歧义');
+  assert.equal(payload.titleOnlyIds['重名关卡'], undefined);
 });
+
+test('班级导出：已有文件损坏或新答案校验失败时，HTTP 与 CLI 均不覆盖文件', async (t) => {
+  const exportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'touge-class-protect-'));
+  const previousExport = process.env.EDUCODER_EXPORT_ROOT;
+  process.env.EDUCODER_EXPORT_ROOT = exportRoot;
+  t.after(() => {
+    if (previousExport === undefined) delete process.env.EDUCODER_EXPORT_ROOT;
+    else process.env.EDUCODER_EXPORT_ROOT = previousExport;
+    fs.rmSync(exportRoot, { recursive: true, force: true });
+  });
+  const answerPath = path.join(exportRoot, 'answers', '课程（A）', '实验.answers.json');
+  fs.mkdirSync(path.dirname(answerPath), { recursive: true });
+  const work = {
+    schema_version: 2, classroom: { name: '课程', code: 'A' }, experiment: { name: '实验', homework_id: 10 },
+    answers: [{ level_id: 'L001', kind: 'code', answer: { code: 'SELECT 1;', language: 'sql' } }]
+  };
+  fs.writeFileSync(answerPath, JSON.stringify(work));
+  const identity = { grade: '2026级', className: '测试班' };
+  const classPath = require('../extractor/lib/class-answers').classAnswersPathFor(exportRoot, identity);
+  fs.writeFileSync(classPath, '{"important":"原文件不完整');
+  const { startUiServer } = require('../extractor/ui/server');
+  const server = await startUiServer({ open: false, token: 'test-token', onControl: async () => ({ ok: true }) });
+  t.after(() => server.close());
+  const base = new URL(server.url).origin;
+  const request = () => fetch(`${base}/api/action?token=test-token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'export-class-answers', ...identity })
+  });
+  const cli = () => require('node:child_process').spawnSync(process.execPath, [
+    path.join(__dirname, '..', 'tools', 'build-class-answers.js'), `--grade=${identity.grade}`, `--class=${identity.className}`
+  ], { env: process.env, encoding: 'utf8', windowsHide: true });
+  const corruptResponse = await request();
+  assert.equal(corruptResponse.status, 400);
+  assert.match((await corruptResponse.json()).error, /保留原文件/);
+  assert.equal(cli().status, 1);
+  assert.equal(fs.readFileSync(classPath, 'utf8'), '{"important":"原文件不完整');
+
+  fs.rmSync(classPath);
+  work.answers[0].answer.code = '';
+  fs.writeFileSync(answerPath, JSON.stringify(work));
+  const invalidResponse = await request();
+  const result = await invalidResponse.json();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /校验失败.*未写入/);
+  assert.equal(cli().status, 1);
+  assert.equal(fs.existsSync(classPath), false, '校验失败不可发布一份损坏的班级文件');
+});
+

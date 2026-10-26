@@ -1,16 +1,10 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { safeName } = require('./lib/task-parser');
 
 const PORT = 43127;
 const EXPORT_ROOT = path.resolve(__dirname, '..', 'exports');
-
-function safeName(value) {
-  return String(value || 'untitled')
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function send(response, status, body) {
   response.writeHead(status, {

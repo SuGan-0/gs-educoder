@@ -4,6 +4,7 @@
  *
  * 这里直接构造引擎并覆写 loadLevels，聚焦选择/分发逻辑本身，不依赖站点夹具。
  */
+require('./helpers/offline-signing');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
@@ -177,4 +178,62 @@ test('多实验：单个实验关卡列表读取失败时不影响其它实验',
   assert.equal(received[0].experimentName, '模型评估与选择');
   assert.equal(plans[0].selection, null, '读列表失败的实验退回按关卡链抓全部');
   assert.equal(plans[1].selection.length, 1);
+});
+
+test('多实验：清单乱序完成不改变实验归属，读取最多三份并发', async () => {
+  const experiments = Array.from({ length: 5 }, (_, homeworkId) => ({ name: '实验' + homeworkId, homeworkId }));
+  const releases = [];
+  const gates = experiments.map((_, index) => new Promise(resolve => { releases[index] = resolve; }));
+  const engine = makeEngine({}, { waitForAllLevels: async levels => [levels[4]] });
+  engine.localDoneIndex = async () => ({ archived: new Set(), answered: new Set() });
+  const entered = [];
+  let active = 0, peak = 0;
+  engine.loadLevels = async experiment => {
+    entered.push(experiment.homeworkId);
+    peak = Math.max(peak, ++active);
+    await gates[experiment.homeworkId];
+    active--;
+    return [{ name: '第一关', position: 1, challengeId: 'shared' }];
+  };
+  const reading = engine.selectLevelsForAll(experiments);
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  await tick();
+  assert.deepEqual(entered, [0, 1, 2]);
+  releases[2]();
+  await tick();
+  assert.deepEqual(entered, [0, 1, 2, 3]);
+  releases[0]();
+  await tick();
+  assert.deepEqual(entered, [0, 1, 2, 3, 4]);
+  releases.forEach(release => release());
+  const plans = await reading;
+  assert.equal(peak, 3);
+  const merged = engine.__events.find(event => event.type === 'levels').levels;
+  assert.deepEqual(merged.map(level => level.experimentName), experiments.map(experiment => experiment.name));
+  assert.deepEqual(merged.map(level => level.experimentIndex), [0, 1, 2, 3, 4]);
+  assert.equal(plans[0].selection, null);
+  assert.equal(plans[4].selection[0].experimentName, '实验4');
+});
+
+test('多实验：停止后等待在途清单收尾，不再读取或进入选择阶段', async () => {
+  let stopped = false, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const entered = [];
+  const engine = makeEngine({}, {
+    shouldStop: async () => stopped,
+    waitForAllLevels: async () => { throw new Error('停止后不得询问'); }
+  });
+  engine.localDoneIndex = async () => null;
+  engine.loadLevels = async experiment => {
+    entered.push(experiment.name);
+    await gate;
+    return LEVELS_A;
+  };
+  const reading = engine.selectLevelsForAll(Array.from({ length: 5 }, (_, index) => ({ name: String(index) })));
+  await new Promise(resolve => setImmediate(resolve));
+  stopped = true;
+  release();
+  assert.equal(await reading, null);
+  assert.deepEqual(entered, ['0', '1', '2']);
+  assert.deepEqual(engine.__events.find(event => event.type === 'levels').levels, []);
 });

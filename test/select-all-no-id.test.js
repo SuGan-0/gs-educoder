@@ -1,4 +1,5 @@
 /* 核心逻辑单测（不需要真实站点/登录）：验证「无标识全选」不再跳过关卡链。 */
+require('./helpers/offline-signing');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

@@ -228,3 +228,75 @@ test('classAnswersPathFor：年级-班级拼进文件名，非法字符替换', 
   const path = classAnswersPathFor('/tmp/out', { grade: '2024级', className: '软工24-15、16班' });
   assert.match(path, /answers[\\/]2024级-软工24-15、16班\.answers\.json$/);
 });
+
+test('buildClassDocument：仅答案工作目录也可发布，混合题型与多小问不丢元信息', () => {
+  const answerDoc = require('../extractor/lib/answer-format').normalizeDocument({
+    schema_version: 2,
+    classroom: { name: '数据库系统原理', code: 'DB2026' },
+    experiment: { name: 'Insert,Update,Delete', homework_id: 123 },
+    answers: [
+      { level_id: 'L001', task_identifier: 'sql-task', title: '插入', kind: 'code', source: 'export', verified: true, answer: { language: 'sql', code: 'INSERT INTO t VALUES (1);' } },
+      { level_id: 'L002', task_identifier: 'choice-task', title: '选择题', kind: 'choice', source: 'platform', verified: true, answer: { questions: [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }] } }
+    ],
+    unanswered: [{ level_id: 'L003', reason: '未通过' }]
+  });
+  const doc = buildClassDocument({ className: '测试班', classrooms: [{ experiments: [{ records: [], answerDoc }] }] });
+  const classroom = doc.classrooms[0];
+  const experiment = classroom.experiments[0];
+  assert.equal(classroom.code, 'DB2026');
+  assert.equal(classroom.name, '数据库系统原理');
+  assert.equal(experiment.name, 'Insert,Update,Delete');
+  assert.equal(experiment.homework_id, 123);
+  assert.deepEqual(experiment.levels.map((level) => [level.level_id, level.position, level.kind, level.answered]), [
+    ['L001', 1, 'code', true], ['L002', 2, 'choice', true], ['L003', 3, 'unknown', false]
+  ]);
+  assert.deepEqual(experiment.levels[0].identifiers, ['sql-task']);
+  assert.equal(experiment.levels[0].verified, true);
+  assert.equal(experiment.levels[0].source, 'export');
+  assert.deepEqual(experiment.levels[1].answer, [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }]);
+  assert.equal(validateClassDocument(doc).ok, true);
+  assert.equal(doc.stats.answered, 2);
+});
+
+test('mergeClassDocuments：整段漏抓仍保留旧关卡/实验/课堂，未验证答案不降级已验证答案', () => {
+  const previous = { version: 2, kind: 'class-answers', class: { name: '测试班' }, classrooms: [
+    { name: '数据库', code: 'DB1', experiments: [
+      { name: 'DML', homework_id: 1, levels: [
+        { level_id: 'L001', kind: 'code', identifiers: ['old-id'], title: '旧标题', answered: true, source: 'export', verified: true, answer: { language: 'sql', code: 'SELECT 1;' } },
+        { level_id: 'L002', kind: 'choice', answered: true, answer: [{ number: 1, selected: ['A'] }] }
+      ] },
+      { name: '查询', homework_id: 2, levels: [] }
+    ] },
+    { name: '另一课堂', code: 'OTHER', experiments: [] }
+  ] };
+  const next = { version: 2, kind: 'class-answers', class: { name: '测试班' }, classrooms: [
+    { name: '数据库', code: 'DB1', experiments: [{ name: 'DML', homework_id: 1, levels: [
+      { level_id: 'L001', kind: 'code', identifiers: ['new-id'], title: '新标题', answered: true, source: 'ai', verified: false, answer: { code: 'bad' } }
+    ] }] }
+  ] };
+  const merged = mergeClassDocuments(previous, next);
+  assert.equal(merged.classrooms.length, 2);
+  assert.equal(merged.classrooms[0].experiments.length, 2);
+  const levels = merged.classrooms[0].experiments[0].levels;
+  assert.equal(levels.length, 2);
+  assert.equal(levels[0].answer.code, 'SELECT 1;');
+  assert.equal(levels[0].verified, true);
+  assert.equal(levels[0].title, '新标题');
+  assert.deepEqual(levels[0].identifiers, ['new-id', 'old-id']);
+  assert.equal(merged.stats.answered, 2);
+});
+
+test('mergeClassDocuments：同名课堂/实验的不同平台身份不互相取答案', () => {
+  const make = (code, homeworkId, answered) => ({
+    version: 2, kind: 'class-answers', class: { name: '测试班' }, classrooms: [
+      { name: '同名课堂', code, experiments: [{ name: '同名实验', homework_id: homeworkId, levels: [{ level_id: 'L001', answered }] }] }
+    ]
+  });
+  const differentClassroom = mergeClassDocuments(make('OLD', 1, true), make('NEW', 1, false));
+  assert.equal(differentClassroom.classrooms[0].experiments[0].levels[0].answered, false);
+  assert.equal(differentClassroom.classrooms.length, 2);
+  const differentHomework = mergeClassDocuments(make('CODE', 1, true), make('CODE', 2, false));
+  assert.equal(differentHomework.classrooms[0].experiments[0].levels[0].answered, false);
+  assert.equal(differentHomework.classrooms[0].experiments.length, 2);
+  assert.throws(() => mergeClassDocuments({ ...make('CODE', 1, true), version: 99 }, make('CODE', 1, false)), /拒绝覆盖/);
+});

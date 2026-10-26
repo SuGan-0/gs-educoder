@@ -4,6 +4,7 @@
  *
  * 运行：node --test test/
  */
+require('./helpers/offline-signing');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -2569,6 +2570,39 @@ test('引擎：只提取答案模式只写 answers，不写 levels.jsonl / md / 
   assert.ok(done, '应发出 done');
   assert.equal(done.saved, 1, '已通过关卡应计「已保存」（答案已导出）');
   assert.equal(done.skipped, 1, '未通过关卡应计「跳过」');
+});
+
+test('引擎：只提取答案跳过未通过文件请求，混合编程和多问多选仍输出规范 v2', async (t) => {
+  const { ExtractEngine } = freshEngineModule();
+  const exportRoot = withTempExportRoot();
+  t.after(() => fs.rmSync(exportRoot, { recursive: true, force: true }));
+  const engine = new ExtractEngine({ exportRoot, answersOnly: true });
+  const requested = [];
+  engine.attachStarterCode = async (_page, task, _payload, _experiment, identifier) => {
+    requested.push(identifier);
+    task.starterCode = 'INSERT INTO t VALUES (1);';
+  };
+  const course = { name: '数据库系统原理', classroomCode: 'DB2026' };
+  const experiment = { name: 'MySQL-数据的插入、修改与删除(Insert,Update,Delete)', homeworkId: 123 };
+  const pending = { challenge: { subject: '未通过', homework_challenge_index: 3, score: 100, with_code_file: true, path: 'step3.sql' }, game: { final_score: 0 }, chooses: [] };
+  const code = { challenge: { subject: '插入', homework_challenge_index: 1, score: 100, with_code_file: true, path: 'step1.sql' }, game: { final_score: 100 }, chooses: [] };
+  const choice = {
+    challenge: { subject: '选择题', homework_challenge_index: 2, score: 20 }, game: { final_score: 20 },
+    chooses: [1, 2].map((position) => ({ subject: `第${position}问`, challenge_question: [{ option_name: '甲' }, { option_name: '乙' }, { option_name: '丙' }] })),
+    choose_test_cases: { test_sets: [{ position: 2, actual_output: 'B' }, { position: 1, standard_answer: 'CA' }] }
+  };
+  for (const [identifier, payload] of [['pending-task', pending], ['sql-task', code], ['choice-task', choice]]) {
+    await engine.captureLevel({}, identifier, experiment, course, payload);
+  }
+  assert.deepEqual(requested, ['sql-task'], '只为已通过编程题读取文件');
+  const document = JSON.parse(fs.readFileSync(fmt.answerPathFor(exportRoot, { name: course.name, code: course.classroomCode }, experiment), 'utf8'));
+  assert.equal(document.schema_version, 2);
+  assert.equal(document.experiment.homework_id, 123);
+  assert.equal(document.classroom.code, 'DB2026');
+  assert.deepEqual(document.answers.map((entry) => entry.task_identifier), ['sql-task', 'choice-task']);
+  assert.ok(document.answers.every((entry) => entry.source === 'export' && entry.verified === true));
+  assert.deepEqual(document.answers[1].answer.questions, [{ number: 1, selected: ['A', 'C'] }, { number: 2, selected: ['B'] }]);
+  assert.equal(fs.existsSync(path.join(exportRoot, course.name)), false);
 });
 
 test('引擎：收掉多余的标签页，只留工作页', async () => {
